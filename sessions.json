@@ -508,5 +508,39 @@
         "path": "D:\\Programacion\\jpagents\\style.css"
       }
     ]
+  },
+  {
+    "id": "mo7rl42mka3wz59n80e",
+    "name": "Proyecto 5",
+    "folder": "",
+    "chats": [
+      {
+        "id": "chat-mo7rl42mi2o0b5pt2j",
+        "name": "Agente 1",
+        "messages": [],
+        "isThinking": false,
+        "mode": "auto"
+      }
+    ],
+    "openFiles": [],
+    "activeTabId": "chat-mo7rl42mi2o0b5pt2j",
+    "currentFiles": []
+  },
+  {
+    "id": "mo7ruxvgss51ele176s",
+    "name": "Proyecto 6",
+    "folder": "",
+    "chats": [
+      {
+        "id": "chat-mo7ruxvgj2vwusegoqn",
+        "name": "Agente 1",
+        "messages": [],
+        "isThinking": false,
+        "mode": "auto"
+      }
+    ],
+    "openFiles": [],
+    "activeTabId": "chat-mo7ruxvgj2vwusegoqn",
+    "currentFiles": []
   }
 ]

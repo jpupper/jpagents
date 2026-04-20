@@ -192,7 +192,7 @@ function renderProjectList() {
                     <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
                     <div class="dot ${isThinking ? 'busy' : ''}"></div>
                 </div>
-                <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject(${p.id})">🗑️</button>
+                <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject('${p.id}')">🗑️</button>
             </div>
         `;
     }).join('');
@@ -200,15 +200,30 @@ function renderProjectList() {
     document.querySelectorAll('.chat-item').forEach(item => {
         item.onclick = (e) => {
             if (e.target.classList.contains('session-name') || e.target.classList.contains('btn-delete')) return;
-            switchProject(parseInt(item.dataset.id));
+            switchProject(item.dataset.id);
         };
     });
 
     document.querySelectorAll('.session-name').forEach(name => {
         name.onblur = () => {
-            const project = state.projects.find(p => p.id === parseInt(name.dataset.id));
-            if (project) project.name = name.textContent;
+            const project = state.projects.find(p => p.id === name.dataset.id);
+            if (project) {
+                project.name = name.textContent.trim() || 'Proyecto sin nombre';
+            }
             saveData();
+            // We don't renderProjectList here to avoid losing focus if user is tabbing, 
+            // but we might need to update the name in the dashboard if it's active.
+            if (state.activeProjectId === name.dataset.id) {
+                const dashboardName = document.getElementById('dashboard-project-name');
+                if (dashboardName) dashboardName.textContent = project.name;
+            }
+        };
+
+        name.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                name.blur();
+            }
         };
     });
 }

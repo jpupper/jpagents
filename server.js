@@ -3,10 +3,11 @@ import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const app = express();
 const port = 3001;
 
@@ -44,17 +45,24 @@ app.post('/api/sessions/save', async (req, res) => {
 
 // Native Folder Picker using PowerShell
 app.get('/api/utils/pick-folder', async (req, res) => {
-    console.log('[SERVER] Solicitando selector de carpetas (FORCED FRONT)...');
+    console.log('[SERVER] Solicitando selector de carpetas (NATIVE)...');
     
-    // Comando que fuerza la ventana al frente mediante un objeto de formulario TopMost
-    const psCommand = `powershell -NoProfile -ExecutionPolicy Bypass -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; $b = New-Object System.Windows.Forms.FolderBrowserDialog; $b.Description = 'Selecciona tu carpeta'; if($b.ShowDialog($f) -eq 'OK'){ $b.SelectedPath }"`;
-    
+    const args = [
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-STA',
+        '-Command',
+        'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; $b = New-Object System.Windows.Forms.FolderBrowserDialog; $b.Description = \'Selecciona tu carpeta\'; if($b.ShowDialog($f) -eq \'OK\'){ $b.SelectedPath }'
+    ];
+
     try {
-        const { stdout } = await execAsync(psCommand, { timeout: 60000 }); // 60 seg timeout
+        const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 60000 });
         const pickedPath = stdout.trim();
+        console.log('[SERVER] Carpeta seleccionada:', pickedPath);
         res.json({ path: pickedPath });
     } catch (e) {
-        res.status(500).json({ error: 'Timeout o error en selector' });
+        console.error('[SERVER] Error en pick-folder:', e.message);
+        res.status(500).json({ error: 'Error en el selector: ' + e.message });
     }
 });
 
