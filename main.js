@@ -1,17 +1,22 @@
 import './style.css'
+import { marked } from 'marked'
+
+// Configure marked
+marked.setOptions({
+    breaks: true,
+    gfm: true
+});
+
 
 const API_BASE = 'http://localhost:3001/api';
 const OLLAMA_BASE = 'http://localhost:11434/api';
 
-// State
+// New State Structure: Projects -> Chats & Files
 let state = {
-    sessions: [
-        { id: 1, name: 'Proyecto Demo', messages: [], folder: '' }
-    ],
-    activeSessionId: 1,
+    projects: [],
+    activeProjectId: null,
     models: [],
-    selectedModel: '',
-    currentFiles: []
+    selectedModel: ''
 };
 
 // DOM Elements
@@ -22,14 +27,104 @@ const sendBtn = document.getElementById('send-btn');
 const modelSelect = document.getElementById('model-select');
 const folderPathInput = document.getElementById('folder-path');
 const scanFolderBtn = document.getElementById('scan-folder');
+const refreshFolderBtn = document.getElementById('refresh-folder');
 const fileList = document.getElementById('file-list');
 const newChatBtn = document.getElementById('new-chat');
+const agentStatus = document.getElementById('agent-status');
+const tabsNav = document.getElementById('tabs-nav');
+const chatTabContent = document.getElementById('chat-tab-content');
+const editorTabContent = document.getElementById('editor-tab-content');
+const editorCode = document.getElementById('editor-code');
+const currentFilename = document.getElementById('current-filename');
 
 // Initialize
 async function init() {
     await fetchModels();
-    renderChatList();
+    await loadData();
     setupEventListeners();
+}
+
+async function loadData() {
+    try {
+        const res = await fetch(`${API_BASE}/sessions`);
+        const data = await res.json();
+        
+        if (Array.isArray(data) && data.length > 0) {
+            state.projects = data.map(sanitizeProject);
+            state.activeProjectId = state.projects[0].id;
+        } else {
+            createNewProject();
+        }
+        
+        renderProjectList();
+        const active = getActiveProject();
+        if (active && active.folder) scanFolder(active.folder);
+        renderTabs();
+    } catch (e) {
+        console.error("Error loading data:", e);
+        createNewProject();
+    }
+}
+
+function sanitizeProject(p) {
+    return {
+        id: p.id || Date.now(),
+        name: p.name || 'Proyecto sin nombre',
+        folder: p.folder || '',
+        chats: Array.isArray(p.chats) ? p.chats : [
+            { id: 'chat-' + Date.now(), name: 'Agente 1', messages: [], isThinking: false }
+        ],
+        openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
+        activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
+        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : []
+    };
+}
+
+async function saveData() {
+    try {
+        await fetch(`${API_BASE}/sessions/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(state.projects)
+        });
+    } catch (e) {}
+}
+
+function createNewProject() {
+    const id = Date.now();
+    const newProject = {
+        id,
+        name: `Proyecto ${state.projects.length + 1}`,
+        folder: '',
+        chats: [
+            { id: 'chat-' + Date.now(), name: 'Agente 1', messages: [], isThinking: false }
+        ],
+        openFiles: [],
+        activeTabId: null,
+        currentFiles: []
+    };
+    newProject.activeTabId = newProject.chats[0].id;
+    state.projects.push(newProject);
+    state.activeProjectId = id;
+    renderProjectList();
+    renderTabs();
+    renderFileList(); // Clear file list for new project
+    saveData();
+}
+
+function getActiveProject() {
+    let p = state.projects.find(p => p.id === state.activeProjectId);
+    if (!p && state.projects.length > 0) {
+        state.activeProjectId = state.projects[0].id;
+        p = state.projects[0];
+    }
+    return p;
+}
+
+function getActiveChat() {
+    const p = getActiveProject();
+    if (!p || !Array.isArray(p.chats)) return null;
+    return p.chats.find(c => c.id === p.activeTabId) || p.chats[0];
 }
 
 async function fetchModels() {
@@ -37,254 +132,355 @@ async function fetchModels() {
         const res = await fetch(`${API_BASE}/models`);
         const data = await res.json();
         state.models = data.models || [];
-        
-        modelSelect.innerHTML = state.models.map(m => 
-            `<option value="${m.name}">${m.name}</option>`
-        ).join('');
-        
-        if (state.models.length > 0) {
-            state.selectedModel = state.models[0].name;
-        }
-    } catch (e) {
-        console.error('Error fetching models', e);
-        modelSelect.innerHTML = '<option value="">Ollama no detectado</option>';
-    }
+        modelSelect.innerHTML = state.models.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
+    } catch (e) {}
 }
 
-function renderChatList() {
-    chatList.innerHTML = state.sessions.map(s => `
-        <div class="chat-item ${s.id === state.activeSessionId ? 'active' : ''}" data-id="${s.id}">
-            ${s.name}
+function renderProjectList() {
+    chatList.innerHTML = state.projects.map(p => `
+        <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" data-id="${p.id}">
+            <div class="chat-item-main">
+                <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
+            </div>
+            <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject(${p.id})">🗑️</button>
         </div>
     `).join('');
 
-    // Attach listeners
     document.querySelectorAll('.chat-item').forEach(item => {
-        item.onclick = () => switchSession(parseInt(item.dataset.id));
+        item.onclick = (e) => {
+            if (e.target.classList.contains('session-name') || e.target.classList.contains('btn-delete')) return;
+            switchProject(parseInt(item.dataset.id));
+        };
+    });
+
+    document.querySelectorAll('.session-name').forEach(name => {
+        name.onblur = () => {
+            const project = state.projects.find(p => p.id === parseInt(name.dataset.id));
+            if (project) project.name = name.textContent;
+            saveData();
+        };
     });
 }
 
-function switchSession(id) {
-    state.activeSessionId = id;
-    const session = state.sessions.find(s => s.id === id);
-    folderPathInput.value = session.folder || '';
-    renderMessages();
-    renderChatList();
-}
+function renderTabs() {
+    const project = getActiveProject();
+    if (!project) return;
 
-function renderMessages() {
-    const session = state.sessions.find(s => s.id === state.activeSessionId);
-    if (session.messages.length === 0) {
-        chatMessages.innerHTML = `
-            <div class="welcome-screen">
-                <h2>¿Qué vamos a construir hoy?</h2>
-                <p>Selecciona un modelo y una carpeta para empezar a trabajar con tus subagentes.</p>
+    let tabsHtml = '';
+    
+    // Chats Tabs
+    const chats = project.chats || [];
+    chats.forEach(chat => {
+        tabsHtml += `
+            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''}" onclick="window.switchTab('${chat.id}')">
+                <span>🤖 ${chat.name}</span>
+                <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
             </div>
         `;
+    });
+
+    // New Chat Button inside tabs
+    tabsHtml += `<div class="tab add-tab" onclick="window.addChat()">+</div>`;
+    
+    // File Tabs
+    const openFiles = project.openFiles || [];
+    openFiles.forEach(file => {
+        const sanitizedPath = file.path.replace(/\\/g, '/');
+        tabsHtml += `
+            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" onclick="window.switchTab('${sanitizedPath}')">
+                <span>📄 ${file.name}</span>
+                <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">&times;</span>
+            </div>
+        `;
+    });
+
+    tabsNav.innerHTML = tabsHtml;
+    updateViewVisibility();
+}
+
+function updateViewVisibility() {
+    const project = getActiveProject();
+    if (!project) return;
+
+    const chats = project.chats || [];
+    const isChat = chats.some(c => c.id === project.activeTabId);
+    
+    if (isChat) {
+        chatTabContent.classList.remove('hidden');
+        editorTabContent.classList.add('hidden');
+        renderMessages();
+    } else {
+        chatTabContent.classList.add('hidden');
+        editorTabContent.classList.remove('hidden');
+        const openFiles = project.openFiles || [];
+        const file = openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+        if (file) {
+            currentFilename.textContent = file.name;
+            editorCode.textContent = file.content;
+        }
+    }
+}
+
+window.switchTab = (id) => {
+    const p = getActiveProject();
+    p.activeTabId = id;
+    renderTabs();
+    saveData();
+};
+
+window.addChat = () => {
+    const p = getActiveProject();
+    const newChat = { id: 'chat-' + Date.now(), name: 'Agente ' + (p.chats.length + 1), messages: [], isThinking: false };
+    p.chats.push(newChat);
+    p.activeTabId = newChat.id;
+    renderTabs();
+    saveData();
+};
+
+window.deleteChat = (id) => {
+    const p = getActiveProject();
+    if (p.chats.length <= 1) return alert("Debe haber al menos un agente.");
+    p.chats = p.chats.filter(c => c.id !== id);
+    if (p.activeTabId === id) p.activeTabId = p.chats[0].id;
+    renderTabs();
+    saveData();
+};
+
+window.closeFileTab = (path) => {
+    const p = getActiveProject();
+    p.openFiles = p.openFiles.filter(f => f.path.replace(/\\/g, '/') !== path);
+    if (p.activeTabId === path) p.activeTabId = p.chats[0].id;
+    renderTabs();
+    saveData();
+};
+
+function switchProject(id) {
+    state.activeProjectId = id;
+    const project = getActiveProject();
+    if (!project) return;
+    
+    folderPathInput.value = project.folder || '';
+    renderProjectList();
+    renderTabs();
+    
+    if (project.folder) {
+        scanFolder(project.folder);
+    } else {
+        renderFileList();
+    }
+}
+
+window.deleteProject = (id) => {
+    if (!confirm('¿Eliminar proyecto completo?')) return;
+    state.projects = state.projects.filter(p => p.id !== id);
+    if (state.activeProjectId === id) {
+        if (state.projects.length > 0) {
+            switchProject(state.projects[0].id);
+        } else {
+            createNewProject();
+        }
+    } else {
+        renderProjectList();
+    }
+    saveData();
+};
+
+function renderMessages() {
+    const chat = getActiveChat();
+    if (!chat) return;
+    
+    agentStatus.classList.toggle('hidden', !chat.isThinking);
+
+    if (chat.messages.length === 0) {
+        chatMessages.innerHTML = `<div class="welcome-screen"><h2>Hilo de contexto limpio</h2><p>Este agente está listo para recibir instrucciones.</p></div>`;
         return;
     }
 
-    chatMessages.innerHTML = session.messages.map(m => `
-        <div class="message ${m.role}">
-            ${formatMarkdown(m.content)}
-        </div>
-    `).join('');
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    chatMessages.innerHTML = chat.messages.map(m => `<div class="message ${m.role}">${formatMarkdown(m.content)}</div>`).join('');
+    setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
 }
 
 function formatMarkdown(text) {
-    // Very basic markdown formatter for code blocks
-    return text
-        .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-        .replace(/\n/g, '<br>');
+    try {
+        return marked.parse(text);
+    } catch (e) {
+        console.error("Markdown error:", e);
+        return text.replace(/\n/g, '<br>');
+    }
 }
 
-async function scanFolder(pathInput = null) {
-    let folderPath = (typeof pathInput === 'string') ? pathInput : folderPathInput.value;
-    if (pathInput && typeof pathInput !== 'string') folderPath = folderPathInput.value;
-    
+async function sendMessage() {
+    const content = chatInput.value.trim();
+    const project = getActiveProject();
+    const chat = getActiveChat();
+    if (!content || !project || !chat) return;
+
+    // Add user message to state
+    chat.messages.push({ role: 'user', content });
+    chat.isThinking = true;
+    chatInput.value = '';
+    renderMessages();
+
+    // Prepare history for Ollama /api/chat
+    const systemMsg = { role: 'system', content: buildSystemPrompt() };
+    const history = chat.messages.map(m => ({
+        role: m.role === 'agent' ? 'assistant' : m.role,
+        content: m.content
+    }));
+
+    const messages = [systemMsg, ...history];
+
     try {
-        const res = await fetch(`${API_BASE}/files/list`, {
+        const response = await fetch(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folderPath })
+            body: JSON.stringify({ 
+                model: modelSelect.value, 
+                messages: messages,
+                stream: false 
+            })
+        });
+        
+        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        
+        const data = await response.json();
+        chat.isThinking = false;
+        
+        const assistantResponse = data.message.content;
+        chat.messages.push({ role: 'agent', content: assistantResponse });
+        
+        await processAgentActions(assistantResponse, project, chat);
+        renderMessages();
+        saveData();
+    } catch (e) {
+        chat.isThinking = false;
+        chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
+        renderMessages();
+    }
+}
+
+
+async function scanFolder(pathInput = null) {
+    const p = getActiveProject();
+    if (!p) return;
+
+    let folderPath = (typeof pathInput === 'string') ? pathInput : (pathInput || p.folder || folderPathInput.value);
+    
+    if (!folderPath) {
+        renderFileList();
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/files/list`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ folderPath }) 
         });
         const data = await res.json();
         
         if (data.error) {
-            alert('Error: ' + data.error);
+            console.error("Scan error:", data.error);
             return;
         }
 
-        state.currentFiles = data.files || [];
-        folderPathInput.value = data.currentPath || folderPath; 
-        
-        const session = state.sessions.find(s => s.id === state.activeSessionId);
-        if (session) session.folder = data.currentPath;
-        
-        renderFileList();
+        // Re-get active project to be safe after await
+        const project = getActiveProject();
+        if (project) {
+            project.currentFiles = data.files || [];
+            project.folder = data.currentPath;
+            folderPathInput.value = data.currentPath;
+            renderFileList();
+            saveData();
+        }
     } catch (e) {
-        alert('Error al leer la carpeta: ' + e.message);
+        console.error("Fetch error scanning folder:", e);
     }
 }
 
 function renderFileList() {
-    if (state.currentFiles.length === 0) {
-        fileList.innerHTML = '<p class="empty-state">No hay archivos</p>';
+    const p = getActiveProject();
+    if (!p) {
+        fileList.innerHTML = '<p class="empty-state">No hay proyecto activo</p>';
         return;
     }
 
+    const files = p.currentFiles || [];
+    if (files.length === 0) { 
+        fileList.innerHTML = `<p class="empty-state">${p.folder ? 'La carpeta está vacía' : 'No hay carpeta seleccionada'}</p>`; 
+        return; 
+    }
+    
     const backButton = `<div class="file-item directory" onclick="window.goUp()">.. (Subir nivel)</div>`;
-
-    fileList.innerHTML = (folderPathInput.value ? backButton : '') + state.currentFiles.map(f => `
-        <div class="file-item ${f.isDirectory ? 'directory' : 'file'}" 
-             onclick="${f.isDirectory ? `window.scanFolder('${f.path.replace(/\\/g, '/')}')` : `window.openFile('${f.path.replace(/\\/g, '/')}')`}">
+    fileList.innerHTML = (p.folder ? backButton : '') + files.map(f => `
+        <div class="file-item ${f.isDirectory ? 'directory' : 'file'}" onclick="${f.isDirectory ? `window.scanFolder('${f.path.replace(/\\/g, '/')}')` : `window.openFile('${f.path.replace(/\\/g, '/')}')`}">
             ${f.isDirectory ? '📁' : '📄'} ${f.name}
         </div>
     `).join('');
 }
 
-async function sendMessage() {
-    const content = chatInput.value.trim();
-    if (!content) return;
-
-    const session = state.sessions.find(s => s.id === state.activeSessionId);
-    if (!session.folder) {
-        alert("Primero selecciona una carpeta de proyecto.");
-        return;
-    }
-
-    session.messages.push({ role: 'user', content });
-    chatInput.value = '';
-    renderMessages();
-
-    // Agent Logic
-    try {
-        const response = await fetch(`${OLLAMA_BASE}/generate`, {
-            method: 'POST',
-            body: JSON.stringify({
-                model: modelSelect.value,
-                prompt: buildSystemPrompt() + "\n\nUsuario: " + content,
-                stream: false
-            })
-        });
-        const data = await response.json();
-        const agentResponse = data.response;
-        
-        session.messages.push({ role: 'agent', content: agentResponse });
-        
-        // Handle file modification
-        await processAgentActions(agentResponse);
-        
-        renderMessages();
-    } catch (e) {
-        session.messages.push({ role: 'agent', content: 'Error conectando con el modelo: ' + e.message });
-        renderMessages();
-    }
-}
-
 function buildSystemPrompt() {
-    const session = state.sessions.find(s => s.id === state.activeSessionId);
-    const filesContext = state.currentFiles.length > 0 
-        ? "Archivos en el proyecto:\n" + state.currentFiles.map(f => `- ${f.name}`).join('\n')
-        : "No hay archivos en esta carpeta.";
-
-    return `Eres un subagente de codificación profesional. 
-TU DIRECTORIO DE TRABAJO ACTUAL ES: ${session.folder}
-SOLO ESCRIBE ARCHIVOS DENTRO DE ESTE DIRECTORIO.
-
-${filesContext}
-
-Si deseas modificar o crear un archivo, utiliza el formato EXACTO:
-[WRITE:nombre_archivo]
-contenido completo del archivo
-[/WRITE]
-
-No des explicaciones largas, simplemente realiza la tarea.`;
+    const p = getActiveProject();
+    return `Eres un subagente profesional. Carpeta: ${p.folder}\nArchivos:\n${p.currentFiles.map(f => `- ${f.name}`).join('\n')}\nUtiliza [WRITE:archivo]contenido[/WRITE] para cambios.`;
 }
 
-async function processAgentActions(text) {
+async function processAgentActions(text, project, chat) {
     const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
     let match;
-    const session = state.sessions.find(s => s.id === state.activeSessionId);
-
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
         const content = match[2];
-        
-        // Construct full path properly
-        const filePath = session.folder.endsWith('/') || session.folder.endsWith('\\') 
-            ? session.folder + fileName 
-            : session.folder + '/' + fileName;
-
+        const filePath = pathJoin(project.folder, fileName);
         try {
-            const res = await fetch(`${API_BASE}/files/write`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filePath, content })
-            });
-            const result = await res.json();
-            
-            // Add a small notification or message in chat
-            session.messages.push({ 
-                role: 'agent', 
-                content: `✅ Archivo guardado: \`${fileName}\` en \`${result.savedAt}\`` 
-            });
-            
-            await scanFolder(session.folder); // Refresh file list
-        } catch (e) {
-            console.error('Error al escribir archivo:', e);
-            session.messages.push({ role: 'agent', content: `❌ Error al guardar ${fileName}: ${e.message}` });
-        }
+            await fetch(`${API_BASE}/files/write`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath, content }) });
+            chat.messages.push({ role: 'agent', content: `✅ Guardado: ${fileName}` });
+            const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === filePath.replace(/\\/g, '/'));
+            if (openFile) { openFile.content = content; if (project.activeTabId === openFile.path.replace(/\\/g, '/')) updateViewVisibility(); }
+            scanFolder(project.folder);
+        } catch (e) {}
     }
+}
+
+function pathJoin(dir, file) {
+    return dir.endsWith('/') || dir.endsWith('\\') ? dir + file : dir + '/' + file;
 }
 
 window.goUp = () => {
-    const current = folderPathInput.value;
-    const lastSlash = Math.max(current.lastIndexOf('/'), current.lastIndexOf('\\'));
-    if (lastSlash > 0) {
-        const parent = current.substring(0, lastSlash);
-        scanFolder(parent);
-    }
+    const cur = folderPathInput.value;
+    const last = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'));
+    if (last > 0) scanFolder(cur.substring(0, last));
 };
 
-window.scanFolder = (path) => scanFolder(path);
+window.openFile = async (path) => {
+    const p = getActiveProject();
+    const san = path.replace(/\\/g, '/');
+    const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
+    if (existing) { p.activeTabId = san; renderTabs(); return; }
+    try {
+        const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
+        const data = await res.json();
+        p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
+        p.activeTabId = san;
+        renderTabs();
+        saveData();
+    } catch (e) {}
+};
+
+async function nativePickFolder() {
+    scanFolderBtn.innerHTML = '⏳';
+    try {
+        const res = await fetch(`${API_BASE}/utils/pick-folder`);
+        const data = await res.json();
+        if (data.path) { folderPathInput.value = data.path; scanFolder(data.path); }
+    } catch (e) {}
+    finally { scanFolderBtn.innerHTML = '📁'; }
+}
 
 function setupEventListeners() {
     sendBtn.onclick = sendMessage;
-    chatInput.onkeydown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    };
-    scanFolderBtn.onclick = () => scanFolder();
-    
-    newChatBtn.onclick = () => {
-        const id = state.sessions.length + 1;
-        state.sessions.push({
-            id,
-            name: `Proyecto ${id}`,
-            messages: [],
-            folder: ''
-        });
-        switchSession(id);
-    };
+    chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+    scanFolderBtn.onclick = nativePickFolder;
+    refreshFolderBtn.onclick = () => scanFolder();
+    newChatBtn.onclick = createNewProject;
 }
-
-// Global for inline clicks
-window.openFile = async (path) => {
-    try {
-        const res = await fetch(`${API_BASE}/files/read`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filePath: path })
-        });
-        const data = await res.json();
-        alert(`Contenido de ${path}:\n\n${data.content.substring(0, 500)}...`);
-    } catch (e) {
-        alert('Error al leer archivo');
-    }
-};
 
 init();

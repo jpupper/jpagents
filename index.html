@@ -21,7 +21,7 @@
         </div>
         <div class="sidebar-footer">
           <div class="status-indicator">
-            <span class="dot"></span> Ollama Live
+            <span class="dot live"></span> Ollama Live
           </div>
         </div>
       </aside>
@@ -37,25 +37,45 @@
           <div class="config-group folder-selector">
             <label>Carpeta:</label>
             <input type="text" id="folder-path" placeholder="C:/Ruta/Al/Proyecto" />
-            <button id="scan-folder" class="btn-icon" title="Cargar archivos">📁</button>
+            <div class="folder-actions">
+              <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
+              <button id="refresh-folder" class="btn-icon" title="Escanear Contenido">🔄</button>
+            </div>
           </div>
         </header>
 
-        <section id="chat-window" class="chat-window">
-          <div id="chat-messages" class="chat-messages">
-            <div class="welcome-screen">
-              <h2>¿Qué vamos a construir hoy?</h2>
-              <p>Selecciona un modelo y una carpeta para empezar a trabajar con tus subagentes.</p>
+        <section id="main-view" class="main-view">
+          <nav class="tabs-nav" id="tabs-nav">
+            <div class="tab active" data-tab="chat">Chat</div>
+          </nav>
+
+          <div id="chat-tab-content" class="tab-content">
+            <div id="chat-messages" class="chat-messages">
+              <div class="welcome-screen">
+                <h2>¿Qué vamos a construir hoy?</h2>
+                <p>Selecciona un modelo y una carpeta para empezar a trabajar con tus subagentes.</p>
+              </div>
+            </div>
+            
+            <div id="agent-status" class="agent-thinking-bar hidden">
+              <span class="spinner"></span> El agente está pensando...
+            </div>
+            
+            <div class="input-area">
+              <div class="input-wrapper">
+                <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="1"></textarea>
+                <button id="send-btn" class="send-btn">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+              </div>
             </div>
           </div>
-          
-          <div class="input-area">
-            <div class="input-wrapper">
-              <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="1"></textarea>
-              <button id="send-btn" class="send-btn">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-              </button>
+
+          <div id="editor-tab-content" class="tab-content hidden">
+            <div class="editor-header">
+              <h3 id="current-filename">Archivo.js</h3>
             </div>
+            <pre><code id="editor-code"></code></pre>
           </div>
         </section>
       </main>

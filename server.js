@@ -3,7 +3,10 @@ import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
+const execAsync = promisify(exec);
 const app = express();
 const port = 3001;
 
@@ -11,8 +14,49 @@ app.use(cors());
 app.use(express.json());
 
 const OLLAMA_URL = 'http://localhost:11434';
+const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
 
-// List Ollama models
+// Persistence Helpers
+async function loadSessions() {
+    try {
+        const data = await fs.readFile(SESSIONS_FILE, 'utf-8');
+        return JSON.parse(data);
+    } catch (e) {
+        return [];
+    }
+}
+
+async function saveSessions(sessions) {
+    await fs.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
+}
+
+// Routes
+app.get('/api/sessions', async (req, res) => {
+    const sessions = await loadSessions();
+    res.json(sessions);
+});
+
+app.post('/api/sessions/save', async (req, res) => {
+    await saveSessions(req.body);
+    res.json({ success: true });
+});
+
+// Native Folder Picker using PowerShell
+app.get('/api/utils/pick-folder', async (req, res) => {
+    console.log('[SERVER] Solicitando selector de carpetas (FORCED FRONT)...');
+    
+    // Comando que fuerza la ventana al frente mediante un objeto de formulario TopMost
+    const psCommand = `powershell -NoProfile -ExecutionPolicy Bypass -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; $b = New-Object System.Windows.Forms.FolderBrowserDialog; $b.Description = 'Selecciona tu carpeta'; if($b.ShowDialog($f) -eq 'OK'){ $b.SelectedPath }"`;
+    
+    try {
+        const { stdout } = await execAsync(psCommand, { timeout: 60000 }); // 60 seg timeout
+        const pickedPath = stdout.trim();
+        res.json({ path: pickedPath });
+    } catch (e) {
+        res.status(500).json({ error: 'Timeout o error en selector' });
+    }
+});
+
 app.get('/api/models', async (req, res) => {
     try {
         const response = await fetch(`${OLLAMA_URL}/api/tags`);
@@ -23,10 +67,10 @@ app.get('/api/models', async (req, res) => {
     }
 });
 
-// List files in a directory
 app.post('/api/files/list', async (req, res) => {
     let { folderPath } = req.body;
     if (!folderPath) folderPath = process.cwd();
+    folderPath = path.resolve(folderPath);
     
     try {
         const files = await fs.readdir(folderPath, { withFileTypes: true });
@@ -41,7 +85,6 @@ app.post('/api/files/list', async (req, res) => {
     }
 });
 
-// Read file content
 app.post('/api/files/read', async (req, res) => {
     const { filePath } = req.body;
     try {
@@ -52,7 +95,6 @@ app.post('/api/files/read', async (req, res) => {
     }
 });
 
-// Write file content
 app.post('/api/files/write', async (req, res) => {
     const { filePath, content } = req.body;
     try {
