@@ -676,33 +676,35 @@ function renderFileList() {
 
 function buildSystemPrompt() {
     const p = getActiveProject();
-    return `Eres un subagente profesional. Carpeta: ${p.folder}
-Archivos actuales:
+    return `Eres un subagente profesional experto en codificación. Carpeta de trabajo: ${p.folder}
+Archivos actuales en el directorio:
 ${p.currentFiles.map(f => "- " + f.name).join('\n')}
 
-Si quieres modificar un archivo pero NO conoces su contenido, DEBES leerlo primero usando:
+INSTRUCCIONES DE OPERACIÓN:
+
+1. LECTURA DE ARCHIVOS: Si necesitas modificar un archivo pero NO conoces su contenido exacto, DEBES leerlo primero usando:
 [READ:nombre_del_archivo]
 
-Para modificar archivos de forma SEGURA, usa este formato (solo después de haber leído el archivo):
+2. MODIFICACIÓN DE ARCHIVOS (REPLACE): Para realizar cambios parciales, usa el siguiente formato EXACTO:
 [REPLACE:nombre_del_archivo]
 <<<<< SEARCH
-(el código exacto que quieres cambiar)
+(el fragmento de código exacto que deseas cambiar, incluyendo espacios y sangrías)
 =====
-(el nuevo código)
+(el nuevo código que reemplazará al fragmento anterior)
 >>>>>
 [/REPLACE]
 
-Si quieres crear un archivo NUEVO desde cero, usa:
+3. CREACIÓN/SOBREESCRITURA TOTAL (WRITE): Para crear archivos nuevos o reemplazar el contenido completo, usa:
 [WRITE:nombre_del_archivo]
-(contenido completo)
+(contenido completo del archivo)
 [/WRITE]
 
-REGLAS CRÍTICAS:
-1. Sé autónomo: Si te piden un cambio y no ves el código, usa [READ] inmediatamente. No pidas al usuario que te pase el código.
-2. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original. Si el archivo es grande, usa bloques SEARCH pequeños.
-3. Si vas a reemplazar TODO el archivo, es mejor usar [WRITE] en lugar de [REPLACE].
-4. Puedes realizar múltiples acciones (leer varios archivos, o leer y escribir) en una sola respuesta.
-5. Si una modificación falla, intenta leer el archivo de nuevo para verificar el contenido exacto.`;
+REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
+- Sé 100% autónomo. Si el usuario te pide un cambio y no tienes el contenido del archivo, usa [READ] de inmediato. No preguntes.
+- El bloque SEARCH debe ser UNA COPIA EXACTA, carácter por carácter, del texto en el archivo original. Si hay un solo espacio de diferencia, el cambio FALLARÁ.
+- Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas, sin texto adicional antes o después.
+- Puedes realizar varias acciones en una sola respuesta (ej: leer un archivo y escribir en otro).
+- Si una operación falla, usa [READ] para obtener la versión más reciente del archivo y verifica qué falló en tu bloque SEARCH.`;
 }
 
 async function processAgentActions(text, project, chat) {
@@ -774,7 +776,7 @@ async function processAgentActions(text, project, chat) {
         let failCount = 0;
         let blocksFound = 0;
 
-        const searchReplaceRegex = /<<<<<\s*SEARCH\s*\r?\n?([\s\S]*?)=====\s*\r?\n?([\s\S]*?)>>>>>/g;
+        const searchReplaceRegex = /<<<<<[ \t]*SEARCH[ \t]*\r?\n?([\s\S]*?)=====[ \t]*\r?\n?([\s\S]*?)>>>>>/g;
         let srMatch;
 
         while ((srMatch = searchReplaceRegex.exec(blockContent)) !== null) {
@@ -814,9 +816,9 @@ async function processAgentActions(text, project, chat) {
         }
 
         if (blocksFound === 0) {
-            const err = `- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato.`;
+            const err = `- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato solicitado.`;
             errors.push(err);
-            logs.push({ type: 'error', message: `Mal formato en REPLACE: **${fileName}**` });
+            logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**` });
         } else if (successCount > 0) {
             await performWrite(fileName, updatedContent, project, chat);
         } 
@@ -830,11 +832,19 @@ async function processAgentActions(text, project, chat) {
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
     if (retryCount >= 3) {
-        chat.messages.push({ role: 'agent', content: `⚠️ Se alcanzó el límite de auto-corrección (3 intentos). Por favor, intenta guiar al agente manualmente o revisa el error.` });
+        chat.messages.push({ role: 'agent', content: `⚠️ **Límite de auto-corrección alcanzado (3 intentos).** El agente no pudo resolver el error automáticamente. Por favor, revisa el código o guía al agente manualmente.` });
         updateThinking(chat, false);
         return;
     }
-    updateThinking(chat, true, "Auto-corrigiendo", `Intento ${retryCount + 1}/3`);
+    
+    // Feedback directo en el chat como pidió el usuario
+    const retryMsg = { 
+        role: 'agent', 
+        content: `🔄 **Auto-corrección: Intento ${retryCount + 1} de 3**...\nEl agente está analizando los errores y re-intentando la operación con un formato corregido.` 
+    };
+    chat.messages.push(retryMsg);
+
+    updateThinking(chat, true, "Auto-corrigiendo", "Corrigiendo formato y re-intentando...");
     renderMessages();
 
     const systemMsg = { role: 'system', content: buildSystemPrompt() };
