@@ -44,8 +44,7 @@ const diffStats = document.getElementById('diff-stats');
 const pendingActions = document.getElementById('pending-actions');
 const acceptBtn = document.getElementById('accept-change');
 const rejectBtn = document.getElementById('reject-change');
-const modeAutoBtn = document.getElementById('mode-auto');
-const modeSupervisedBtn = document.getElementById('mode-supervised');
+const modeSwitchToggle = document.getElementById('mode-switch-toggle');
 const dashboardTabContent = document.getElementById('dashboard-tab-content');
 const dashboardProjectName = document.getElementById('dashboard-project-name');
 const dashboardProjectPath = document.getElementById('dashboard-project-path');
@@ -173,8 +172,13 @@ async function fetchModels() {
 function checkVisionCapability() {
     const selected = modelSelect.options[modelSelect.selectedIndex];
     const isVision = selected && selected.dataset.vision === 'true';
-    attachImgBtn.classList.toggle('hidden', !isVision);
-    if (!isVision) clearImages();
+    // We keep it visible as requested, but maybe style it differently
+    attachImgBtn.classList.remove('hidden');
+    if (!isVision) {
+        attachImgBtn.title = "Adjuntar imagen (El modelo actual podría no soportar visión)";
+    } else {
+        attachImgBtn.title = "Adjuntar imagen (Modelo Vision detectado)";
+    }
 }
 
 function renderProjectList() {
@@ -1083,21 +1087,28 @@ function setupEventListeners() {
     // Image Attachment
     attachImgBtn.onclick = () => imageInput.click();
     imageInput.onchange = handleImageSelection;
+    chatInput.onpaste = (e) => {
+        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        for (const item of items) {
+            if (item.type.indexOf('image') === 0) {
+                const blob = item.getAsFile();
+                addImages([blob]);
+            }
+        }
+    };
 
     // We need to use event delegation or re-bind because buttons moved
     // Actually, since they are global constants but moved in HTML, it works
     // but the IDs mode-auto and mode-supervised are still unique.
     
-    document.addEventListener('click', (e) => {
-        if (e.target.id === 'mode-auto') {
-            const chat = getActiveChat();
-            if (chat) { chat.mode = 'auto'; syncModeUI('auto'); saveData(); }
-        }
-        if (e.target.id === 'mode-supervised') {
-            const chat = getActiveChat();
-            if (chat) { chat.mode = 'supervised'; syncModeUI('supervised'); saveData(); }
-        }
-    });
+    modeSwitchToggle.onclick = () => {
+        const chat = getActiveChat();
+        if (!chat) return;
+        
+        chat.mode = chat.mode === 'auto' ? 'supervised' : 'auto';
+        syncModeUI(chat.mode);
+        saveData();
+    };
 
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
@@ -1105,13 +1116,21 @@ function setupEventListeners() {
 
 async function handleImageSelection(e) {
     const files = Array.from(e.target.files);
-    for (const file of files) {
-        const base64 = await toBase64(file);
-        const cleanBase64 = base64.split(',')[1];
-        currentAttachedImages.push(cleanBase64);
-        renderImagePreviews();
-    }
+    await addImages(files);
     imageInput.value = '';
+}
+
+async function addImages(files) {
+    for (const file of files) {
+        try {
+            const base64 = await toBase64(file);
+            const cleanBase64 = base64.split(',')[1];
+            currentAttachedImages.push(cleanBase64);
+        } catch (err) {
+            console.error("Error processing image:", err);
+        }
+    }
+    renderImagePreviews();
 }
 
 function toBase64(file) {
@@ -1144,12 +1163,16 @@ function clearImages() {
 }
 
 function syncModeUI(mode) {
+    if (!modeSwitchToggle) return;
+    
     if (mode === 'auto') {
-        modeAutoBtn.classList.add('active');
-        modeSupervisedBtn.classList.remove('active');
+        modeSwitchToggle.classList.add('auto');
+        modeSwitchToggle.classList.remove('supervised');
+        modeSwitchToggle.querySelector('.mode-icon-manual').textContent = '🤖';
     } else {
-        modeSupervisedBtn.classList.add('active');
-        modeAutoBtn.classList.remove('active');
+        modeSwitchToggle.classList.add('supervised');
+        modeSwitchToggle.classList.remove('auto');
+        modeSwitchToggle.querySelector('.mode-icon-manual').textContent = '👤';
     }
 }
 

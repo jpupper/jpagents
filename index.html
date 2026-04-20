@@ -42,8 +42,10 @@
           </div>
           <div class="config-group folder-selector">
             <label>Directorio:</label>
-            <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
-            <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
+            <div class="input-group">
+              <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
+              <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
+            </div>
           </div>
         </header>
 
@@ -93,15 +95,15 @@
               <div id="image-preview-container" class="image-preview-container hidden"></div>
               <div class="input-wrapper">
                 <div class="input-actions-left">
-                  <button id="attach-img" class="btn-icon-subtle hidden" title="Adjuntar imagen (Modelos Vision)">📷</button>
+                  <button id="attach-img" class="btn-icon-subtle" title="Adjuntar imagen">📷</button>
                   <input type="file" id="image-input" accept="image/*" class="hidden" />
                 </div>
                 <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="2"></textarea>
-                <div class="input-actions-right">
-                  <div class="config-group mode-selector-mini">
-                    <div class="toggle-group">
-                      <button id="mode-auto" class="btn-toggle active">Auto</button>
-                      <button id="mode-supervised" class="btn-toggle">Supervised</button>
+                  <div class="mode-switch-container">
+                    <div id="mode-switch-toggle" class="mode-switch auto" title="Alternar Modo: Auto / Supervisado">
+                      <div class="mode-switch-handle">
+                        <span class="mode-icon-manual">🤖</span>
+                      </div>
                     </div>
                   </div>
                   <button id="send-btn" class="send-btn">
@@ -110,7 +112,6 @@
                 </div>
               </div>
             </div>
-          </div>
 
           <!-- Editor View -->
           <div id="editor-tab-content" class="tab-content hidden">

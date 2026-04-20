@@ -136,7 +136,20 @@ select:hover, input[type="text"]:focus {
   box-shadow: 0 0 0 2px rgba(124, 77, 255, 0.2);
 }
 
-==
+.config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.config-group label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .folder-selector {
   flex: 1;
   max-width: 500px;
@@ -333,34 +346,98 @@ textarea {
   gap: 0.8rem;
 }
 
+.mode-switch-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mode-switch {
+    position: relative;
+    width: 64px;
+    height: 32px;
+    background: #000;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    padding: 2px;
+}
+
+.mode-switch::before {
+    content: 'AUTO';
+    position: absolute;
+    right: 8px;
+    font-size: 8px;
+    font-weight: 800;
+    color: var(--text-secondary);
+    transition: all 0.3s;
+    opacity: 0.7;
+}
+
+.mode-switch.supervised::before {
+    content: 'SUPV';
+    left: 8px;
+    right: auto;
+}
+
+.mode-switch-handle {
+    width: 26px;
+    height: 26px;
+    background: var(--accent-gradient);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 8px rgba(124, 77, 255, 0.4);
+    z-index: 2;
+}
+
+.mode-switch.supervised .mode-switch-handle {
+    transform: translateX(32px);
+    background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%);
+    box-shadow: 0 2px 8px rgba(244, 67, 54, 0.4);
+}
+
+.mode-icon-manual {
+    font-size: 14px;
+    pointer-events: none;
+}
+
 .btn-icon-subtle {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  width: 36px;
-  height: 36px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.1rem;
-  transition: all 0.2s;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    transition: all 0.2s;
+    flex-shrink: 0;
 }
 
 .btn-icon-subtle:hover {
-  background: rgba(124, 77, 255, 0.1);
-  border-color: var(--accent-color);
+    background: rgba(124, 77, 255, 0.1);
+    border-color: var(--accent-color);
+    transform: translateY(-2px);
 }
 
-.mode-selector-mini .toggle-group {
-    background: #000;
-    padding: 3px;
-    border-radius: 10px;
+.btn-icon-subtle#attach-img {
+    color: var(--text-secondary);
 }
 
-.mode-selector-mini .btn-toggle {
-    padding: 4px 10px;
-    font-size: 0.75rem;
+.btn-icon-subtle#attach-img:hover {
+    color: white;
+}
+
+.mode-selector-mini {
+    display: none; /* Removed the old one */
 }
 
 .image-preview-container {
@@ -421,6 +498,75 @@ textarea {
   padding: 1.5rem;
   overflow-y: auto;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-explorer h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 1.5rem;
+}
+
+.file-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.file-item {
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+
+.file-item:hover {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.file-item.directory {
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+.file-item.file {
+  color: var(--text-primary);
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: 2rem;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.file-action-link {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    padding: 0.8rem 1rem;
+    border-radius: 12px;
+    margin: 1rem 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.9rem;
 }
 
 #editor-tab-content {
