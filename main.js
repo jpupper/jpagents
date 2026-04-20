@@ -573,6 +573,8 @@ async function sendMessage() {
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
         
+        let logsHtml = formatLogs(actionResult.logs);
+        
         // Clean display text: replace code blocks with clickable links
         let displayContent = assistantResponse
             .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
@@ -587,7 +589,7 @@ async function sendMessage() {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
-        chat.messages.push({ role: 'agent', content: displayContent });
+        chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
         if (actionResult.reads && actionResult.reads.length > 0) {
             // Add read content to history and auto-continue
@@ -706,12 +708,14 @@ REGLAS CRÍTICAS:
 async function processAgentActions(text, project, chat) {
     const errors = [];
     const reads = [];
+    const logs = [];
 
     // 0. Handle Reads
     const readRegex = /\[READ:(.*?)\]/g;
     let match;
     while ((match = readRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
+        logs.push({ type: 'info', message: `Solicitud de lectura: **${fileName}**` });
         updateThinking(chat, true, "Leyendo archivo", fileName);
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
@@ -720,11 +724,14 @@ async function processAgentActions(text, project, chat) {
             const data = await res.json();
             if (data.content) {
                 reads.push({ fileName, content: data.content });
+                logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}**` });
             } else {
                 errors.push(`- El archivo ${fileName} parece estar vacío o no existe.`);
+                logs.push({ type: 'error', message: `Archivo vacío o inexistente: **${fileName}**` });
             }
         } catch(e) {
             errors.push(`- Error al leer ${fileName}: ${e.message}`);
+            logs.push({ type: 'error', message: `Fallo al leer **${fileName}**: ${e.message}` });
         }
     }
 
@@ -733,14 +740,17 @@ async function processAgentActions(text, project, chat) {
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
         const content = match[2];
+        logs.push({ type: 'info', message: `Escritura completa (WRITE): **${fileName}**` });
         updateThinking(chat, true, "Escribiendo archivo", fileName);
         await performWrite(fileName, content, project, chat);
+        logs.push({ type: 'success', message: `Escritura enviada para **${fileName}**` });
     }
 
     // 2. Handle Partial Replacement (SEARCH/REPLACE)
     const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
     while ((match = replaceRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
+        logs.push({ type: 'info', message: `Modificación parcial (REPLACE): **${fileName}**` });
         updateThinking(chat, true, "Modificando archivo", fileName);
         const blockContent = match[2];
         
@@ -755,6 +765,7 @@ async function processAgentActions(text, project, chat) {
             currentFileContent = data.content;
         } catch(e) {
             errors.push(`- No se pudo leer el archivo ${fileName} para aplicar el reemplazo.`);
+            logs.push({ type: 'error', message: `No se pudo leer para reemplazo: **${fileName}**` });
             continue;
         }
 
@@ -777,39 +788,44 @@ async function processAgentActions(text, project, chat) {
             const normSearch = normalize(searchText);
 
             if (normContent.includes(normSearch)) {
-                // For the actual replacement, we try to use the original search text if possible to preserve exact original formatting
                 if (updatedContent.includes(searchText)) {
                     updatedContent = updatedContent.replace(searchText, replaceText);
                 } else {
-                    // If exact match failed but normalized succeeded, replace the normalized version
-                    // Note: This might change line endings to \n in the modified area, which is usually fine
                     updatedContent = normContent.replace(normSearch, normalize(replaceText));
                 }
                 successCount++;
+                logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} encontrado y reemplazado en **${fileName}**` });
             } else {
-                // Try a trimmed version as fallback if exact match fails
                 const trimmedSearch = searchText.trim();
                 const normTrimmedSearch = normalize(trimmedSearch);
                 if (normTrimmedSearch && normContent.includes(normTrimmedSearch)) {
                     updatedContent = normContent.replace(normTrimmedSearch, normalize(replaceText.trim()));
                     successCount++;
+                    logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} (con trim) reemplazado en **${fileName}**` });
                 } else {
                     failCount++;
+                    logs.push({ 
+                        type: 'error', 
+                        message: `Bloque SEARCH ${blocksFound} NOT FOUND en **${fileName}**`,
+                        details: searchText
+                    });
                 }
             }
         }
 
         if (blocksFound === 0) {
-            errors.push(`- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato.`);
+            const err = `- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato.`;
+            errors.push(err);
+            logs.push({ type: 'error', message: `Mal formato en REPLACE: **${fileName}**` });
         } else if (successCount > 0) {
             await performWrite(fileName, updatedContent, project, chat);
         } 
         
         if (failCount > 0) {
-            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} de ${blocksFound} bloques fallaron). Asegúrate de haber leído el archivo recientemente y de copiar el texto EXACTO, incluyendo espacios e indentación.`);
+            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} de ${blocksFound} bloques fallaron).`);
         }
     }
-    return { errors, reads };
+    return { errors, reads, logs };
 }
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
@@ -847,6 +863,8 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
 
+        let logsHtml = formatLogs(actionResult.logs);
+
         // Clean display text
         const displayContent = assistantResponse
             .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
@@ -861,14 +879,15 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
-        chat.messages.push({ role: 'agent', content: displayContent });
+        chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
         if (actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
             chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones.` });
             await autoRetry("Continuando tras lectura...", project, chat, retryCount + 1);
         } else if (actionResult.errors.length > 0) {
-            chat.messages.push({ role: 'agent', content: `❌ El intento de auto-corrección falló:\n${actionResult.errors.join('\n')}` });
+            const retryHeader = retryCount === 0 ? "❌ El intento falló:" : `❌ Re-intento ${retryCount} falló:`;
+            chat.messages.push({ role: 'agent', content: `${retryHeader}\n${actionResult.errors.join('\n')}` });
             await autoRetry("Re-intentando tras error...", project, chat, retryCount + 1);
         }
         
@@ -1112,6 +1131,26 @@ function syncModeUI(mode) {
         modeSupervisedBtn.classList.add('active');
         modeAutoBtn.classList.remove('active');
     }
+}
+
+function formatLogs(logs) {
+    if (!logs || logs.length === 0) return '';
+    
+    let html = '<details class="execution-log"><summary>Pasos de ejecución del Agente</summary><div class="log-steps">';
+    
+    logs.forEach(log => {
+        let icon = 'ℹ️';
+        if (log.type === 'success') icon = '✅';
+        if (log.type === 'error') icon = '❌';
+        
+        html += `<div class="log-step ${log.type}"><span>${icon}</span> <span>${log.message}</span></div>`;
+        if (log.details) {
+            html += `<div class="failed-search">Intento de búsqueda fallido:\n${escapeHtml(log.details)}</div>`;
+        }
+    });
+    
+    html += '</div></details>';
+    return html;
 }
 
 init();
