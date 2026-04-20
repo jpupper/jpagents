@@ -565,28 +565,34 @@ pre code.hljs {
   color: var(--accent-color);
 }
 .hidden { display: none !important; }
-.agent-thinking-bar {
-    position: absolute;
-    bottom: 120px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(26, 26, 30, 0.95);
-    backdrop-filter: blur(10px);
-    border: 1px solid var(--accent-color);
-    padding: 0.8rem 1.5rem;
-    border-radius: 50px;
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 15px rgba(124, 77, 255, 0.2);
-    z-index: 100;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    animation: slideUp 0.4s ease-out;
+.message.agent.thinking {
+    background: var(--card-bg);
+    border: 1px dashed var(--accent-color) !important;
+    max-width: 300px;
 }
 
-@keyframes slideUp {
-    from { transform: translate(-50%, 20px); opacity: 0; }
-    to { transform: translate(-50%, 0); opacity: 1; }
+.thinking-bubble-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.thinking-text-wrapper {
+    display: flex;
+    flex-direction: column;
+}
+
+.thinking-status {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: white;
+}
+
+.thinking-subtext {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .spinner-container {
@@ -605,25 +611,7 @@ pre code.hljs {
     display: block;
 }
 
-.thinking-text-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
 
-#thinking-status {
-    color: white;
-    font-size: 0.9rem;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.thinking-subtext {
-    color: var(--text-secondary);
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .chat-item-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; } .btn-delete { background: none; border: none; cursor: pointer; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; padding: 4px; border-radius: 4px; } .chat-item:hover .btn-delete { opacity: 0.6; } .btn-delete:hover { opacity: 1 !important; background: rgba(255,82,82,0.2); }

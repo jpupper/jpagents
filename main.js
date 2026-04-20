@@ -34,7 +34,7 @@ const folderPathInput = document.getElementById('folder-path');
 const scanFolderBtn = document.getElementById('scan-folder');
 const fileList = document.getElementById('file-list');
 const newChatBtn = document.getElementById('new-chat');
-const agentStatus = document.getElementById('agent-status');
+
 const tabsNav = document.getElementById('tabs-nav');
 const chatTabContent = document.getElementById('chat-tab-content');
 const editorTabContent = document.getElementById('editor-tab-content');
@@ -477,11 +477,21 @@ function renderMessages(shouldRenderLayout = true) {
     const chat = getActiveChat();
     if (!chat) return;
     
-    agentStatus.classList.toggle('hidden', !chat.isThinking);
+    let thinkingHtml = '';
     if (chat.isThinking) {
-        document.getElementById('thinking-status').textContent = chat.thinkingStatus || "El agente está pensando...";
-        const subtext = agentStatus.querySelector('.thinking-subtext');
-        if (subtext) subtext.textContent = chat.thinkingSubtext || "Procesando...";
+        const status = chat.thinkingStatus || "El agente está pensando...";
+        const subtext = chat.thinkingSubtext || "Procesando...";
+        thinkingHtml = `
+            <div class="message agent thinking">
+                <div class="thinking-bubble-content">
+                    <div class="spinner"></div>
+                    <div class="thinking-text-wrapper">
+                        <div class="thinking-status">${status}</div>
+                        <div class="thinking-subtext">${subtext}</div>
+                    </div>
+                </div>
+            </div>
+        `;
     }
     
     if (shouldRenderLayout) {
@@ -500,7 +510,7 @@ function renderMessages(shouldRenderLayout = true) {
             imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
         }
         return `<div class="message ${m.role}">${imageHtml}${formatMarkdown(m.content)}</div>`;
-    }).join('');
+    }).join('') + thinkingHtml;
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
 }
 
