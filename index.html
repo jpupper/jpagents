@@ -8,6 +8,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Highlight.js for Syntax Highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- jsdiff for Diffing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.2.0/diff.min.js"></script>
   </head>
   <body>
     <div id="app">
@@ -35,8 +40,8 @@
             </select>
           </div>
           <div class="config-group folder-selector">
-            <label>Carpeta:</label>
-            <input type="text" id="folder-path" placeholder="C:/Ruta/Al/Proyecto" />
+            <label>Directorio:</label>
+            <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
             <div class="folder-actions">
               <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
               <button id="refresh-folder" class="btn-icon" title="Escanear Contenido">🔄</button>
@@ -44,17 +49,44 @@
           </div>
         </header>
 
+
         <section id="main-view" class="main-view">
           <nav class="tabs-nav" id="tabs-nav">
             <div class="tab active" data-tab="chat">Chat</div>
           </nav>
 
-          <div id="chat-tab-content" class="tab-content">
-            <div id="chat-messages" class="chat-messages">
-              <div class="welcome-screen">
-                <h2>¿Qué vamos a construir hoy?</h2>
-                <p>Selecciona un modelo y una carpeta para empezar a trabajar con tus subagentes.</p>
+          <!-- Dashboard View (No tab active) -->
+          <div id="dashboard-tab-content" class="tab-content dashboard-view hidden">
+            <div class="welcome-screen">
+              <div class="dashboard-header">
+                <h2 id="dashboard-project-name">Proyecto</h2>
+                <p id="dashboard-project-path">Sin carpeta seleccionada</p>
               </div>
+              <div class="dashboard-actions">
+                <button onclick="window.addChat()" class="btn-primary" style="width: auto; padding-inline: 2rem;">➕ Agregar Nuevo Agente</button>
+                <div style="margin: 1rem 0;">o</div>
+                <button onclick="document.getElementById('scan-folder').click()" class="btn-primary" style="width: auto; padding-inline: 2rem; background: var(--card-bg); border: 1px solid var(--border-color);">📁 Seleccionar Carpeta</button>
+              </div>
+              <div class="dashboard-info">
+                <h3>Resumen del Proyecto</h3>
+                <div class="stats-grid">
+                  <div class="stat-card">
+                    <span class="stat-value" id="stat-chats">0</span>
+                    <span class="stat-label">Agentes</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-value" id="stat-files">0</span>
+                    <span class="stat-label">Archivos Abiertos</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chat View -->
+          <div id="chat-tab-content" class="tab-content hidden">
+            <div id="chat-messages" class="chat-messages">
+              <!-- Messages appear here -->
             </div>
             
             <div id="agent-status" class="agent-thinking-bar hidden">
@@ -62,22 +94,54 @@
             </div>
             
             <div class="input-area">
+              <div id="image-preview-container" class="image-preview-container hidden"></div>
               <div class="input-wrapper">
-                <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="1"></textarea>
-                <button id="send-btn" class="send-btn">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-                </button>
+                <div class="input-actions-left">
+                  <button id="attach-img" class="btn-icon-subtle hidden" title="Adjuntar imagen (Modelos Vision)">📷</button>
+                  <input type="file" id="image-input" accept="image/*" class="hidden" />
+                </div>
+                <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="2"></textarea>
+                <div class="input-actions-right">
+                  <div class="config-group mode-selector-mini">
+                    <div class="toggle-group">
+                      <button id="mode-auto" class="btn-toggle active">Auto</button>
+                      <button id="mode-supervised" class="btn-toggle">Supervised</button>
+                    </div>
+                  </div>
+                  <button id="send-btn" class="send-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
+          <!-- Editor View -->
           <div id="editor-tab-content" class="tab-content hidden">
             <div class="editor-header">
               <h3 id="current-filename">Archivo.js</h3>
+              <div id="pending-actions" class="pending-actions hidden">
+                <span class="pending-label">Cambios Propuestos</span>
+                <button id="accept-change" class="btn-success">Aceptar ✓</button>
+                <button id="reject-change" class="btn-danger">Rechazar ✕</button>
+              </div>
             </div>
-            <pre><code id="editor-code"></code></pre>
+            <div class="editor-container">
+              <pre><code id="editor-code"></code></pre>
+            </div>
+            <div id="editor-footer" class="editor-footer">
+              <div id="diff-stats" class="diff-stats hidden">
+                <span class="diff-added">+ 0 agregadas</span>
+                <span class="diff-removed">- 0 eliminadas</span>
+              </div>
+              <div class="editor-info">
+                <span id="editor-lang">plaintext</span>
+              </div>
+            </div>
           </div>
         </section>
+
+
       </main>
 
       <aside class="file-explorer">

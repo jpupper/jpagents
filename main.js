@@ -4,7 +4,9 @@ import { marked } from 'marked'
 // Configure marked
 marked.setOptions({
     breaks: true,
-    gfm: true
+    gfm: true,
+    mangle: false,
+    headerIds: false
 });
 
 
@@ -16,8 +18,11 @@ let state = {
     projects: [],
     activeProjectId: null,
     models: [],
-    selectedModel: ''
+    selectedModel: '',
+    mode: 'auto' // 'auto' or 'supervised'
 };
+
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
 
 // DOM Elements
 const chatList = document.getElementById('chat-list');
@@ -36,6 +41,23 @@ const chatTabContent = document.getElementById('chat-tab-content');
 const editorTabContent = document.getElementById('editor-tab-content');
 const editorCode = document.getElementById('editor-code');
 const currentFilename = document.getElementById('current-filename');
+const diffStats = document.getElementById('diff-stats');
+const pendingActions = document.getElementById('pending-actions');
+const acceptBtn = document.getElementById('accept-change');
+const rejectBtn = document.getElementById('reject-change');
+const modeAutoBtn = document.getElementById('mode-auto');
+const modeSupervisedBtn = document.getElementById('mode-supervised');
+const dashboardTabContent = document.getElementById('dashboard-tab-content');
+const dashboardProjectName = document.getElementById('dashboard-project-name');
+const dashboardProjectPath = document.getElementById('dashboard-project-path');
+const statChats = document.getElementById('stat-chats');
+const statFiles = document.getElementById('stat-files');
+
+// Vision Support
+const attachImgBtn = document.getElementById('attach-img');
+const imageInput = document.getElementById('image-input');
+const imagePreviewContainer = document.getElementById('image-preview-container');
+let currentAttachedImages = [];
 
 // Initialize
 async function init() {
@@ -67,12 +89,16 @@ async function loadData() {
 }
 
 function sanitizeProject(p) {
+    const id = p.id || generateId();
     return {
-        id: p.id || Date.now(),
+        id: id,
         name: p.name || 'Proyecto sin nombre',
         folder: p.folder || '',
-        chats: Array.isArray(p.chats) ? p.chats : [
-            { id: 'chat-' + Date.now(), name: 'Agente 1', messages: [], isThinking: false }
+        chats: Array.isArray(p.chats) ? p.chats.map(c => ({
+            ...c,
+            mode: c.mode || 'auto'
+        })) : [
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto' }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
@@ -91,13 +117,13 @@ async function saveData() {
 }
 
 function createNewProject() {
-    const id = Date.now();
+    const id = generateId(); // Fix: define id
     const newProject = {
         id,
         name: `Proyecto ${state.projects.length + 1}`,
         folder: '',
         chats: [
-            { id: 'chat-' + Date.now(), name: 'Agente 1', messages: [], isThinking: false }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto' }
         ],
         openFiles: [],
         activeTabId: null,
@@ -124,7 +150,10 @@ function getActiveProject() {
 function getActiveChat() {
     const p = getActiveProject();
     if (!p || !Array.isArray(p.chats)) return null;
-    return p.chats.find(c => c.id === p.activeTabId) || p.chats[0];
+    const chat = p.chats.find(c => c.id === p.activeTabId);
+    if (chat) return chat;
+    // If not a chat tab, return the first one as fallback for messaging context
+    return p.chats[0];
 }
 
 async function fetchModels() {
@@ -132,19 +161,36 @@ async function fetchModels() {
         const res = await fetch(`${API_BASE}/models`);
         const data = await res.json();
         state.models = data.models || [];
-        modelSelect.innerHTML = state.models.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
+        modelSelect.innerHTML = state.models.map(m => {
+            const isVision = m.details && m.details.families && m.details.families.includes('clip');
+            return `<option value="${m.name}" data-vision="${isVision}">${m.name} ${isVision ? '👁️' : ''}</option>`;
+        }).join('');
+        
+        // Initial vision check
+        checkVisionCapability();
     } catch (e) {}
 }
 
+function checkVisionCapability() {
+    const selected = modelSelect.options[modelSelect.selectedIndex];
+    const isVision = selected && selected.dataset.vision === 'true';
+    attachImgBtn.classList.toggle('hidden', !isVision);
+    if (!isVision) clearImages();
+}
+
 function renderProjectList() {
-    chatList.innerHTML = state.projects.map(p => `
-        <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" data-id="${p.id}">
-            <div class="chat-item-main">
-                <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
+    chatList.innerHTML = state.projects.map(p => {
+        const isThinking = p.chats && p.chats.some(c => c.isThinking);
+        return `
+            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" data-id="${p.id}">
+                <div class="chat-item-main">
+                    <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
+                    <div class="dot ${isThinking ? 'busy' : ''}"></div>
+                </div>
+                <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject(${p.id})">🗑️</button>
             </div>
-            <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject(${p.id})">🗑️</button>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 
     document.querySelectorAll('.chat-item').forEach(item => {
         item.onclick = (e) => {
@@ -168,21 +214,22 @@ function renderTabs() {
 
     let tabsHtml = '';
     
-    // Chats Tabs
+    // 1. New Chat Button first (A la izquierda total)
+    tabsHtml += `<div class="tab add-tab" title="Nuevo Agente" onclick="window.addChat()">+</div>`;
+
+    // 2. Chats Tabs
     const chats = project.chats || [];
     chats.forEach(chat => {
         tabsHtml += `
             <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''}" onclick="window.switchTab('${chat.id}')">
                 <span>🤖 ${chat.name}</span>
+                <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
             </div>
         `;
     });
 
-    // New Chat Button inside tabs
-    tabsHtml += `<div class="tab add-tab" onclick="window.addChat()">+</div>`;
-    
-    // File Tabs
+    // 3. File Tabs
     const openFiles = project.openFiles || [];
     openFiles.forEach(file => {
         const sanitizedPath = file.path.replace(/\\/g, '/');
@@ -195,6 +242,7 @@ function renderTabs() {
     });
 
     tabsNav.innerHTML = tabsHtml;
+    // We only update visibility if we're not inside a recursive call
     updateViewVisibility();
 }
 
@@ -204,33 +252,150 @@ function updateViewVisibility() {
 
     const chats = project.chats || [];
     const isChat = chats.some(c => c.id === project.activeTabId);
+    const isOpenFile = project.openFiles.some(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+
+    // Reset visibility
+    chatTabContent.classList.add('hidden');
+    editorTabContent.classList.add('hidden');
+    dashboardTabContent.classList.add('hidden');
     
     if (isChat) {
         chatTabContent.classList.remove('hidden');
-        editorTabContent.classList.add('hidden');
-        renderMessages();
-    } else {
-        chatTabContent.classList.add('hidden');
+        renderMessages(false); // Pass false to avoid recursive renderTabs
+        
+        // Sync mode toggles with current chat mode
+        const chat = chats.find(c => c.id === project.activeTabId);
+        if (chat) {
+            syncModeUI(chat.mode);
+        }
+    } else if (isOpenFile) {
         editorTabContent.classList.remove('hidden');
-        const openFiles = project.openFiles || [];
-        const file = openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+        const file = project.openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
         if (file) {
             currentFilename.textContent = file.name;
+            pendingActions.classList.toggle('hidden', !file.pendingContent);
+            
+            if (file.pendingContent) {
+                renderDiff(file, true);
+            } else if (file.diff) {
+                renderDiff(file);
+            } else {
+                renderCode(file);
+            }
+        }
+    } else {
+        // Dashboard View
+        dashboardTabContent.classList.remove('hidden');
+        dashboardProjectName.textContent = project.name;
+        dashboardProjectPath.textContent = project.folder || "Sin carpeta seleccionada";
+        statChats.textContent = project.chats.length;
+        statFiles.textContent = project.openFiles.length;
+    }
+}
+
+function renderCode(file) {
+    const extension = file.name.split('.').pop().toLowerCase();
+    const lang = getLanguage(extension) || 'plaintext';
+    
+    // Clear previous state
+    editorCode.className = 'hljs'; 
+    if (lang !== 'plaintext') {
+        editorCode.classList.add(`language-${lang}`);
+    }
+    
+    // Stats and Info
+    diffStats.classList.add('hidden');
+    document.getElementById('editor-lang').textContent = lang;
+
+    try {
+        if (typeof hljs !== 'undefined') {
+            const highlighted = hljs.highlight(file.content, { language: lang }).value;
+            editorCode.innerHTML = highlighted;
+        } else {
             editorCode.textContent = file.content;
         }
+    } catch (e) {
+        console.error("Highlight error:", e);
+        editorCode.textContent = file.content;
     }
+}
+
+function renderDiff(file, isPending = false) {
+    const changes = isPending ? Diff.diffLines(file.content, file.pendingContent) : file.diff;
+    let html = '';
+    let addedCount = 0;
+    let removedCount = 0;
+
+    changes.forEach(part => {
+        const lines = part.value.split(/\r?\n/);
+        if (lines[lines.length - 1] === '') lines.pop(); // Remove last empty line from split
+
+        lines.forEach(line => {
+            const type = part.added ? 'added' : (part.removed ? 'removed' : '');
+            const marker = part.added ? '+' : (part.removed ? '-' : ' ');
+            if (part.added) addedCount++;
+            if (part.removed) removedCount++;
+
+            html += `<span class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</span>`;
+        });
+    });
+
+    editorCode.innerHTML = html;
+    editorCode.className = ''; 
+    
+    const extension = file.name.split('.').pop().toLowerCase();
+    document.getElementById('editor-lang').textContent = (getLanguage(extension) || 'plaintext') + (isPending ? ' (PENDING)' : ' (DIFF)');
+    
+    diffStats.querySelector('.diff-added').textContent = `+ ${addedCount} agregadas`;
+    diffStats.querySelector('.diff-removed').textContent = `- ${removedCount} eliminadas`;
+    diffStats.classList.remove('hidden');
+}
+
+function getLanguage(ext) {
+    const map = {
+        'js': 'javascript', 'ts': 'typescript', 'py': 'python', 
+        'html': 'xml', 'css': 'css', 'json': 'json', 
+        'md': 'markdown', 'txt': 'plaintext', 'bat': 'dos',
+        'sql': 'sql', 'sh': 'bash'
+    };
+    return map[ext] || null;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 window.switchTab = (id) => {
     const p = getActiveProject();
+    if (!p) return;
     p.activeTabId = id;
     renderTabs();
+    renderMessages(); // To refresh chat if switching to a chat tab
     saveData();
 };
 
 window.addChat = () => {
     const p = getActiveProject();
-    const newChat = { id: 'chat-' + Date.now(), name: 'Agente ' + (p.chats.length + 1), messages: [], isThinking: false };
+    if (!p) return;
+    
+    // Find next agent number to avoid naming duplicates
+    const agentNumbers = p.chats
+        .map(c => {
+            const match = c.name.match(/Agente (\d+)/);
+            return match ? parseInt(match[1]) : 0;
+        })
+        .filter(n => !isNaN(n));
+    const nextNum = agentNumbers.length > 0 ? Math.max(...agentNumbers) + 1 : 1;
+
+    const newChat = { 
+        id: 'chat-' + generateId(), 
+        name: 'Agente ' + nextNum, 
+        messages: [], 
+        isThinking: false,
+        mode: 'auto'
+    };
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
     renderTabs();
@@ -239,17 +404,37 @@ window.addChat = () => {
 
 window.deleteChat = (id) => {
     const p = getActiveProject();
-    if (p.chats.length <= 1) return alert("Debe haber al menos un agente.");
+    if (!p) return;
     p.chats = p.chats.filter(c => c.id !== id);
-    if (p.activeTabId === id) p.activeTabId = p.chats[0].id;
+    if (p.activeTabId === id) {
+        // If we deleted the active chat, try to switch to another chat
+        if (p.chats.length > 0) {
+            p.activeTabId = p.chats[0].id;
+        } else if (p.openFiles.length > 0) {
+            // If no chats, try to switch to the first open file
+            p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
+        } else {
+            // Otherwise, show dashboard
+            p.activeTabId = null;
+        }
+    }
     renderTabs();
     saveData();
 };
 
 window.closeFileTab = (path) => {
     const p = getActiveProject();
+    if (!p) return;
     p.openFiles = p.openFiles.filter(f => f.path.replace(/\\/g, '/') !== path);
-    if (p.activeTabId === path) p.activeTabId = p.chats[0].id;
+    if (p.activeTabId === path) {
+        if (p.chats.length > 0) {
+            p.activeTabId = p.chats[0].id;
+        } else if (p.openFiles.length > 0) {
+            p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
+        } else {
+            p.activeTabId = null;
+        }
+    }
     renderTabs();
     saveData();
 };
@@ -285,18 +470,29 @@ window.deleteProject = (id) => {
     saveData();
 };
 
-function renderMessages() {
+function renderMessages(shouldRenderLayout = true) {
     const chat = getActiveChat();
     if (!chat) return;
     
     agentStatus.classList.toggle('hidden', !chat.isThinking);
+    
+    if (shouldRenderLayout) {
+        renderProjectList();
+        renderTabs();
+    }
 
     if (chat.messages.length === 0) {
         chatMessages.innerHTML = `<div class="welcome-screen"><h2>Hilo de contexto limpio</h2><p>Este agente está listo para recibir instrucciones.</p></div>`;
         return;
     }
 
-    chatMessages.innerHTML = chat.messages.map(m => `<div class="message ${m.role}">${formatMarkdown(m.content)}</div>`).join('');
+    chatMessages.innerHTML = chat.messages.map(m => {
+        let imageHtml = '';
+        if (m.images && m.images.length > 0) {
+            imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
+        }
+        return `<div class="message ${m.role}">${imageHtml}${formatMarkdown(m.content)}</div>`;
+    }).join('');
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
 }
 
@@ -316,17 +512,27 @@ async function sendMessage() {
     if (!content || !project || !chat) return;
 
     // Add user message to state
-    chat.messages.push({ role: 'user', content });
+    const userMsg = { role: 'user', content };
+    if (currentAttachedImages.length > 0) {
+        userMsg.images = [...currentAttachedImages];
+    }
+    chat.messages.push(userMsg);
+    
     chat.isThinking = true;
     chatInput.value = '';
+    clearImages();
     renderMessages();
 
     // Prepare history for Ollama /api/chat
     const systemMsg = { role: 'system', content: buildSystemPrompt() };
-    const history = chat.messages.map(m => ({
-        role: m.role === 'agent' ? 'assistant' : m.role,
-        content: m.content
-    }));
+    const history = chat.messages.map(m => {
+        const msg = {
+            role: m.role === 'agent' ? 'assistant' : m.role,
+            content: m.content
+        };
+        if (m.images) msg.images = m.images;
+        return msg;
+    });
 
     const messages = [systemMsg, ...history];
 
@@ -339,6 +545,7 @@ async function sendMessage() {
                 stream: false 
             })
         });
+
         
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
@@ -346,9 +553,32 @@ async function sendMessage() {
         chat.isThinking = false;
         
         const assistantResponse = data.message.content;
-        chat.messages.push({ role: 'agent', content: assistantResponse });
         
-        await processAgentActions(assistantResponse, project, chat);
+        // Process actions first
+        const errors = await processAgentActions(assistantResponse, project, chat);
+        
+        // Clean display text: replace code blocks with clickable links
+        const displayContent = assistantResponse
+            .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
+                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
+                return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
+            })
+            .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
+                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
+                return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
+            });
+
+        chat.messages.push({ role: 'agent', content: displayContent });
+        
+        if (errors.length > 0) {
+            // Auto-feedback loop: Send errors back to IA for self-correction
+            const errorMsg = `⚠️ Los siguientes cambios fallaron:\n${errors.join('\n')}\n\nPor favor, revisa el contenido de los archivos y asegúrate de que el bloque SEARCH sea EXACTO al texto del archivo original (incluyendo espacios y saltos de línea). Reintenta la corrección.`;
+            chat.messages.push({ role: 'agent', content: errorMsg });
+            
+            // Trigger automatic retry with the error context
+            await autoRetry(errorMsg, project, chat);
+        }
+
         renderMessages();
         saveData();
     } catch (e) {
@@ -420,24 +650,235 @@ function renderFileList() {
 
 function buildSystemPrompt() {
     const p = getActiveProject();
-    return `Eres un subagente profesional. Carpeta: ${p.folder}\nArchivos:\n${p.currentFiles.map(f => `- ${f.name}`).join('\n')}\nUtiliza [WRITE:archivo]contenido[/WRITE] para cambios.`;
+    return `Eres un subagente profesional. Carpeta: ${p.folder}
+Archivos actuales:
+${p.currentFiles.map(f => `- ${f.name}`).join('\n')}
+
+Para modificar archivos de forma SEGURA, usa este formato para NO borrar el resto del código:
+[REPLACE:nombre_del_archivo]
+<<<<< SEARCH
+(el código exacto que quieres cambiar)
+=====
+(el nuevo código)
+>>>>>
+[/REPLACE]
+
+Si quieres crear un archivo NUEVO desde cero, usa:
+[WRITE:nombre_del_archivo]
+(contenido completo)
+[/WRITE]
+
+REGLAS CRÍTICAS:
+1. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original.
+2. NUNCA borres código importante, si solo vas a agregar algo, busca el punto de inserción y reemplázalo por sí mismo + lo nuevo.
+3. Puedes usar varios bloques [REPLACE] en una sola respuesta.`;
 }
 
 async function processAgentActions(text, project, chat) {
+    const errors = [];
+
+    // 1. Handle New Files / Full Write
     const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
     let match;
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
         const content = match[2];
-        const filePath = pathJoin(project.folder, fileName);
-        try {
-            await fetch(`${API_BASE}/files/write`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath, content }) });
-            chat.messages.push({ role: 'agent', content: `✅ Guardado: ${fileName}` });
-            const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === filePath.replace(/\\/g, '/'));
-            if (openFile) { openFile.content = content; if (project.activeTabId === openFile.path.replace(/\\/g, '/')) updateViewVisibility(); }
-            scanFolder(project.folder);
-        } catch (e) {}
+        await performWrite(fileName, content, project, chat);
     }
+
+    // 2. Handle Partial Replacement (SEARCH/REPLACE)
+    const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
+    while ((match = replaceRegex.exec(text)) !== null) {
+        const fileName = match[1].trim();
+        const blockContent = match[2];
+        
+        const searchReplaceRegex = /<<<<<\s*SEARCH([\s\S]*?)=====\s*([\s\S]*?)>>>>>/g;
+        let srMatch;
+        
+        const filePath = pathJoin(project.folder, fileName);
+        const sanPath = filePath.replace(/\\/g, '/');
+        
+        // Read file content first
+        let currentFileContent = "";
+        try {
+            const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+            const data = await res.json();
+            currentFileContent = data.content;
+        } catch(e) {
+            errors.push(`- No se pudo leer el archivo ${fileName}.`);
+            continue;
+        }
+
+        let updatedContent = currentFileContent;
+        let successCount = 0;
+        let failCount = 0;
+
+        while ((srMatch = searchReplaceRegex.exec(blockContent)) !== null) {
+            const searchText = srMatch[1].trim();
+            const replaceText = srMatch[srMatch.length - 1].trim();
+
+            if (updatedContent.includes(searchText)) {
+                updatedContent = updatedContent.replace(searchText, replaceText);
+                successCount++;
+            } else {
+                failCount++;
+            }
+        }
+
+        if (successCount > 0) {
+            await performWrite(fileName, updatedContent, project, chat);
+        } 
+        
+        if (failCount > 0) {
+            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} fallos). Asegúrate de que el bloque SEARCH coincida exactamente con el archivo original.`);
+        }
+    }
+    return errors;
+}
+
+async function autoRetry(errorContext, project, chat) {
+    chat.isThinking = true;
+    renderMessages();
+
+    const systemMsg = { role: 'system', content: buildSystemPrompt() };
+    const history = chat.messages.map(m => ({
+        role: m.role === 'agent' ? 'assistant' : m.role,
+        content: m.content
+    }));
+
+    // Add exactly one retry message
+    const messages = [systemMsg, ...history];
+
+    try {
+        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+            method: 'POST',
+            body: JSON.stringify({ 
+                model: modelSelect.value, 
+                messages: messages,
+                stream: false 
+            })
+        });
+        
+        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        
+        const data = await response.json();
+        chat.isThinking = false;
+        const assistantResponse = data.message.content;
+        
+        // Process actions
+        const newErrors = await processAgentActions(assistantResponse, project, chat);
+
+        // Clean display text
+        const displayContent = assistantResponse
+            .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
+                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
+                return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
+            })
+            .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
+                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
+                return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
+            });
+
+        chat.messages.push({ role: 'agent', content: displayContent });
+        
+        if (newErrors.length > 0) {
+            chat.messages.push({ role: 'agent', content: `❌ El segundo intento también falló. Por favor, realiza los cambios manualmente o revisa la estructura.` });
+        }
+    } catch (e) {
+        chat.isThinking = false;
+        chat.messages.push({ role: 'agent', content: '⚠️ Error en Auto-Correction: ' + e.message });
+    }
+}
+
+async function performWrite(fileName, content, project, chat) {
+    const filePath = pathJoin(project.folder, fileName);
+    const sanPath = filePath.replace(/\\/g, '/');
+    const oldContent = await fetchOldContent(sanPath);
+    
+    // Use passed chat or fallback
+    const targetChat = chat || getActiveChat();
+    const mode = targetChat ? targetChat.mode : state.mode;
+    
+    const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
+
+    if (mode === 'supervised') {
+        if (targetChat) {
+            targetChat.messages.push({ role: 'agent', content: `💡 Propuesta de cambio para ${fileName}. Por favor, revisa el archivo y acepta o rechaza.` });
+        }
+        if (openFile) {
+            openFile.pendingContent = content;
+        } else {
+            project.openFiles.push({ path: sanPath, name: fileName, content: oldContent, pendingContent: content });
+        }
+        project.activeTabId = sanPath;
+        renderTabs();
+        updateViewVisibility();
+        return;
+    }
+
+    try {
+        await fetch(`${API_BASE}/files/write`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ filePath, content }) 
+        });
+        
+        if (targetChat) {
+            targetChat.messages.push({ role: 'agent', content: `✅ Actualizado: ${fileName}` });
+        }
+        
+        const diff = Diff.diffLines(oldContent, content);
+        
+        if (openFile) { 
+            openFile.content = content; 
+            openFile.diff = diff;
+            openFile.pendingContent = null;
+            if (project.activeTabId === sanPath) updateViewVisibility(); 
+        } else {
+            project.openFiles.push({ path: sanPath, name: fileName, content, diff });
+            project.activeTabId = sanPath;
+            renderTabs();
+            updateViewVisibility();
+        }
+        scanFolder(project.folder);
+    } catch (e) {
+        console.error("Write error:", e);
+    }
+}
+
+window.acceptChange = async () => {
+    const project = getActiveProject();
+    const chat = getActiveChat();
+    const openFiles = project.openFiles || [];
+    const file = openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+    if (file && file.pendingContent) {
+        const content = file.pendingContent;
+        file.pendingContent = null;
+        
+        // Temporarily force auto mode for the write operation
+        const oldMode = chat ? chat.mode : 'supervised';
+        if (chat) chat.mode = 'auto';
+        await performWrite(file.name, content, project, chat);
+        if (chat) chat.mode = oldMode;
+    }
+};
+
+window.rejectChange = () => {
+    const project = getActiveProject();
+    const openFiles = project.openFiles || [];
+    const file = openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+    if (file && file.pendingContent) {
+        file.pendingContent = null;
+        updateViewVisibility();
+    }
+};
+
+async function fetchOldContent(sanPath) {
+    try {
+        const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+        const data = await res.json();
+        return data.content || "";
+    } catch(e) { return ""; }
 }
 
 function pathJoin(dir, file) {
@@ -481,6 +922,79 @@ function setupEventListeners() {
     scanFolderBtn.onclick = nativePickFolder;
     refreshFolderBtn.onclick = () => scanFolder();
     newChatBtn.onclick = createNewProject;
+    modelSelect.onchange = checkVisionCapability;
+
+    // Image Attachment
+    attachImgBtn.onclick = () => imageInput.click();
+    imageInput.onchange = handleImageSelection;
+
+    // We need to use event delegation or re-bind because buttons moved
+    // Actually, since they are global constants but moved in HTML, it works
+    // but the IDs mode-auto and mode-supervised are still unique.
+    
+    document.addEventListener('click', (e) => {
+        if (e.target.id === 'mode-auto') {
+            const chat = getActiveChat();
+            if (chat) { chat.mode = 'auto'; syncModeUI('auto'); saveData(); }
+        }
+        if (e.target.id === 'mode-supervised') {
+            const chat = getActiveChat();
+            if (chat) { chat.mode = 'supervised'; syncModeUI('supervised'); saveData(); }
+        }
+    });
+
+    acceptBtn.onclick = window.acceptChange;
+    rejectBtn.onclick = window.rejectChange;
+}
+
+async function handleImageSelection(e) {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+        const base64 = await toBase64(file);
+        const cleanBase64 = base64.split(',')[1];
+        currentAttachedImages.push(cleanBase64);
+        renderImagePreviews();
+    }
+    imageInput.value = '';
+}
+
+function toBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+    });
+}
+
+function renderImagePreviews() {
+    imagePreviewContainer.classList.toggle('hidden', currentAttachedImages.length === 0);
+    imagePreviewContainer.innerHTML = currentAttachedImages.map((img, index) => `
+        <div class="preview-item">
+            <img src="data:image/jpeg;base64,${img}" />
+            <button class="remove-img" onclick="window.removeImage(${index})">&times;</button>
+        </div>
+    `).join('');
+}
+
+window.removeImage = (index) => {
+    currentAttachedImages.splice(index, 1);
+    renderImagePreviews();
+};
+
+function clearImages() {
+    currentAttachedImages = [];
+    renderImagePreviews();
+}
+
+function syncModeUI(mode) {
+    if (mode === 'auto') {
+        modeAutoBtn.classList.add('active');
+        modeSupervisedBtn.classList.remove('active');
+    } else {
+        modeSupervisedBtn.classList.add('active');
+        modeAutoBtn.classList.remove('active');
+    }
 }
 
 init();
