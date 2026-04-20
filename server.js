@@ -123,6 +123,27 @@ app.post('/api/files/write', async (req, res) => {
     }
 });
 
+app.post('/api/utils/run-script', async (req, res) => {
+    const { scriptPath, cwd } = req.body;
+    if (!scriptPath) return res.status(400).json({ error: 'Missing scriptPath' });
+    
+    console.log(`[SERVER] Ejecutando script: ${scriptPath} en ${cwd}`);
+    
+    // Abrimos una nueva terminal para que el proceso sea independiente y el usuario vea la salida
+    const command = `start cmd /k "${scriptPath}"`;
+    
+    try {
+        exec(command, { cwd }, (error) => {
+            if (error) {
+                console.error(`[SERVER] Error ejecutando script: ${error}`);
+            }
+        });
+        res.json({ success: true, message: 'Script iniciado en nueva ventana' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 });

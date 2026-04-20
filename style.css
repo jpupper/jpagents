@@ -188,6 +188,34 @@ select:hover, input[type="text"]:focus {
   border-color: var(--accent-color);
 }
 
+.btn-run {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  padding: 0 1.2rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.5px;
+}
+
+.btn-run:hover {
+  border-color: #2ea44f;
+  color: #2ea44f;
+  background: rgba(46, 164, 79, 0.05);
+}
+
+.btn-run:active {
+  transform: translateY(1px);
+}
+
 .toggle-group {
   display: flex;
   background: #000;

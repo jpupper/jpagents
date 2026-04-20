@@ -55,6 +55,8 @@ const statFiles = document.getElementById('stat-files');
 const attachImgBtn = document.getElementById('attach-img');
 const imageInput = document.getElementById('image-input');
 const imagePreviewContainer = document.getElementById('image-preview-container');
+const projectRunContainer = document.getElementById('project-run-container');
+const runProjectBtn = document.getElementById('run-project-btn');
 let currentAttachedImages = [];
 
 // Initialize
@@ -459,6 +461,7 @@ function switchProject(id) {
         scanFolder(project.folder);
     } else {
         renderFileList();
+        projectRunContainer.classList.add('hidden');
     }
 }
 
@@ -652,12 +655,16 @@ async function scanFolder(pathInput = null) {
             return;
         }
 
-        // Re-get active project to be safe after await
         const project = getActiveProject();
         if (project) {
             project.currentFiles = data.files || [];
             project.folder = data.currentPath;
             folderPathInput.value = data.currentPath;
+            
+            // Auto-detect run.bat
+            const hasRunBat = project.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
+            projectRunContainer.classList.toggle('hidden', !hasRunBat);
+            
             renderFileList();
             saveData();
         }
@@ -1112,6 +1119,32 @@ function setupEventListeners() {
 
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
+
+    // Run Project Button
+    runProjectBtn.onclick = async () => {
+        const p = getActiveProject();
+        if (!p || !p.folder) return;
+        
+        const runBat = p.currentFiles.find(f => f.name.toLowerCase() === 'run.bat');
+        if (!runBat) return;
+
+        try {
+            const res = await fetch(`${API_BASE}/utils/run-script`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    scriptPath: runBat.path,
+                    cwd: p.folder 
+                })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                alert("Error al iniciar servidor: " + data.error);
+            }
+        } catch (e) {
+            alert("Error de conexión: " + e.message);
+        }
+    };
 }
 
 async function handleImageSelection(e) {
