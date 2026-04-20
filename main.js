@@ -308,7 +308,11 @@ function renderCode(file) {
 
     try {
         if (typeof hljs !== 'undefined') {
-            const highlighted = hljs.highlight(file.content, { language: lang }).value;
+            // Check if language is supported by the current hljs instance
+            const supportedLangs = hljs.listLanguages();
+            const actualLang = supportedLangs.includes(lang) ? lang : 'plaintext';
+            
+            const highlighted = hljs.highlight(file.content, { language: actualLang }).value;
             editorCode.innerHTML = highlighted;
         } else {
             editorCode.textContent = file.content;
@@ -474,6 +478,11 @@ function renderMessages(shouldRenderLayout = true) {
     if (!chat) return;
     
     agentStatus.classList.toggle('hidden', !chat.isThinking);
+    if (chat.isThinking) {
+        document.getElementById('thinking-status').textContent = chat.thinkingStatus || "El agente está pensando...";
+        const subtext = agentStatus.querySelector('.thinking-subtext');
+        if (subtext) subtext.textContent = chat.thinkingSubtext || "Procesando...";
+    }
     
     if (shouldRenderLayout) {
         renderProjectList();
@@ -493,6 +502,14 @@ function renderMessages(shouldRenderLayout = true) {
         return `<div class="message ${m.role}">${imageHtml}${formatMarkdown(m.content)}</div>`;
     }).join('');
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
+}
+
+function updateThinking(chat, isThinking, status = "", subtext = "") {
+    if (!chat) return;
+    chat.isThinking = isThinking;
+    chat.thinkingStatus = status;
+    chat.thinkingSubtext = subtext;
+    renderMessages(false);
 }
 
 function formatMarkdown(text) {
@@ -517,7 +534,7 @@ async function sendMessage() {
     }
     chat.messages.push(userMsg);
     
-    chat.isThinking = true;
+    updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
     chatInput.value = '';
     clearImages();
     renderMessages();
@@ -549,7 +566,7 @@ async function sendMessage() {
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
         const data = await response.json();
-        chat.isThinking = false;
+        updateThinking(chat, true, "Procesando acciones", "El agente está aplicando cambios...");
         
         const assistantResponse = data.message.content;
         
@@ -584,10 +601,11 @@ async function sendMessage() {
             await autoRetry(errorMsg, project, chat);
         }
 
+        updateThinking(chat, false);
         renderMessages();
         saveData();
     } catch (e) {
-        chat.isThinking = false;
+        updateThinking(chat, false);
         chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
         renderMessages();
     }
@@ -646,18 +664,19 @@ function renderFileList() {
     }
     
     const backButton = `<div class="file-item directory" onclick="window.goUp()">.. (Subir nivel)</div>`;
-    fileList.innerHTML = (p.folder ? backButton : '') + files.map(f => `
-        <div class="file-item ${f.isDirectory ? 'directory' : 'file'}" onclick="${f.isDirectory ? `window.scanFolder('${f.path.replace(/\\/g, '/')}')` : `window.openFile('${f.path.replace(/\\/g, '/')}')`}">
-            ${f.isDirectory ? '📁' : '📄'} ${f.name}
-        </div>
-    `).join('');
+    fileList.innerHTML = (p.folder ? backButton : '') + files.map(f => {
+        const icon = f.isDirectory ? '📁' : '📄';
+        const path = f.path.replace(/\\/g, '/');
+        const action = f.isDirectory ? `window.scanFolder('${path}')` : `window.openFile('${path}')`;
+        return `<div class="file-item ${f.isDirectory ? 'directory' : 'file'}" onclick="${action}">${icon} ${f.name}</div>`;
+    }).join('');
 }
 
 function buildSystemPrompt() {
     const p = getActiveProject();
     return `Eres un subagente profesional. Carpeta: ${p.folder}
 Archivos actuales:
-${p.currentFiles.map(f => `- ${f.name}`).join('\n')}
+${p.currentFiles.map(f => "- " + f.name).join('\n')}
 
 Si quieres modificar un archivo pero NO conoces su contenido, DEBES leerlo primero usando:
 [READ:nombre_del_archivo]
@@ -678,20 +697,22 @@ Si quieres crear un archivo NUEVO desde cero, usa:
 
 REGLAS CRÍTICAS:
 1. Sé autónomo: Si te piden un cambio y no ves el código, usa [READ] inmediatamente. No pidas al usuario que te pase el código.
-2. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original.
-3. Puedes realizar múltiples acciones (leer varios archivos, o leer y escribir) en una sola respuesta.
-4. Si una modificación falla, intenta leer el archivo de nuevo para verificar el contenido exacto.`;
+2. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original. Si el archivo es grande, usa bloques SEARCH pequeños.
+3. Si vas a reemplazar TODO el archivo, es mejor usar [WRITE] en lugar de [REPLACE].
+4. Puedes realizar múltiples acciones (leer varios archivos, o leer y escribir) en una sola respuesta.
+5. Si una modificación falla, intenta leer el archivo de nuevo para verificar el contenido exacto.`;
 }
 
 async function processAgentActions(text, project, chat) {
     const errors = [];
     const reads = [];
 
-    // 0. Handle Reads (Hacer esto primero para que el agente tenga info en el siguiente turno)
+    // 0. Handle Reads
     const readRegex = /\[READ:(.*?)\]/g;
     let match;
     while ((match = readRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
+        updateThinking(chat, true, "Leyendo archivo", fileName);
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
         try {
@@ -712,6 +733,7 @@ async function processAgentActions(text, project, chat) {
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
         const content = match[2];
+        updateThinking(chat, true, "Escribiendo archivo", fileName);
         await performWrite(fileName, content, project, chat);
     }
 
@@ -719,10 +741,8 @@ async function processAgentActions(text, project, chat) {
     const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
     while ((match = replaceRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
+        updateThinking(chat, true, "Modificando archivo", fileName);
         const blockContent = match[2];
-        
-        const searchReplaceRegex = /<<<<<\s*SEARCH([\s\S]*?)=====\s*([\s\S]*?)>>>>>/g;
-        let srMatch;
         
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
@@ -741,32 +761,64 @@ async function processAgentActions(text, project, chat) {
         let updatedContent = currentFileContent;
         let successCount = 0;
         let failCount = 0;
+        let blocksFound = 0;
+
+        const searchReplaceRegex = /<<<<<\s*SEARCH\s*\r?\n?([\s\S]*?)=====\s*\r?\n?([\s\S]*?)>>>>>/g;
+        let srMatch;
 
         while ((srMatch = searchReplaceRegex.exec(blockContent)) !== null) {
-            const searchText = srMatch[1].trim();
-            const replaceText = srMatch[srMatch.length - 1].trim();
+            blocksFound++;
+            let searchText = srMatch[1]; 
+            const replaceText = srMatch[2];
 
-            if (updatedContent.includes(searchText)) {
-                updatedContent = updatedContent.replace(searchText, replaceText);
+            // Robust matching: Normalize line endings to \n and trim trailing whitespace from lines
+            const normalize = (text) => text.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '');
+            const normContent = normalize(updatedContent);
+            const normSearch = normalize(searchText);
+
+            if (normContent.includes(normSearch)) {
+                // For the actual replacement, we try to use the original search text if possible to preserve exact original formatting
+                if (updatedContent.includes(searchText)) {
+                    updatedContent = updatedContent.replace(searchText, replaceText);
+                } else {
+                    // If exact match failed but normalized succeeded, replace the normalized version
+                    // Note: This might change line endings to \n in the modified area, which is usually fine
+                    updatedContent = normContent.replace(normSearch, normalize(replaceText));
+                }
                 successCount++;
             } else {
-                failCount++;
+                // Try a trimmed version as fallback if exact match fails
+                const trimmedSearch = searchText.trim();
+                const normTrimmedSearch = normalize(trimmedSearch);
+                if (normTrimmedSearch && normContent.includes(normTrimmedSearch)) {
+                    updatedContent = normContent.replace(normTrimmedSearch, normalize(replaceText.trim()));
+                    successCount++;
+                } else {
+                    failCount++;
+                }
             }
         }
 
-        if (successCount > 0) {
+        if (blocksFound === 0) {
+            errors.push(`- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato.`);
+        } else if (successCount > 0) {
             await performWrite(fileName, updatedContent, project, chat);
         } 
         
         if (failCount > 0) {
-            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} fallos). Asegúrate de haber leído el archivo recientemente.`);
+            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} de ${blocksFound} bloques fallaron). Asegúrate de haber leído el archivo recientemente y de copiar el texto EXACTO, incluyendo espacios e indentación.`);
         }
     }
     return { errors, reads };
 }
 
-async function autoRetry(errorContext, project, chat) {
-    chat.isThinking = true;
+async function autoRetry(errorContext, project, chat, retryCount = 0) {
+    if (retryCount >= 3) {
+        chat.messages.push({ role: 'agent', content: `⚠️ Se alcanzó el límite de auto-corrección (3 intentos). Por favor, intenta guiar al agente manualmente o revisa el error.` });
+        updateThinking(chat, false);
+        return;
+    }
+    updateThinking(chat, true, "Auto-corrigiendo", `Intento ${retryCount + 1}/3`);
     renderMessages();
 
     const systemMsg = { role: 'system', content: buildSystemPrompt() };
@@ -775,7 +827,6 @@ async function autoRetry(errorContext, project, chat) {
         content: m.content
     }));
 
-    // Add exactly one retry message
     const messages = [systemMsg, ...history];
 
     try {
@@ -791,11 +842,10 @@ async function autoRetry(errorContext, project, chat) {
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
         const data = await response.json();
-        chat.isThinking = false;
         const assistantResponse = data.message.content;
         
         // Process actions
-        const newErrors = await processAgentActions(assistantResponse, project, chat);
+        const actionResult = await processAgentActions(assistantResponse, project, chat);
 
         // Clean display text
         const displayContent = assistantResponse
@@ -806,15 +856,27 @@ async function autoRetry(errorContext, project, chat) {
             .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
                 return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
+            })
+            .replace(/\[READ:(.*?)\]/g, (match, fileName) => {
+                return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
         chat.messages.push({ role: 'agent', content: displayContent });
         
-        if (newErrors.length > 0) {
-            chat.messages.push({ role: 'agent', content: `❌ El segundo intento también falló. Por favor, realiza los cambios manualmente o revisa la estructura.` });
+        if (actionResult.reads && actionResult.reads.length > 0) {
+            const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
+            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones.` });
+            await autoRetry("Continuando tras lectura...", project, chat, retryCount + 1);
+        } else if (actionResult.errors.length > 0) {
+            chat.messages.push({ role: 'agent', content: `❌ El intento de auto-corrección falló:\n${actionResult.errors.join('\n')}` });
+            await autoRetry("Re-intentando tras error...", project, chat, retryCount + 1);
         }
+        
+        updateThinking(chat, false);
+        renderMessages();
+        saveData();
     } catch (e) {
-        chat.isThinking = false;
+        updateThinking(chat, false);
         chat.messages.push({ role: 'agent', content: '⚠️ Error en Auto-Correction: ' + e.message });
     }
 }
@@ -822,7 +884,20 @@ async function autoRetry(errorContext, project, chat) {
 async function performWrite(fileName, content, project, chat) {
     const filePath = pathJoin(project.folder, fileName);
     const sanPath = filePath.replace(/\\/g, '/');
-    const oldContent = await fetchOldContent(sanPath);
+    
+    // Read old stats for verification
+    let oldStats = { mtime: null, size: 0 };
+    try {
+        const res = await fetch(`${API_BASE}/files/read`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ filePath: sanPath }) 
+        });
+        const data = await res.json();
+        oldStats = { mtime: data.mtime, size: data.size, content: data.content || "" };
+    } catch(e) {}
+
+    const oldContent = oldStats.content || "";
     
     // Use passed chat or fallback
     const targetChat = chat || getActiveChat();
@@ -846,14 +921,26 @@ async function performWrite(fileName, content, project, chat) {
     }
 
     try {
-        await fetch(`${API_BASE}/files/write`, { 
+        const res = await fetch(`${API_BASE}/files/write`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ filePath, content }) 
         });
+        const writeResult = await res.json();
         
         if (targetChat) {
-            targetChat.messages.push({ role: 'agent', content: `✅ Actualizado: ${fileName}` });
+            updateThinking(targetChat, true, "Verificando cambios", fileName);
+            
+            if (writeResult.success) {
+                const hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
+                if (hasChanged) {
+                    targetChat.messages.push({ role: 'agent', content: `✅ **${fileName}** actualizado y verificado (mtime: ${new Date(writeResult.mtime).toLocaleTimeString()}).` });
+                } else {
+                    targetChat.messages.push({ role: 'agent', content: `⚠️ **${fileName}** no parece haber cambiado (mtime idéntico). El contenido enviado era igual al original.` });
+                }
+            } else {
+                targetChat.messages.push({ role: 'agent', content: `❌ Error al escribir **${fileName}**: ${writeResult.error}` });
+            }
         }
         
         const diff = Diff.diffLines(oldContent, content);
@@ -870,6 +957,7 @@ async function performWrite(fileName, content, project, chat) {
             updateViewVisibility();
         }
         scanFolder(project.folder);
+        saveData();
     } catch (e) {
         console.error("Write error:", e);
     }
@@ -902,13 +990,7 @@ window.rejectChange = () => {
     }
 };
 
-async function fetchOldContent(sanPath) {
-    try {
-        const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
-        const data = await res.json();
-        return data.content || "";
-    } catch(e) { return ""; }
-}
+
 
 function pathJoin(dir, file) {
     return dir.endsWith('/') || dir.endsWith('\\') ? dir + file : dir + '/' + file;
@@ -927,12 +1009,18 @@ window.openFile = async (path) => {
     if (existing) { p.activeTabId = san; renderTabs(); return; }
     try {
         const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
+        if (!res.ok) {
+            console.error("Error opening file:", res.statusText);
+            return;
+        }
         const data = await res.json();
         p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
         p.activeTabId = san;
         renderTabs();
         saveData();
-    } catch (e) {}
+    } catch (e) {
+        console.error("Exception opening file:", e);
+    }
 };
 
 async function nativePickFolder() {

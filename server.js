@@ -11,7 +11,8 @@ const app = express();
 const port = 3001;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const OLLAMA_URL = 'http://localhost:11434';
 const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
@@ -88,9 +89,16 @@ app.post('/api/files/list', async (req, res) => {
 app.post('/api/files/read', async (req, res) => {
     const { filePath } = req.body;
     try {
+        const stats = await fs.stat(filePath);
+        if (stats.isDirectory()) {
+            return res.status(400).json({ error: 'Path is a directory' });
+        }
         const content = await fs.readFile(filePath, 'utf-8');
-        res.json({ content });
+        res.json({ content, mtime: stats.mtime, size: stats.size });
     } catch (error) {
+        if (error.code === 'ENOENT') {
+            return res.json({ content: '', mtime: null, size: 0 }); // Return empty for non-existent files (new files)
+        }
         res.status(500).json({ error: error.message });
     }
 });
@@ -101,8 +109,15 @@ app.post('/api/files/write', async (req, res) => {
         const dir = path.dirname(filePath);
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(filePath, content, 'utf-8');
+        
+        const stats = await fs.stat(filePath);
         console.log(`[AGENT] Arquivo escrito em: ${filePath}`);
-        res.json({ success: true, savedAt: filePath });
+        res.json({ 
+            success: true, 
+            savedAt: filePath,
+            mtime: stats.mtime,
+            size: stats.size
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

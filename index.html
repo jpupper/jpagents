@@ -11,6 +11,7 @@
     <!-- Highlight.js for Syntax Highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/dos.min.js"></script>
     <!-- jsdiff for Diffing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.2.0/diff.min.js"></script>
   </head>
@@ -89,7 +90,13 @@
             </div>
             
             <div id="agent-status" class="agent-thinking-bar hidden">
-              <span class="spinner"></span> El agente está pensando...
+              <div class="spinner-container">
+                <span class="spinner"></span>
+              </div>
+              <div class="thinking-text-wrapper">
+                <span id="thinking-status">El agente está pensando...</span>
+                <span class="thinking-subtext">Procesando solicitud</span>
+              </div>
             </div>
             
             <div class="input-area">
