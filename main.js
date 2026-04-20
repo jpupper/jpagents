@@ -32,7 +32,6 @@ const sendBtn = document.getElementById('send-btn');
 const modelSelect = document.getElementById('model-select');
 const folderPathInput = document.getElementById('folder-path');
 const scanFolderBtn = document.getElementById('scan-folder');
-const refreshFolderBtn = document.getElementById('refresh-folder');
 const fileList = document.getElementById('file-list');
 const newChatBtn = document.getElementById('new-chat');
 const agentStatus = document.getElementById('agent-status');
@@ -554,11 +553,11 @@ async function sendMessage() {
         
         const assistantResponse = data.message.content;
         
-        // Process actions first
-        const errors = await processAgentActions(assistantResponse, project, chat);
+        // Process actions
+        const actionResult = await processAgentActions(assistantResponse, project, chat);
         
         // Clean display text: replace code blocks with clickable links
-        const displayContent = assistantResponse
+        let displayContent = assistantResponse
             .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
                 return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
@@ -566,16 +565,22 @@ async function sendMessage() {
             .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
                 return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
+            })
+            .replace(/\[READ:(.*?)\]/g, (match, fileName) => {
+                return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
         chat.messages.push({ role: 'agent', content: displayContent });
         
-        if (errors.length > 0) {
+        if (actionResult.reads && actionResult.reads.length > 0) {
+            // Add read content to history and auto-continue
+            const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
+            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora que tienes el código, procede con las modificaciones solicitadas.` });
+            await autoRetry("Continuando tras lectura...", project, chat);
+        } else if (actionResult.errors.length > 0) {
             // Auto-feedback loop: Send errors back to IA for self-correction
-            const errorMsg = `⚠️ Los siguientes cambios fallaron:\n${errors.join('\n')}\n\nPor favor, revisa el contenido de los archivos y asegúrate de que el bloque SEARCH sea EXACTO al texto del archivo original (incluyendo espacios y saltos de línea). Reintenta la corrección.`;
+            const errorMsg = `⚠️ Los siguientes cambios fallaron:\n${actionResult.errors.join('\n')}\n\nPor favor, revisa el contenido de los archivos y asegúrate de que el bloque SEARCH sea EXACTO al texto del archivo original. Si necesitas volver a leer el archivo para estar seguro, usa [READ:nombre_del_archivo].`;
             chat.messages.push({ role: 'agent', content: errorMsg });
-            
-            // Trigger automatic retry with the error context
             await autoRetry(errorMsg, project, chat);
         }
 
@@ -654,7 +659,10 @@ function buildSystemPrompt() {
 Archivos actuales:
 ${p.currentFiles.map(f => `- ${f.name}`).join('\n')}
 
-Para modificar archivos de forma SEGURA, usa este formato para NO borrar el resto del código:
+Si quieres modificar un archivo pero NO conoces su contenido, DEBES leerlo primero usando:
+[READ:nombre_del_archivo]
+
+Para modificar archivos de forma SEGURA, usa este formato (solo después de haber leído el archivo):
 [REPLACE:nombre_del_archivo]
 <<<<< SEARCH
 (el código exacto que quieres cambiar)
@@ -669,17 +677,38 @@ Si quieres crear un archivo NUEVO desde cero, usa:
 [/WRITE]
 
 REGLAS CRÍTICAS:
-1. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original.
-2. NUNCA borres código importante, si solo vas a agregar algo, busca el punto de inserción y reemplázalo por sí mismo + lo nuevo.
-3. Puedes usar varios bloques [REPLACE] en una sola respuesta.`;
+1. Sé autónomo: Si te piden un cambio y no ves el código, usa [READ] inmediatamente. No pidas al usuario que te pase el código.
+2. En [REPLACE], el bloque SEARCH debe ser EXACTO al código original.
+3. Puedes realizar múltiples acciones (leer varios archivos, o leer y escribir) en una sola respuesta.
+4. Si una modificación falla, intenta leer el archivo de nuevo para verificar el contenido exacto.`;
 }
 
 async function processAgentActions(text, project, chat) {
     const errors = [];
+    const reads = [];
+
+    // 0. Handle Reads (Hacer esto primero para que el agente tenga info en el siguiente turno)
+    const readRegex = /\[READ:(.*?)\]/g;
+    let match;
+    while ((match = readRegex.exec(text)) !== null) {
+        const fileName = match[1].trim();
+        const filePath = pathJoin(project.folder, fileName);
+        const sanPath = filePath.replace(/\\/g, '/');
+        try {
+            const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+            const data = await res.json();
+            if (data.content) {
+                reads.push({ fileName, content: data.content });
+            } else {
+                errors.push(`- El archivo ${fileName} parece estar vacío o no existe.`);
+            }
+        } catch(e) {
+            errors.push(`- Error al leer ${fileName}: ${e.message}`);
+        }
+    }
 
     // 1. Handle New Files / Full Write
     const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
-    let match;
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
         const content = match[2];
@@ -705,7 +734,7 @@ async function processAgentActions(text, project, chat) {
             const data = await res.json();
             currentFileContent = data.content;
         } catch(e) {
-            errors.push(`- No se pudo leer el archivo ${fileName}.`);
+            errors.push(`- No se pudo leer el archivo ${fileName} para aplicar el reemplazo.`);
             continue;
         }
 
@@ -730,10 +759,10 @@ async function processAgentActions(text, project, chat) {
         } 
         
         if (failCount > 0) {
-            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} fallos). Asegúrate de que el bloque SEARCH coincida exactamente con el archivo original.`);
+            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} fallos). Asegúrate de haber leído el archivo recientemente.`);
         }
     }
-    return errors;
+    return { errors, reads };
 }
 
 async function autoRetry(errorContext, project, chat) {
@@ -920,7 +949,7 @@ function setupEventListeners() {
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
-    refreshFolderBtn.onclick = () => scanFolder();
+    folderPathInput.oninput = (e) => scanFolder(e.target.value);
     newChatBtn.onclick = createNewProject;
     modelSelect.onchange = checkVisionCapability;
 

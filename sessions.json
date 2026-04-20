@@ -357,7 +357,7 @@
     "folder": "D:\\Programacion\\jpagents",
     "chats": [
       {
-        "id": "chat-mo7m09k2spy5t9u85wo",
+        "id": "chat-mo7mgyrm3xbgj9qx77t",
         "name": "Agente 1",
         "messages": [],
         "isThinking": false,
@@ -365,7 +365,7 @@
       }
     ],
     "openFiles": [],
-    "activeTabId": "chat-mo7m09k2spy5t9u85wo",
+    "activeTabId": "chat-mo7mgyrm3xbgj9qx77t",
     "currentFiles": [
       {
         "name": ".git",
