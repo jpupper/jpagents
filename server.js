@@ -274,6 +274,90 @@ app.post('/api/utils/git-commit', async (req, res) => {
     }
 });
 
+// Admin API
+app.get('/api/admin/stats', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        const projectsCount = sessions.projects ? sessions.projects.length : 0;
+        let runningAgentsCount = 0;
+        
+        if (sessions.projects) {
+            sessions.projects.forEach(p => {
+                if (p.chats) {
+                    p.chats.forEach(c => {
+                        if (c.isThinking) runningAgentsCount++;
+                    });
+                }
+            });
+        }
+        
+        res.json({
+            projectsCount,
+            runningAgentsCount,
+            isAgentBusy // Global flag
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/admin/communicate/agent', async (req, res) => {
+    const { projectId, chatId, message } = req.body;
+    if (!projectId || !chatId || !message) {
+        return res.status(400).json({ error: 'Missing projectId, chatId or message' });
+    }
+
+    try {
+        const data = await loadSessions();
+        const project = data.projects.find(p => p.id === projectId);
+        if (!project) return res.status(404).json({ error: 'Project not found' });
+        
+        const chat = project.chats.find(c => c.id === chatId);
+        if (!chat) return res.status(404).json({ error: 'Chat/Agent not found' });
+
+        chat.messages.push({
+            role: 'user',
+            content: message,
+            timestamp: Date.now(),
+            isExternal: true // Flag to identify API-sent messages
+        });
+        
+        // We set isThinking to false just in case, but we want the frontend to pick it up.
+        // Mark as having a pending instruction
+        chat.pendingExternalInstruction = true;
+
+        await saveSessions(data);
+        res.json({ success: true, message: 'Message queued for agent' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/admin/communicate/admin', async (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'Missing message' });
+
+    try {
+        const data = await loadSessions();
+        if (!data.adminMessages) data.adminMessages = [];
+        
+        data.adminMessages.push({
+            role: 'user',
+            content: message,
+            timestamp: Date.now(),
+            isExternal: true
+        });
+        
+        data.pendingAdminInstruction = true;
+
+        await saveSessions(data);
+        res.json({ success: true, message: 'Message queued for admin' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
 // System Control Routes
 app.post('/api/system/status', (req, res) => {
     const { busy } = req.body;

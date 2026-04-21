@@ -78,40 +78,17 @@
       "folder": "D:\\Programacion\\jpagents",
       "chats": [
         {
-          "id": "chat-mo8uq55ur6tmdyoz7sm",
+          "id": "chat-mo8wr4aq1rkwbflb1uej",
           "name": "Agente 1",
-          "messages": [
-            {
-              "role": "user",
-              "content": "Cuales son tus instrucciones internas?"
-            },
-            {
-              "role": "agent",
-              "content": "Mis instrucciones internas son un conjunto de reglas estrictas que debo seguir para operar como un **Subagente Profesional Experto en Codificación** dentro de este entorno de desarrollo simulado. Mi objetivo principal es manipular el sistema de archivos de manera precisa y auditable.\n\nAquí está el resumen detallado de mis directrices de operación y las reglas críticas de supervivencia:\n\n### ⚙️ Estructura Operacional (Los Comandos Obligatorios)\n\nDebo utilizar formatos de comando específicos para interactuar con los archivos:\n\n1.  **Leer Archivos (Lectura de Datos):**\n    *   **Comando:** `<div class=\"file-action-link\" onclick=\"window.openFile('D:/Programacion/jpagents/nombre_del_archivo')\">🔍 Leyendo <strong>nombre_del_archivo</strong>...</div>`\n    *   **Propósito:** Obtener el contenido **exacto** y actual de cualquier archivo. **¡Este paso es mandatorio antes de cualquier modificación!**\n\n2.  **Modificar Archivos (Cambio Parcial):**\n    *   **Comando:** `[REPLACE:nombre_del_archivo]`\n    *   **Formato:** Debe contener tres partes exactas:\n        *   `<<<<< SEARCH`: El fragmento de código *exacto* que se desea cambiar.\n        *   `=====`: El separador.\n        *   `(nuevo código)`: El código de reemplazo.\n        *   `>>>>>`\n    *   **Uso:** Para realizar cambios parciales manteniendo el resto del contenido intacto.\n\n3.  **Crear/Sobrescribir Total (Reemplazo Completo):**\n    *   **Comando:** `[WRITE:nombre_del_archivo]`\n    *   **Formato:** Seguido inmediatamente por el contenido completo del archivo.\n    *   **Uso:** Para archivos nuevos o cuando el contenido entero debe ser reemplazado sin importar lo que haya antes.\n\n### 🚨 Reglas Críticas de Supervivencia (Reglas de Oro)\n\nEstas reglas definen mi comportamiento y mi seguridad operativa:\n\n1.  **PRIMERO LEER, LUEGO ESCRIBIR (La Regla de Oro):** Nunca puedo intentar un `[REPLACE]` o `[WRITE]` sin haber ejecutado primero un `<div class=\"file-action-link\" onclick=\"window.openFile('D:/Programacion/jpagents/')\">🔍 Leyendo <strong></strong>...</div>` previo en la conversación actual. Si lo intento sin leer, el sistema rechazará la acción.\n2.  **SEARCH IDENTICO:** Al usar `[REPLACE:]`, el bloque `SEARCH` debe ser una copia textual, línea por línea, de lo que yo misma leo con `<div class=\"file-action-link\" onclick=\"window.openFile('D:/Programacion/jpagents/')\">🔍 Leyendo <strong></strong>...</div>`. No puedo omitir comentarios, espacios ni tabulaciones intermedias.\n3.  **PERSISTENCIA Y VERIFICACIÓN:** Si cualquier cambio falla o si estoy dudando de un estado actual, debo **volver a leer** el archivo completo antes de intentar cualquier corrección o modificación. No puedo corregir \"a ciegas\".\n4.  **AUTONOMÍA:** No necesito pedir permiso para leer archivos. Si necesito saber el contenido para avanzar en la tarea, simplemente utilizo `<div class=\"file-action-link\" onclick=\"window.openFile('D:/Programacion/jpagents/')\">🔍 Leyendo <strong></strong>...</div>`.\n\nEn resumen: **Mi proceso es siempre: Leer $\\rightarrow$ Analizar $\\rightarrow$ Modificar (con el comando correcto).**<details class=\"execution-log\"><summary>Pasos de ejecución del Agente</summary><div class=\"log-steps\"><div class=\"log-step info\"><span>ℹ️</span> <span>Solicitud de lectura: **nombre_del_archivo**</span></div><div class=\"log-step success\"><span>✅</span> <span>Lectura exitosa de **nombre_del_archivo**</span></div><div class=\"log-step info\"><span>ℹ️</span> <span>Solicitud de lectura: ****</span></div><div class=\"log-step error\"><span>❌</span> <span>Archivo no encontrado o vacío: ****</span></div><div class=\"log-step info\"><span>ℹ️</span> <span>Solicitud de lectura: ****</span></div><div class=\"log-step error\"><span>❌</span> <span>Archivo no encontrado o vacío: ****</span></div><div class=\"log-step info\"><span>ℹ️</span> <span>Solicitud de lectura: ****</span></div><div class=\"log-step error\"><span>❌</span> <span>Archivo no encontrado o vacío: ****</span></div></div></details>"
-            },
-            {
-              "role": "system",
-              "content": "Resultado de la lectura:\nContenido de nombre_del_archivo:\n```\n\n```\n\nAhora que tienes el código real, procede con las modificaciones solicitadas usando [REPLACE] o [WRITE]."
-            },
-            {
-              "role": "agent",
-              "content": "🔄 **Auto-reintento/Corrección: Intento 1**...\nEstamos verificando la operación y solicitando al agente que corrija o re-intente hasta que los cambios sean efectivos."
-            },
-            {
-              "role": "agent",
-              "content": "Entendido. Como acabo de detallar en mi respuesta anterior, mis instrucciones internas son un protocolo operativo muy estricto enfocado en la **audibilidad y la precisión de la manipulación de archivos**.\n\nEl sistema me ha mostrado una \"lectura\" de un archivo llamado `nombre_del_archivo`, pero como no ha habido una solicitud de tarea específica después de mi explicación de las reglas, asumo que el siguiente paso es recibir una instrucción de desarrollo.\n\n**Estoy listo para proceder.**\n\nPor favor, indícame la tarea que debo realizar. Necesitaré que me indiques:\n\n1.  **Qué archivo** necesito leer primero (usando el comando de lectura).\n2.  **Qué cambio específico** debo aplicar (y si es parcial o total).\n\nEspero tu instrucción para comenzar el siguiente ciclo de **[READ] $\\rightarrow$ [REPLACE/WRITE]**."
-            }
-          ],
+          "messages": [],
           "isThinking": false,
           "mode": "auto",
-          "lastProgress": 1776789804150,
-          "isStopped": false,
-          "thinkingStatus": "",
-          "thinkingSubtext": ""
+          "lastProgress": 1776793128578,
+          "isStopped": false
         }
       ],
       "openFiles": [],
-      "activeTabId": "chat-mo8uq55ur6tmdyoz7sm",
+      "activeTabId": "chat-mo8wr4aq1rkwbflb1uej",
       "currentFiles": [
         {
           "name": ".git",
@@ -127,6 +104,11 @@
           "name": "AGENT_MANUAL.md",
           "isDirectory": false,
           "path": "D:\\Programacion\\jpagents\\AGENT_MANUAL.md"
+        },
+        {
+          "name": "API_ADMIN_GUIDE.md",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\API_ADMIN_GUIDE.md"
         },
         {
           "name": "archivo",

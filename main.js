@@ -285,9 +285,11 @@ async function init() {
     await loadData();
     setupEventListeners();
     
-    // Periodically check health
+    // Periodically check health and external instructions
     setInterval(checkSystemHealth, 5000);
+    setInterval(checkExternalInstructions, 10000); // Check for API commands every 10s
 }
+
 
 async function loadData() {
     try {
@@ -324,6 +326,67 @@ async function loadData() {
         createNewProject();
     }
 }
+
+async function checkExternalInstructions() {
+    try {
+        const res = await fetch(`${API_BASE}/sessions`);
+        const data = await res.json();
+        
+        if (!data) return;
+
+        let changed = false;
+
+        // Check Agents
+        if (data.projects) {
+            for (const pServer of data.projects) {
+                const pLocal = state.projects.find(p => p.id === pServer.id);
+                if (!pLocal) continue;
+
+                for (const cServer of (pServer.chats || [])) {
+                    if (cServer.pendingExternalInstruction) {
+                        const cLocal = pLocal.chats.find(c => c.id === cServer.id);
+                        if (cLocal && !cLocal.isThinking) {
+                            console.log(`📡 Recibida instrucción externa para Agente: ${cLocal.name}`);
+                            // Sync messages to get the external message
+                            cLocal.messages = cServer.messages;
+                            delete cServer.pendingExternalInstruction;
+                            changed = true;
+                            
+                            // Si es el proyecto activo, refrescar UI
+                            if (state.activeProjectId === pLocal.id) {
+                                renderMessages();
+                            }
+                            
+                            triggerAgentLogic(pLocal, cLocal, 'external');
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check Admin
+        if (data.pendingAdminInstruction) {
+            console.log(`📡 Recibida instrucción externa para Orquestador`);
+            state.adminMessages = data.adminMessages;
+            delete data.pendingAdminInstruction;
+            changed = true;
+            
+            if (getActiveProject()?.activeTabId === 'admin') {
+                renderAdminMessages();
+            }
+            
+            triggerAdminAgentLogic();
+        }
+
+        if (changed) {
+            await saveData();
+        }
+
+    } catch (e) {
+        // Quiet fail on poll
+    }
+}
+
 
 function sanitizeProject(p) {
     const id = p.id || generateId();
@@ -1158,18 +1221,26 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
         if (actionResult.reads && actionResult.reads.length > 0) {
-            // Add read content to history and auto-continue
-            const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
+            // Add read content to history and auto-continue. 
+            // We wrap it in <details> for the UI to avoid cluttering, but the text is still in history.
+            const readContext = actionResult.reads.map(r => `
+<details class="execution-log">
+  <summary>🔍 Contenido de <strong>${r.fileName}</strong> (${r.content.length} caracteres)</summary>
+  <pre><code>${r.content.substring(0, 5000)}${r.content.length > 5000 ? '\n... (truncado para visualización)' : ''}</code></pre>
+</details>`).join('\n\n');
             chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora que tienes el código real, procede con las modificaciones solicitadas usando [REPLACE] o [WRITE].` });
+            console.log(`🔍 Archivos leídos (${actionResult.reads.length}). Iniciando auto-reintento para aplicar cambios.`);
             await autoRetry("Continuando tras lectura...", project, chat);
         } else if (actionResult.errors.length > 0) {
             // Auto-feedback loop
             const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, lee el archivo de nuevo para asegurarte de copiar el bloque EXACTO. Si no usaste etiquetas, hazlo ahora.`;
-            chat.messages.push({ role: 'agent', content: errorMsg });
+            chat.messages.push({ role: 'system', content: errorMsg }); // Cambiado a role: system
+            console.warn(`❌ Errores detectados en acciones. Iniciando auto-corrección.`);
             await autoRetry(errorMsg, project, chat);
             renderMessages();
         } else if (actionResult.actionsPerformed === 0) {
              // Just finished without actions or reads.
+             console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
         }
 
         updateThinking(chat, false);
@@ -1764,6 +1835,7 @@ async function processAgentActions(text, project, chat) {
     const reads = [];
     const logs = [];
     let actionsPerformed = 0;
+    let match;
 
     // 0. Detect Broken Tags (Safety Check)
     if (text.includes('[/REPLACE]') && !text.includes('[REPLACE:')) {
@@ -1775,7 +1847,6 @@ async function processAgentActions(text, project, chat) {
 
     // 1. Handle Reads
     const readRegex = /\[READ:(.*?)\]/g;
-    let match;
     while ((match = readRegex.exec(text)) !== null) {
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();
@@ -1785,14 +1856,15 @@ async function processAgentActions(text, project, chat) {
         const sanPath = filePath.replace(/\\/g, '/');
         try {
             const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+            if (!res.ok) throw new Error(`Status ${res.status}`);
             const data = await res.json();
             if (data.content !== undefined) {
                 reads.push({ fileName, content: data.content });
-                logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}**` });
-                actionsPerformed++;
+                logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}** (${data.content.length} bytes)` });
             } else {
-                errors.push(`- El archivo ${fileName} parece no existir o está vacío.`);
-                logs.push({ type: 'error', message: `Archivo no encontrado o vacío: **${fileName}**` });
+                const errorDetail = `El archivo ${fileName} parece no existir o está vacío.`;
+                errors.push(`- ${errorDetail}`);
+                logs.push({ type: 'error', message: `No se pudo leer: **${fileName}**`, details: errorDetail });
             }
         } catch(e) {
             errors.push(`- Error al leer ${fileName}: ${e.message}`);
@@ -1813,14 +1885,16 @@ async function processAgentActions(text, project, chat) {
         if (writeRes && writeRes.success) {
             actionsPerformed++;
             if (!writeRes.hasChanged) {
-                errors.push(`- En ${fileName}: El archivo no cambió. El contenido enviado es idéntico al actual.`);
-                logs.push({ type: 'info', message: `Sin cambios en WRITE: **${fileName}**` });
+                const warn = `El archivo no cambió en WRITE (el contenido enviado es idéntico al actual).`;
+                errors.push(`- En ${fileName}: ${warn}`);
+                logs.push({ type: 'info', message: `Sin cambios en WRITE: **${fileName}**`, details: warn });
             } else {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
             }
         } else {
-            errors.push(`- Error al escribir ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
-            logs.push({ type: 'error', message: `Error en WRITE: **${fileName}**` });
+            const err = writeRes ? writeRes.error : 'Fallo desconocido';
+            errors.push(`- Error al escribir ${fileName}: ${err}`);
+            logs.push({ type: 'error', message: `Error en WRITE: **${fileName}**`, details: err });
         }
     }
 
@@ -1836,7 +1910,6 @@ async function processAgentActions(text, project, chat) {
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
         
-        // Read file content first
         let currentFileContent = "";
         try {
             const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
@@ -1861,7 +1934,6 @@ async function processAgentActions(text, project, chat) {
             let searchText = srMatch[1]; 
             const replaceText = srMatch[2];
 
-            // Robust matching: Normalize line endings and trim trailing spaces
             const normalize = (t) => t.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
             const normContent = updatedContent.replace(/\r\n/g, '\n');
             const normSearch = searchText.replace(/\r\n/g, '\n');
@@ -1871,67 +1943,44 @@ async function processAgentActions(text, project, chat) {
                 successCount++;
                 logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} encontrado con éxito en **${fileName}**` });
             } else {
-                // FALLBACK PERMISIVO: Ignorar espacios en blanco iniciales/finales de cada línea si falla el exacto
-                const looseNormalize = (t) => t.split('\n').map(l => l.trim()).filter(l => l.length > 0).join('\n');
+                const looseNormalize = (t) => t.replace(/\r\n/g, '\n').split('\n').map(l => l.trim()).filter(l => l.length > 0).join('\n');
                 const looseContent = looseNormalize(normContent);
                 const looseSearch = looseNormalize(normSearch);
                 
                 if (looseSearch && looseContent.includes(looseSearch)) {
-                     // Si el loose match funciona, usamos una aproximación más compleja 
-                     // (Para no romper la indentación del archivo original, avisamos que fue un match parcial)
-                     logs.push({ type: 'info', message: `Bloque SEARCH ${blocksFound} encontrado mediante coincidencia flexible (indentación ignorada) en **${fileName}**` });
-                     
-                     // Reemplazo simplificado: buscamos la primera línea del bloque y asumimos el bloque
-                     const searchLines = normSearch.trim().split('\n');
-                     if (searchLines.length > 0) {
-                         const firstLine = searchLines[0].trim();
-                         const lastLine = searchLines[searchLines.length - 1].trim();
-                         
-                         // Intentamos un reemplazo basado en los límites si el contenido es suficientemente único
-                         // pero por ahora, para máxima seguridad, simplemente fallamos y pedimos reincidencia
-                         // EXCEPTO si es un bloque pequeño
-                         if (searchLines.length < 5) {
-                              updatedContent = normContent.replace(normSearch.trim(), replaceText.trim());
-                              successCount++;
-                         } else {
-                              failCount++;
-                              logs.push({ type: 'error', message: `Bloque SEARCH ${blocksFound} no coincide exactamente. Por favor, lee el archivo de nuevo.` });
-                         }
-                    } else {
-                        failCount++;
-                    }
-                } else {
+                    const failDetail = `Bloque SEARCH ${blocksFound} no coincide exactamente por espacios o indentación. El sistema requiere coincidencia EXACTA.`;
+                    errors.push(`- En ${fileName} (Bloque ${blocksFound}): Falla de coincidencia exacta (indentación/espacios). Copia el bloque EXACTO del READ.`);
+                    logs.push({ type: 'error', message: `Error de indentación en bloque SEARCH de **${fileName}**`, details: failDetail });
                     failCount++;
-                    logs.push({ 
-                        type: 'error', 
-                        message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**.`,
-                        details: searchText
-                    });
+                } else {
+                    const failDetail = `No se encontró el bloque SEARCH en el contenido actual del archivo.`;
+                    errors.push(`- En ${fileName} (Bloque ${blocksFound}): Bloque SEARCH no encontrado. Revisa si el código existe exactamente así.`);
+                    logs.push({ type: 'error', message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**`, details: searchText });
+                    failCount++;
                 }
             }
         }
 
         if (blocksFound === 0) {
-            errors.push(`- En ${fileName}: Se usó [REPLACE] pero no se encontró un bloque válido de <<<<< SEARCH / ===== / >>>>>.`);
-            logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**` });
+            const err = `Se usó [REPLACE] pero no se encontró un bloque <<<<< SEARCH / ===== / >>>>> válido.`;
+            errors.push(`- En ${fileName}: ${err}`);
+            logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**`, details: err });
         } else if (successCount > 0) {
             const writeRes = await performWrite(fileName, updatedContent, project, chat);
             if (writeRes && writeRes.success) {
                 actionsPerformed++;
                 if (!writeRes.hasChanged) {
-                    errors.push(`- En ${fileName}: Los bloques SEARCH coincidieron, pero el resultado final es idéntico al actual.`);
-                    logs.push({ type: 'error', message: `Sin cambios efectivos en REPLACE: **${fileName}**` });
+                    const warn = `Los bloques SEARCH coincidieron, pero el resultado final es idéntico al actual (sin cambios reales).`;
+                    errors.push(`- En ${fileName}: ${warn}`);
+                    logs.push({ type: 'info', message: `Sin cambios efectivos en REPLACE: **${fileName}**`, details: warn });
                 } else {
-                    logs.push({ type: 'success', message: `Cambios aplicados y verificados en **${fileName}**` });
+                    logs.push({ type: 'success', message: `Cambios aplicados (${successCount}/${blocksFound} bloques) en **${fileName}**` });
                 }
             } else {
-                errors.push(`- Error al guardar REPLACE en ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
-                logs.push({ type: 'error', message: `Error al persistir REPLACE: **${fileName}**` });
+                const err = writeRes ? writeRes.error : 'Fallo de persistencia';
+                errors.push(`- Error al guardar REPLACE en ${fileName}: ${err}`);
+                logs.push({ type: 'error', message: `Error al persistir REPLACE: **${fileName}**`, details: err });
             }
-        }
-        
-        if (failCount > 0) {
-            errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} de ${blocksFound} bloques fallaron).`);
         }
     }
 
@@ -1940,12 +1989,13 @@ async function processAgentActions(text, project, chat) {
         const intentKeywords = ["modificar", "cambiar", "escribir", "actualizar", "reemplazar", "crear", "apply", "update", "write", "replace", "modify"];
         const lowText = text.toLowerCase();
         if (intentKeywords.some(kw => lowText.includes(kw) && lowText.indexOf(kw) < 600)) {
-             errors.push("🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas obligatorias ([READ], [WRITE] o [REPLACE]). Por favor, utiliza el formato correcto explicado.");
+             errors.push("🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas obligatorias ([READ], [WRITE] o [REPLACE]). Úsalas para actuar.");
         }
     }
 
     return { errors, reads, logs, actionsPerformed };
 }
+
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
     if (retryCount >= 20) {
@@ -1956,10 +2006,11 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     
     // Feedback directo en el chat como pidió el usuario
     const retryMsg = { 
-        role: 'agent', 
-        content: `🔄 **Auto-reintento/Corrección: Intento ${retryCount + 1}**...\nEstamos verificando la operación y solicitando al agente que corrija o re-intente hasta que los cambios sean efectivos.` 
+        role: 'system', // Cambiado a role: system
+        content: `🔄 **Auto-reintento/Corrección: Intento ${retryCount + 1}**...\nError previo: ${errorContext.substring(0, 200)}...` 
     };
-    chat.messages.push(retryMsg);
+    // chat.messages.push(retryMsg); // No saturar el chat visual con esto, o ponerlo pequeño
+    console.log(`🔄 AutoRetry ${retryCount+1}/20: ${errorContext.substring(0, 100)}`);
 
     updateThinking(chat, true, "Auto-corrigiendo", "Corrigiendo formato y re-intentando...");
     renderMessages();
@@ -2034,8 +2085,20 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         } else if (actionResult.errors.length > 0) {
             const retryHeader = retryCount === 0 ? "❌ El intento falló:" : `❌ Re-intento ${retryCount} falló:`;
             const retryMsgText = `${retryHeader}\n${actionResult.errors.join('\n')}\n\nPor favor, inténtalo de nuevo corrigiendo el error.`;
-            chat.messages.push({ role: 'agent', content: retryMsgText });
+            chat.messages.push({ role: 'system', content: retryMsgText }); // Cambiado a role: system
             await autoRetry(retryMsgText, project, chat, retryCount + 1);
+        } else if (actionResult.actionsPerformed === 0) {
+             // NUDGE: Si estamos en un autoretry y el agente no hizo nada pero antes falló o leyó, 
+             // puede que se haya "perdido". Le pedimos que actúe o termine.
+             const nudgeMsg = `⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. 
+Si ya has terminado todas las tareas, indica que has finalizado. 
+Si aún faltan cambios, DEBES usar las etiquetas ahora.`;
+             chat.messages.push({ role: 'system', content: nudgeMsg });
+             console.log("🤔 Agente ocioso durante auto-retry. Enviando recordatorio.");
+             // Solo reintentamos una vez con el nudge para evitar bucles si de verdad terminó
+             if (retryCount < 5) {
+                await autoRetry(nudgeMsg, project, chat, retryCount + 1);
+             }
         }
         
         updateThinking(chat, false);

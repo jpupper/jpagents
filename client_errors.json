@@ -1,31 +1,123 @@
 [
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "🔴 API Error: [400] http://localhost:3001/api/files/read",
-      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+      "🔄 AutoRetry 1/20: Continuando tras lectura..."
     ],
-    "timestamp": "2026-04-21T16:43:24.144Z",
+    "timestamp": "2026-04-21T17:34:22.038Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "🔴 API Error: [400] http://localhost:3001/api/files/read",
-      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+      "🔄 AutoRetry 2/20: ❌ El intento falló:\n- En style.css: Se usó [REPLACE] pero no se encontró un bloque <<<<< SEARCH / =="
     ],
-    "timestamp": "2026-04-21T16:43:24.146Z",
+    "timestamp": "2026-04-21T17:34:40.116Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "🔴 API Error: [400] http://localhost:3001/api/files/read",
-      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+      "🔄 AutoRetry 3/20: ❌ Re-intento 1 falló:\n🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas"
     ],
-    "timestamp": "2026-04-21T16:43:24.150Z",
+    "timestamp": "2026-04-21T17:34:43.085Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 AutoRetry 4/20: Continuando tras lectura..."
+    ],
+    "timestamp": "2026-04-21T17:34:46.169Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🤔 Agente ocioso durante auto-retry. Enviando recordatorio."
+    ],
+    "timestamp": "2026-04-21T17:34:52.339Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 AutoRetry 5/20: ⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. \nSi ya has te"
+    ],
+    "timestamp": "2026-04-21T17:34:52.340Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 AutoRetry 6/20: ⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. \nSi ya has te"
+    ],
+    "timestamp": "2026-04-21T17:34:57.430Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🤔 Agente ocioso durante auto-retry. Enviando recordatorio."
+    ],
+    "timestamp": "2026-04-21T17:35:03.033Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-21T17:37:31.311Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-21T17:38:44.179Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-21T17:38:46.260Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-21T17:40:41.248Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-21T17:41:46.384Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
