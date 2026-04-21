@@ -200,7 +200,9 @@ let state = {
     models: [],
     selectedModel: '',
     mode: 'auto', // 'auto' or 'supervised'
-    globalPrompt: ''
+    globalPrompt: '',
+    adminMessages: [], // To store Administrator Agent chat history
+    adminIsThinking: false
 };
 
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -276,6 +278,7 @@ async function loadData() {
             state.projects = (data.projects || []).map(sanitizeProject);
             state.globalPrompt = data.globalPrompt || '';
             state.activeProjectId = data.activeProjectId || null;
+            state.adminMessages = data.adminMessages || [];
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -326,7 +329,8 @@ async function saveData() {
         const payload = {
             projects: state.projects,
             globalPrompt: state.globalPrompt,
-            activeProjectId: state.activeProjectId
+            activeProjectId: state.activeProjectId,
+            adminMessages: state.adminMessages
         };
         await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
@@ -576,6 +580,7 @@ function updateViewVisibility() {
     chatTabContent.classList.add('hidden');
     editorTabContent.classList.add('hidden');
     dashboardTabContent.classList.add('hidden');
+    adminTabContent.classList.add('hidden');
     
     if (isChat) {
         chatTabContent.classList.remove('hidden');
@@ -589,6 +594,7 @@ function updateViewVisibility() {
     } else if (project.activeTabId === 'admin') {
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
+        renderAdminMessages();
     } else if (isOpenFile) {
         editorTabContent.classList.remove('hidden');
         const file = project.openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
@@ -903,12 +909,6 @@ async function sendMessage() {
     const chat = getActiveChat();
     if (!content || !project || !chat) return;
 
-    // Signal system that we are busy
-    await setAgentActive(true);
-
-    // Clear logs before starting to catch only new ones
-    await clearClientLogs();
-
     // Add user message to state
     const userMsg = { role: 'user', content };
     if (currentAttachedImages.length > 0) {
@@ -916,10 +916,24 @@ async function sendMessage() {
     }
     chat.messages.push(userMsg);
     
-    updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
-    chat.isStopped = false; // Reset stop flag on new message
     chatInput.value = '';
     clearImages();
+    renderMessages();
+    
+    await triggerAgentLogic(project, chat);
+}
+
+async function triggerAgentLogic(project, chat, origin = 'user') {
+    if (chat.isThinking) return; // Don't start twice
+
+    // Signal system that we are busy
+    await setAgentActive(true);
+
+    // Clear logs before starting to catch only new ones
+    await clearClientLogs();
+
+    updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
+    chat.isStopped = false; // Reset stop flag
     renderMessages();
 
     // Prepare history for Ollama /api/chat
@@ -945,7 +959,6 @@ async function sendMessage() {
             })
         });
 
-        
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
         // Check if stopped before processing
@@ -1001,6 +1014,7 @@ async function sendMessage() {
             const errorMsg = `⚠️ Se detectaron los siguientes problemas en la operación:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, asegúrate de que el bloque sea EXACTO. Si el archivo no cambió, revisa si realmente estás aplicando un cambio con respecto al contenido actual.`;
             chat.messages.push({ role: 'agent', content: errorMsg });
             await autoRetry(errorMsg, project, chat);
+            renderMessages();
         }
 
         updateThinking(chat, false);
@@ -1011,6 +1025,21 @@ async function sendMessage() {
         chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
         renderMessages();
     } finally {
+        // If triggered by admin, report back to admin log
+        if (origin === 'admin') {
+            const lastMsg = chat.messages[chat.messages.length - 1];
+            if (lastMsg && lastMsg.role === 'agent') {
+                state.adminMessages.push({ 
+                    role: 'system', 
+                    content: `📢 El agente **${chat.name}** ha terminado su tarea.\nResultado: ${lastMsg.content.substring(0, 500)}${lastMsg.content.length > 500 ? '...' : ''}` 
+                });
+                renderAdminMessages();
+                // Debounced trigger to allow multiple agents to finish before re-thinking
+                if (adminTriggerTimeout) clearTimeout(adminTriggerTimeout);
+                adminTriggerTimeout = setTimeout(() => triggerAdminAgentLogic(), 1500);
+            }
+        }
+
         // Only signal ready if we are not in an auto-retry loop
         // (Wait, autoRetry will also signal. We handle it by always signalling ready at the end 
         // of a process that doesn't trigger another process)
@@ -1180,9 +1209,6 @@ REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
     return prompt;
 }
 
-    return { errors, reads, logs };
-}
-
 window.stopAgent = (projectId, chatId) => {
     const project = state.projects.find(p => p.id === projectId);
     if (!project) return;
@@ -1202,8 +1228,177 @@ window.stopAgent = (projectId, chatId) => {
 function adminLog(msg) {
     if (!adminChatMessages) return;
     const time = new Date().toLocaleTimeString();
-    adminChatMessages.innerHTML += `<div class="message system"><span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ${msg}</div>`;
-    adminChatMessages.scrollTop = adminChatMessages.scrollHeight;
+    state.adminMessages.push({ role: 'system', content: msg });
+    renderAdminMessages();
+}
+
+function renderAdminMessages() {
+    if (!adminChatMessages) return;
+    
+    if (state.adminMessages.length === 0) {
+        adminChatMessages.innerHTML = `<div class="message system">Bienvenido al Centro de Control. Aquí verás el progreso de todos los agentes.</div>`;
+        return;
+    }
+
+    let thinkingHtml = '';
+    if (state.adminIsThinking) {
+        thinkingHtml = `
+            <div class="message agent thinking">
+                <div class="thinking-bubble-content">
+                    <div class="spinner"></div>
+                    <div class="thinking-text-wrapper">
+                        <div class="thinking-status">Orquestador pensando...</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    adminChatMessages.innerHTML = state.adminMessages.map(m => {
+        const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+        const timeSpan = time ? `<span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ` : '';
+        
+        let roleClass = m.role;
+        if (m.role === 'system') roleClass = 'system';
+        
+        // Hide dispatch tags from display
+        let displayContent = m.content.replace(/\[@([^:]+):[ \t]*"(.*?)"\]/g, (match, name) => {
+            return `<div class="admin-dispatch-pill">📡 Ordenando a <strong>${name}</strong>...</div>`;
+        });
+
+        return `<div class="message ${roleClass}">${timeSpan}${formatMarkdown(displayContent)}</div>`;
+    }).join('') + thinkingHtml;
+    
+    setTimeout(() => {
+        adminChatMessages.scrollTop = adminChatMessages.scrollHeight;
+    }, 50);
+}
+
+window.clearAdminChat = () => {
+    if (!confirm("¿Borrar todo el historial del chat de administración?")) return;
+    state.adminMessages = [];
+    renderAdminMessages();
+    saveData();
+};
+
+function buildAdminSystemPrompt() {
+    const agentsList = state.projects.flatMap(p => p.chats.map(c => ({
+        name: c.name,
+        projectId: p.id,
+        projectName: p.name,
+        chatId: c.id,
+        status: c.isThinking ? 'OCUPADO' : 'OCIOSO'
+    })));
+
+    let prompt = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.
+Tu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.
+
+LISTA DE AGENTES ACTIVOS (Usa preferiblemente el "Nombre" o el "ID" para referirte a ellos):
+${agentsList.map(a => `- Nombre: "${a.name}" | Proyecto: "${a.projectName}" | ID: "${a.chatId}" | Estado: ${a.status}`).join('\n')}
+
+INSTRUCCIONES DE COMANDO:
+Para delegar tareas, usa exactamente el formato:
+[@Nombre: "Tu instrucción"] o [@ID: "Tu instrucción"]
+
+Puedes hablar con varios agentes a la vez:
+[@Agente 1: "Tarea A"] [@Agente 2: "Tarea B"]
+
+REGLAS:
+1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.
+2. Si un agente te reporta que terminó (verás mensajes del sistema informándote), lee su resultado y decide si la tarea global está completa o si necesitas que otro agente haga algo más.
+3. Responde siempre al usuario informando qué estás haciendo (ej: "Entendido, le pediré a Agente 1 que haga X y a Agente 2 que haga Y").
+4. Sé conciso pero claro. Eres el jefe de orquesta.
+`;
+    return prompt;
+}
+
+let adminTriggerTimeout = null;
+async function triggerAdminAgentLogic() {
+    // If already thinking, we'll try again after it finishes if something new arrived
+    if (state.adminIsThinking) {
+        state.adminNeedsRecheck = true;
+        return;
+    }
+    
+    state.adminIsThinking = true;
+    state.adminNeedsRecheck = false;
+    renderAdminMessages();
+
+    const systemMsg = { role: 'system', content: buildAdminSystemPrompt() };
+    const history = state.adminMessages.map(m => ({
+        role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
+        content: m.content
+    }));
+
+    const messages = [systemMsg, ...history];
+
+    try {
+        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+            method: 'POST',
+            body: JSON.stringify({ 
+                model: modelSelect.value, 
+                messages: messages,
+                stream: false 
+            })
+        });
+
+        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        const data = await response.json();
+        const assistantResponse = data.message.content;
+
+        state.adminMessages.push({ role: 'agent', content: assistantResponse });
+        renderAdminMessages();
+        saveData();
+
+        // Parse Dispatches: [@AgentName: "instruction"]
+        const dispatchRegex = /\[@([^:]+):[ \t]*"(.*?)"\]/g;
+        let match;
+        while ((match = dispatchRegex.exec(assistantResponse)) !== null) {
+            const targetName = match[1].trim().toLowerCase();
+            const instruction = match[2];
+            
+            let found = false;
+            for (const p of state.projects) {
+                for (const c of p.chats) {
+                    const agentNameLower = c.name.toLowerCase();
+                    const projectNameLower = p.name.toLowerCase();
+                    const agentIdLower = c.id.toLowerCase();
+                    const compositeName = `${agentNameLower} (${projectNameLower})`;
+
+                    // Buscamos coincidencia exacta por nombre, ID, nombre sin espacios, o el formato Agente (Proyecto) que suele usar el LLM
+                    if (agentNameLower === targetName || 
+                        agentNameLower.replace(/\s+/g, '') === targetName.replace(/\s+/g, '') || 
+                        agentIdLower === targetName ||
+                        compositeName === targetName ||
+                        targetName.startsWith(agentNameLower) && targetName.includes(projectNameLower)) {
+                        
+                        c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
+                        state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}**` });
+                        if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${targetName}**` });
+            }
+        }
+        renderAdminMessages();
+        state.adminIsThinking = false;
+        
+        // If an agent finished while we were thinking, trigger again to process the latest news
+        if (state.adminNeedsRecheck) {
+            triggerAdminAgentLogic();
+        } else {
+            renderAdminMessages();
+            saveData();
+        }
+
+    } catch (e) {
+        state.adminIsThinking = false;
+        state.adminMessages.push({ role: 'system', content: '⚠️ Error de Orquestación: ' + e.message });
+        renderAdminMessages();
+    }
 }
 
 function renderAdminMonitor() {
@@ -1229,6 +1424,12 @@ function renderAdminMonitor() {
                     </td>
                     <td><span class="time-cell">${lastTime}</span></td>
                     <td>
+                        <div class="direct-input-group">
+                            <input type="text" id="direct-input-${p.id}-${c.id}" placeholder="Escribir instrucción..." onkeydown="if(event.key==='Enter') window.sendDirectAgentCommand('${p.id}', '${c.id}')"/>
+                            <button class="btn-direct-send" onclick="window.sendDirectAgentCommand('${p.id}', '${c.id}')">🚀</button>
+                        </div>
+                    </td>
+                    <td>
                         <button class="btn-stop" ${stopBtnDisabled} onclick="window.stopAgent('${p.id}', '${c.id}')">STOP</button>
                     </td>
                 </tr>
@@ -1236,7 +1437,7 @@ function renderAdminMonitor() {
         });
     });
     
-    monitorTbody.innerHTML = html || '<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
+    monitorTbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
 }
 
 async function processAgentActions(text, project, chat) {
@@ -1664,17 +1865,6 @@ async function nativePickFolder() {
     finally { scanFolderBtn.innerHTML = '📁'; }
 }
 
-function formatLogs(logs) {
-    if (!logs || logs.length === 0) return "";
-    let html = '<div class="action-logs">';
-    logs.forEach(log => {
-        const icon = log.type === 'success' ? '✅' : (log.type === 'error' ? '❌' : 'ℹ️');
-        html += `<div class="log-step ${log.type}"><span>${icon}</span> <span>${log.message}</span></div>`;
-    });
-    html += '</div>';
-    return html;
-}
-
 function setupEventListeners() {
     adminMonitorBtn.onclick = () => {
         const p = getActiveProject();
@@ -1685,21 +1875,39 @@ function setupEventListeners() {
         }
     };
 
-    adminSendBtn.onclick = () => {
+    adminSendBtn.onclick = async () => {
         const cmd = adminGlobalInput.value.trim();
         if (!cmd) return;
-        adminLog(`📢 Comando Global: <em>"${cmd}"</em>`);
         
-        state.projects.forEach(p => {
-            p.chats.forEach(c => {
-                if (c.isThinking) {
-                    c.messages.push({ role: 'system', content: `🚨 INSTRUCCIÓN ADMINISTRATIVA GLOBAL: ${cmd}` });
-                    adminLog(`   ↳ Enviado a <strong>${c.name}</strong> (${p.name})`);
-                }
-            });
-        });
+        state.adminMessages.push({ role: 'user', content: cmd, timestamp: Date.now() });
         adminGlobalInput.value = '';
+        renderAdminMessages();
+        
+        await triggerAdminAgentLogic();
     };
+
+    adminGlobalInput.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            adminSendBtn.click();
+        }
+    };
+
+window.sendDirectAgentCommand = async (projectId, chatId) => {
+    const input = document.getElementById(`direct-input-${projectId}-${chatId}`);
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    
+    const project = state.projects.find(p => p.id === projectId);
+    const chat = project.chats.find(c => c.id === chatId);
+    
+    if (chat) {
+        chat.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DIRECTA DESDE MONITOR: ${cmd}` });
+        adminLog(`🎯 Monitor enviada instrucción a <strong>${chat.name}</strong>: <em>"${cmd}"</em>`);
+        input.value = '';
+        if (!chat.isThinking) triggerAgentLogic(project, chat);
+    }
+};
 
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };

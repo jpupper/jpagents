@@ -152,6 +152,7 @@
                                 <th>Proyecto</th>
                                 <th>Estado</th>
                                 <th>Último Avance</th>
+                                <th>Instrucción Directa</th>
                                 <th>Acción</th>
                             </tr>
                         </thead>
@@ -162,7 +163,10 @@
                 </div>
                 
                 <div class="admin-chat-section">
+                <div class="admin-chat-header">
                     <h3>💬 Chat de Administración</h3>
+                    <button onclick="window.clearAdminChat()" class="btn-clear-admin" title="Limpiar chat de administración">🧹 Borrar Historial</button>
+                </div>
                     <div id="admin-chat-messages" class="chat-messages admin-log">
                         <!-- Administrative logs and messages -->
                         <div class="message system">Bienvenido al Centro de Control. Aquí verás el progreso de todos los agentes.</div>

@@ -2,9 +2,36 @@
   {
     "type": "log",
     "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\generativeantsystem\\kodahash_template"
+    ],
+    "timestamp": "2026-04-21T07:02:37.279Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\sistemasfullscreen\\diploia"
+    ],
+    "timestamp": "2026-04-21T07:02:38.113Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\generativeantsystem\\kodahash_template"
+    ],
+    "timestamp": "2026-04-21T07:02:38.754Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
       "📂 Project has folder, scanning: D:\\Programacion\\jpagents"
     ],
-    "timestamp": "2026-04-21T06:19:59.308Z",
+    "timestamp": "2026-04-21T07:02:39.343Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
