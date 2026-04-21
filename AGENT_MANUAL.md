@@ -46,11 +46,17 @@ El administrador actúa como un controlador central. No modifica archivos direct
 
 ### 📡 Delegación de Tareas (`DELEGATE`)
 Permite al orquestador enviar instrucciones a uno o varios agentes específicos.
-- **Formato:** `[@NombreDelAgente: "Instrucción detallada"]`
-- **Ejemplo:** `[@Agente 1: "Crea un componente de login en login.js"]`
+- **Formato Robusto (Recomendado):**
+  ```
+  [DELEGATE:Nombre_o_ID]
+  Instrucción detallada aquí...
+  [/DELEGATE]
+  ```
+- **Formato Rápido:** `[@NombreOId: "Instrucción"]`
 - **Comportamiento:** 
   - El orquestador puede mencionar a varios agentes en un mismo mensaje.
-  - El sistema busca coincidencias por Nombre o ID del agente.
+  - El sistema busca coincidencias por Nombre, ID del agente o Nombre del Proyecto.
+  - Es preferible usar el **ID del agente** (ej: `chat-abc123`) para evitar ambigüedades.
 
 ---
 

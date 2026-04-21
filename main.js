@@ -197,17 +197,23 @@ async function checkSystemHealth() {
 const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO: Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.`;
 
-const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.
-Tu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.
+const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
+Tu objetivo es delegar tareas a los agentes adecuados.
 
-INSTRUCCIONES DE COMANDO:
-Para delegar tareas, usa exactamente el formato:
-[@Nombre: "Tu instrucción"] o [@ID: "Tu instrucción"]
+INSTRUCCIONES DE COMANDO (DELEGATE):
+Para delegar, usa preferiblemente el formato robusto:
+[DELEGATE:ID_O_NOMBRE]
+Instrucción clara y detallada aquí...
+[/DELEGATE]
 
-REGLAS:
-1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.
-2. Si un agente te reporta que terminó, lee su resultado y decide si la tarea global está completa.
-3. Responde siempre al usuario informando qué estás haciendo.`;
+También puedes usar el formato rápido para instrucciones simples:
+[@ID_O_NOMBRE: "Instrucción corta"]
+
+REGLAS CRÍTICAS:
+1. Usa preferiblemente el ID del agente (ej: chat-xyz) proporcionado en la lista para evitar errores.
+2. NUNCA inventes nombres o IDs. Si no encuentras a quién enviar, pregunta al usuario.
+3. Puedes delegar a varios agentes en una sola respuesta si es necesario.`;
+
 
 let state = {
     projects: [],
@@ -519,7 +525,9 @@ function renderProjectList() {
                     </div>
                     <div class="dot ${isThinking ? 'busy' : ''} ${p.isCorrupted ? 'error' : ''}"></div>
                 </div>
-                <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject('${p.id}')">🗑️</button>
+                <div class="chat-item-actions">
+                    <button class="btn-item-action delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject('${p.id}')">🗑️</button>
+                </div>
             </div>
         `;
     }).join('');
@@ -586,6 +594,80 @@ function renderTabs() {
     updateViewVisibility();
 }
 
+window.viewActiveProjectPrompt = () => {
+    const project = getActiveProject();
+    if (project) {
+        window.viewProjectPrompt(project.id);
+    }
+};
+
+window.viewProjectPrompt = (projectId) => {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    
+    const prompt = project.projectPrompt || "No hay instrucciones específicas para este proyecto.";
+    
+    // Create a simple overlay to show the prompt
+    const overlay = document.createElement('div');
+    overlay.className = 'modal'; // Reuse modal styles
+    overlay.style.display = 'flex';
+    overlay.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Instrucciones de ${project.name}</h3>
+                <button class="close-modal" onclick="this.closest('.modal').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <textarea class="config-textarea" readonly rows="12" style="width: 100%;">${prompt}</textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="this.closest('.modal').remove()">Cerrar</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+};
+
+window.stopActiveAgent = () => {
+    const chat = getActiveChat();
+    if (chat) {
+        chat.isStopped = true;
+        chat.isThinking = false;
+        const sendBtn = document.getElementById('send-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        if (sendBtn) sendBtn.classList.remove('hidden');
+        if (stopBtn) stopBtn.classList.add('hidden');
+        
+        chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
+        renderMessages();
+    }
+};
+
+window.stopAgent = (projectId, chatId) => {
+    // If only one arg provided, assume it's chatId and use active project
+    if (chatId === undefined) {
+        chatId = projectId;
+        const project = getActiveProject();
+        if (!project) return;
+        const chat = project.chats.find(c => c.id === chatId);
+        if (chat) {
+            chat.isStopped = true;
+            chat.isThinking = false;
+        }
+    } else {
+        const project = state.projects.find(p => p.id === projectId);
+        if (!project) return;
+        const chat = project.chats.find(c => c.id === chatId);
+        if (chat) {
+            chat.isStopped = true;
+            chat.isThinking = false;
+        }
+    }
+    renderAdminMonitor();
+    renderTabs();
+    renderProjectList();
+};
+
 function updateViewVisibility() {
     const project = getActiveProject();
     if (!project) return;
@@ -608,6 +690,19 @@ function updateViewVisibility() {
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
             syncModeUI(chat.mode);
+            
+            // Sync chat header
+            const agentNameSpan = document.getElementById('chat-agent-name');
+            if (agentNameSpan) agentNameSpan.textContent = `🤖 ${chat.name}`;
+            
+            // Update STOP button and thinking indicator based on current state
+            const stopBtn = document.getElementById('stop-btn');
+            const thinkingInd = document.getElementById('chat-thinking-indicator');
+            const statusSpan = document.getElementById('chat-thinking-status');
+            
+            if (stopBtn) stopBtn.classList.toggle('hidden', !chat.isThinking);
+            if (thinkingInd) thinkingInd.classList.toggle('hidden', !chat.isThinking);
+            if (statusSpan && chat.thinkingStatus) statusSpan.textContent = chat.thinkingStatus;
         }
     } else if (project.activeTabId === 'admin') {
         adminTabContent.classList.remove('hidden');
@@ -903,6 +998,28 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
     chat.isThinking = isThinking;
     chat.thinkingStatus = status;
     chat.thinkingSubtext = subtext;
+    
+    if (!isThinking) {
+        chat.isStopped = false; // Reset stop state when finished
+    }
+
+    // Update main chat header if this is the active chat
+    const activeChat = getActiveChat();
+    if (activeChat && activeChat.id === chat.id) {
+        const stopBtn = document.getElementById('stop-btn');
+        const thinkingInd = document.getElementById('chat-thinking-indicator');
+        const statusSpan = document.getElementById('chat-thinking-status');
+        
+        if (isThinking) {
+            if (stopBtn) stopBtn.classList.remove('hidden');
+            if (thinkingInd) thinkingInd.classList.remove('hidden');
+            if (statusSpan) statusSpan.textContent = status || "Pensando...";
+        } else {
+            if (stopBtn) stopBtn.classList.add('hidden');
+            if (thinkingInd) thinkingInd.classList.add('hidden');
+        }
+    }
+
     if (isThinking) {
         chat.lastProgress = Date.now();
         // If we are in admin view, refresh it
@@ -910,6 +1027,9 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
         if (project && project.activeTabId === 'admin') renderAdminMonitor();
     }
     renderMessages(false);
+    renderProjectList(); // Added to update dots
+    renderAdminMonitor(); // Added to update monitor
+    renderTabs(); // Added to update tabs dots
 }
 
 function formatMarkdown(text) {
@@ -995,7 +1115,12 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
         
-        let logsHtml = formatLogs(actionResult.logs);
+        if (actionResult.stopped) {
+            updateThinking(chat, false);
+            chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario durante el procesamiento.' });
+            renderMessages();
+            return;
+        }
         
         // Clean display text: replace code blocks with clickable links
         let displayContent = assistantResponse
@@ -1011,14 +1136,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
-        // CHECK FOR CONSOLE ERRORS
-        updateThinking(chat, true, "Verificando errores", "Revisando consola del navegador...");
-        const consoleErrors = await getClientErrors();
-        if (consoleErrors.length > 0) {
-            const errorReport = consoleErrors.map(e => `[${e.timestamp}] ${e.messages.join(' ')}`).join('\n');
-            actionResult.errors.push(`🚫 Se detectaron errores en la consola del frontend tras tus cambios:\n${errorReport}\nPor favor, analiza estos errores y corrígelos.`);
-            logsHtml += `<div class="log-step error"><span>🚫</span> <span>Errores detectados en consola</span></div>`;
-        }
+        let logsHtml = formatLogs(actionResult.logs);
+
+
 
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
@@ -1208,26 +1328,53 @@ INSTRUCCIONES DE OPERACIÓN (OBLIGATORIAS):
 2. MODIFICACIÓN DE ARCHIVOS (REPLACE): Para realizar cambios parciales, usa el siguiente formato EXACTO:
 [REPLACE:nombre_del_archivo]
 <<<<< SEARCH
-(el fragmento de código exacto que deseas cambiar, incluyendo espacios y sangrías)
+(el fragmento de código exacto que deseas cambiar, incluyendo cada espacio y tabulación)
 =====
-(el nuevo código que reemplazará al fragmento anterior)
+(el nuevo código)
 >>>>>
 [/REPLACE]
 
 3. CREACIÓN/SOBREESCRITURA TOTAL (WRITE): Para crear archivos nuevos o reemplazar el contenido completo, usa:
 [WRITE:nombre_del_archivo]
-(contenido completo del archivo)
+(contenido)
 [/WRITE]
 
-REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
-- Sé 100% autónomo. Si el usuario te pide un cambio y no tienes el contenido reciente del archivo, usa [READ] de inmediato. No preguntes "puedo leer?".
-- El bloque SEARCH debe ser UNA COPIA IDENTICA, carácter por carácter. El sistema es sensible a espacios, saltos de línea y tabulaciones.
-- Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas.
-- SIEMPRE comprueba si tu acción tuvo éxito. Si el sistema te devuelve un error de "SEARCH NO ENCONTRADO", el primer paso es volver a LEER el archivo para verificar si el código cambió o si cometiste un error de copia.
-- El sistema realizará reintentos automáticos si fallas. Utiliza cada reintento para corregir el formato o la precisión del código buscado.`;
-
+REGLAS CRÍTICAS DE SUPERVIVENCIA:
+- PRIMERO LEER, LUEGO ESCRIBIR: Es IMPOSIBLE hacer un REPLACE correcto sin haber hecho un [READ] previo en el mismo turno. Hazlo siempre.
+- SEARCH IDENTICO: Debes copiar el bloque SEARCH exactamente como aparece en el [READ], sin omitir comentarios ni líneas vacías intermedias.
+- PERSISTENCIA: Si un cambio falla, lee el archivo de nuevo. No intentes corregir a ciegas.
+- AUTONOMÍA: No pidas permiso para leer. Si necesitas saber qué hay en un archivo para cumplir la orden, léelo.`;
 
     return prompt;
+}
+
+function getInternalAgentInstructions() {
+    return `INSTRUCCIONES DE OPERACIÓN (OCULTAS EN SISTEMA):
+
+0. REGLA DE ORO DE LECTURA (CRÍTICA): NO PUEDES modificar un archivo sin haberlo leído primero en esta misma conversación. Aunque creas conocer el contenido, DEBES usar [READ:archivo]. Si intentas un [REPLACE] o [WRITE] sin un [READ] previo, el sistema rechazará la acción.
+
+1. LECTURA DE ARCHIVOS: Usa este comando para obtener el contenido actual EXACTO:
+[READ:nombre_del_archivo]
+
+2. MODIFICACIÓN DE ARCHIVOS (REPLACE): Para realizar cambios parciales, usa el siguiente formato EXACTO:
+[REPLACE:nombre_del_archivo]
+<<<<< SEARCH
+(el fragmento de código exacto que deseas cambiar, incluyendo cada espacio y tabulación)
+=====
+(el nuevo código)
+>>>>>
+[/REPLACE]
+
+3. CREACIÓN/SOBREESCRITURA TOTAL (WRITE): Para crear archivos nuevos o reemplazar el contenido completo, usa:
+[WRITE:nombre_del_archivo]
+(contenido)
+[/WRITE]
+
+REGLAS CRÍTICAS DE FUNCIÓN:
+- PRIMERO LEER, LUEGO ESCRIBIR: Es IMPOSIBLE hacer un REPLACE correcto sin haber hecho un [READ] previo.
+- SEARCH IDENTICO: Debes copiar el bloque SEARCH exactamente como aparece en el [READ].
+- PERSISTENCIA: Si un cambio falla, lee el archivo de nuevo.
+- AUTONOMÍA: No pidas permiso para realizar lecturas necesarias.`;
 }
 
 window.stopAgent = (projectId, chatId) => {
@@ -1311,35 +1458,23 @@ function buildAdminSystemPrompt() {
         status: c.isThinking ? 'OCUPADO' : 'OCIOSO'
     })));
 
-    if (state.orchestratorPrompt) {
-        return state.orchestratorPrompt + "\n\nLISTA DE AGENTES ACTIVOS:\n" + 
-               agentsList.map(a => `- Nombre: "${a.name}" | Proyecto: "${a.projectName}" | ID: "${a.chatId}" | Estado: ${a.status}`).join('\n');
-    }
+    const agentsTable = agentsList.map(a => `| ${a.chatId} | ${a.name} | ${a.projectName} | ${a.status} |`).join('\n');
 
-    let prompt = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.
-Tu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.
+    let prompt = (state.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT) + `
 
-LISTA DE AGENTES ACTIVOS (Usa preferiblemente el "Nombre" o el "ID" para referirte a ellos):
-${agentsList.map(a => `- Nombre: "${a.name}" | Proyecto: "${a.projectName}" | ID: "${a.chatId}" | Estado: ${a.status}`).join('\n')}
+LISTA DE AGENTES ACTIVOS:
+| ID (USAR ESTE) | NOMBRE | PROYECTO | ESTADO |
+| :--- | :--- | :--- | :--- |
+${agentsTable}
 
-INSTRUCCIONES DE COMANDO:
-Para delegar tareas, usa exactamente el formato:
-[@Nombre: "Tu instrucción"] o [@ID: "Tu instrucción"]
-
-Puedes hablar con varios agentes a la vez:
-[@Agente 1: "Tarea A"] [@Agente 2: "Tarea B"]
-
-REGLAS:
-1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.
-2. Si un agente te reporta que terminó (verás mensajes del sistema informándote), lee su resultado y decide si la tarea global está completa o si necesitas que otro agente haga algo más.
-3. Responde siempre al usuario informando qué estás haciendo (ej: "Entendido, le pediré a Agente 1 que haga X y a Agente 2 que haga Y").
-4. Sé conciso pero claro. Eres el jefe de orquesta.
-`;
+INSTRUCCIONES:
+- Identifica al agente por su ID o Nombre.
+- Usa [DELEGATE:ID]...[/DELEGATE] para enviar la instrucción.`;
     return prompt;
 }
 
 let adminTriggerTimeout = null;
-async function triggerAdminAgentLogic() {
+async function triggerAdminAgentLogic(retryCount = 0) {
     // If already thinking, we'll try again after it finishes if something new arrived
     if (state.adminIsThinking) {
         state.adminNeedsRecheck = true;
@@ -1376,39 +1511,104 @@ async function triggerAdminAgentLogic() {
         renderAdminMessages();
         saveData();
 
-        // Parse Dispatches: [@AgentName: "instruction"]
-        const dispatchRegex = /\[@([^:]+):[ \t]*"(.*?)"\]/g;
-        let match;
-        while ((match = dispatchRegex.exec(assistantResponse)) !== null) {
-            const targetName = match[1].trim().toLowerCase();
-            const instruction = match[2];
+        // Parse Dispatches: [DELEGATE:target]...[/DELEGATE] OR [@target: "..."]
+        const robustRegex = /\[DELEGATE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/DELEGATE\]/gi;
+        const quickRegex = /\[@\s*([^:]+?)\s*:\s*"(.*?)"\s*\]/gi;
+        
+        const dispatches = [];
+        let m;
+        while ((m = robustRegex.exec(assistantResponse)) !== null) {
+            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
+        }
+        while ((m = quickRegex.exec(assistantResponse)) !== null) {
+            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
+        }
+
+        let anyFailed = false;
+        let failedTargets = [];
+
+        for (const dispatch of dispatches) {
+            let rawTarget = dispatch.rawTarget;
+            const instruction = dispatch.instruction;
+
+            // Limpieza ULTRA-robusta del identificador
+            let targetName = rawTarget.toLowerCase()
+                .replace(/["'“”]/g, '') // Quitar comillas de todo tipo
+                .split('|')[0]         // Si copió toda la línea con pipes, agarrar solo lo primero
+                .split('(')[0]         // Si puso el proyecto en paréntesis, quitarlo
+                .replace(/^(agente|nombre|id|proyecto|name|target|id_unico|destinatario|id \(usar este\)):/i, '')
+                .replace(/^(el agente|el proyecto|agente|proyecto)\s+/i, '')
+                .split('[')[0]         // Quitar posibles [ID: ...] finales si copió la línea entera
+                .trim();
             
             let found = false;
+            // Primero buscar por ID exacto (prioridad)
             for (const p of state.projects) {
                 for (const c of p.chats) {
-                    const agentNameLower = c.name.toLowerCase();
-                    const projectNameLower = p.name.toLowerCase();
-                    const agentIdLower = c.id.toLowerCase();
-                    const compositeName = `${agentNameLower} (${projectNameLower})`;
-
-                    // Buscamos coincidencia exacta por nombre, ID, nombre sin espacios, o el formato Agente (Proyecto) que suele usar el LLM
-                    if (agentNameLower === targetName || 
-                        agentNameLower.replace(/\s+/g, '') === targetName.replace(/\s+/g, '') || 
-                        agentIdLower === targetName ||
-                        compositeName === targetName ||
-                        targetName.startsWith(agentNameLower) && targetName.includes(projectNameLower)) {
-                        
+                    if (c.id.toLowerCase() === targetName) {
                         c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
                         state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}**` });
                         if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
                         found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+
+            // Si no se encontró por ID, buscar por nombre o proyecto de forma flexible
+            if (!found && targetName) {
+                for (const p of state.projects) {
+                    for (const c of p.chats) {
+                        const agentNameLower = c.name.toLowerCase();
+                        const projectNameLower = p.name.toLowerCase();
+                        const compositeName = `${agentNameLower} (${projectNameLower})`.toLowerCase();
+
+                        // Coincidencias ultra-flexibles
+                        const isMatch = 
+                            agentNameLower === targetName || 
+                            projectNameLower === targetName ||
+                            compositeName === targetName ||
+                            targetName === agentNameLower.replace(/\s+/g, '') ||
+                            targetName === projectNameLower.replace(/\s+/g, '') ||
+                            agentNameLower.includes(targetName) ||
+                            projectNameLower.includes(targetName) ||
+                            targetName.includes(agentNameLower);
+
+                        if (isMatch) {
+                            c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
+                            state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}** (vía coincidencia de nombre)` });
+                            if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
+                            found = true;
+                        }
                     }
                 }
             }
             if (!found) {
-                state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${targetName}**` });
+                state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${rawTarget}**` });
+                anyFailed = true;
+                failedTargets.push(rawTarget);
             }
         }
+
+        if (anyFailed && retryCount < 3) {
+            const agentList = state.projects.flatMap(p => p.chats.map(c => `- ${c.name} (Proyecto: ${p.name}) [ID: ${c.id}]`)).join('\n');
+            const retryFeedback = `⚠️ Error de Orquestación: No pude resolver los destinatarios: [${failedTargets.join(', ')}]. 
+Por favor, asegúrate de usar EXACTAMENTE el "Nombre" o el "ID" (sin prefijos) de esta lista oficial de agentes activos:
+
+${agentList}
+
+REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
+            
+            state.adminMessages.push({ role: 'system', content: retryFeedback });
+            state.adminIsThinking = false;
+            
+            // Re-trigger con feedback para que corrija
+            console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/3) por error en destinatarios.`);
+            setTimeout(() => triggerAdminAgentLogic(retryCount + 1), 1500);
+            return;
+        }
+
         renderAdminMessages();
         state.adminIsThinking = false;
         
@@ -1456,7 +1656,7 @@ function renderAdminMonitor() {
                         </div>
                     </td>
                     <td>
-                        <button class="btn-stop" ${stopBtnDisabled} onclick="window.stopAgent('${p.id}', '${c.id}')">STOP</button>
+                        <button class="btn-stop" onclick="window.stopAgent('${p.id}', '${c.id}')">STOP</button>
                     </td>
                 </tr>
             `;
@@ -1484,6 +1684,7 @@ async function processAgentActions(text, project, chat) {
     const readRegex = /\[READ:(.*?)\]/g;
     let match;
     while ((match = readRegex.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();
         logs.push({ type: 'info', message: `Solicitud de lectura: **${fileName}**` });
         updateThinking(chat, true, "Leyendo archivo", fileName);
@@ -1509,6 +1710,7 @@ async function processAgentActions(text, project, chat) {
     // 2. Handle New Files / Full Write
     const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
     while ((match = writeRegex.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();
         const content = match[2];
         logs.push({ type: 'info', message: `Escritura completa (WRITE): **${fileName}**` });
@@ -1532,6 +1734,7 @@ async function processAgentActions(text, project, chat) {
     // 3. Handle Partial Replacement (SEARCH/REPLACE)
     const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
     while ((match = replaceRegex.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();
         logs.push({ type: 'info', message: `Modificación parcial (REPLACE): **${fileName}**` });
         updateThinking(chat, true, "Modificando archivo", fileName);
@@ -1566,30 +1769,49 @@ async function processAgentActions(text, project, chat) {
             const replaceText = srMatch[2];
 
             // Robust matching: Normalize line endings and trim trailing spaces
-            const normalize = (t) => t.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '');
-            const normContent = normalize(updatedContent);
-            const normSearch = normalize(searchText);
+            const normalize = (t) => t.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+            const normContent = updatedContent.replace(/\r\n/g, '\n');
+            const normSearch = searchText.replace(/\r\n/g, '\n');
 
             if (normContent.includes(normSearch)) {
-                if (updatedContent.includes(searchText)) {
-                    updatedContent = updatedContent.replace(searchText, replaceText);
-                } else {
-                    updatedContent = normContent.replace(normSearch, normalize(replaceText));
-                }
+                updatedContent = normContent.replace(normSearch, replaceText.replace(/\r\n/g, '\n'));
                 successCount++;
-                logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} encontrado y reemplazado en **${fileName}**` });
+                logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} encontrado con éxito en **${fileName}**` });
             } else {
-                const trimmedSearch = searchText.trim();
-                const normTrimmedSearch = normalize(trimmedSearch);
-                if (normTrimmedSearch && normContent.includes(normTrimmedSearch)) {
-                    updatedContent = normContent.replace(normTrimmedSearch, normalize(replaceText.trim()));
-                    successCount++;
-                    logs.push({ type: 'success', message: `Bloque SEARCH ${blocksFound} (con trim) reemplazado en **${fileName}**` });
+                // FALLBACK PERMISIVO: Ignorar espacios en blanco iniciales/finales de cada línea si falla el exacto
+                const looseNormalize = (t) => t.split('\n').map(l => l.trim()).filter(l => l.length > 0).join('\n');
+                const looseContent = looseNormalize(normContent);
+                const looseSearch = looseNormalize(normSearch);
+                
+                if (looseSearch && looseContent.includes(looseSearch)) {
+                     // Si el loose match funciona, usamos una aproximación más compleja 
+                     // (Para no romper la indentación del archivo original, avisamos que fue un match parcial)
+                     logs.push({ type: 'info', message: `Bloque SEARCH ${blocksFound} encontrado mediante coincidencia flexible (indentación ignorada) en **${fileName}**` });
+                     
+                     // Reemplazo simplificado: buscamos la primera línea del bloque y asumimos el bloque
+                     const searchLines = normSearch.trim().split('\n');
+                     if (searchLines.length > 0) {
+                         const firstLine = searchLines[0].trim();
+                         const lastLine = searchLines[searchLines.length - 1].trim();
+                         
+                         // Intentamos un reemplazo basado en los límites si el contenido es suficientemente único
+                         // pero por ahora, para máxima seguridad, simplemente fallamos y pedimos reincidencia
+                         // EXCEPTO si es un bloque pequeño
+                         if (searchLines.length < 5) {
+                              updatedContent = normContent.replace(normSearch.trim(), replaceText.trim());
+                              successCount++;
+                         } else {
+                              failCount++;
+                              logs.push({ type: 'error', message: `Bloque SEARCH ${blocksFound} no coincide exactamente. Por favor, lee el archivo de nuevo.` });
+                         }
+                    } else {
+                        failCount++;
+                    }
                 } else {
                     failCount++;
                     logs.push({ 
                         type: 'error', 
-                        message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**`,
+                        message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**.`,
                         details: searchText
                     });
                 }
@@ -1685,6 +1907,13 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
 
+        if (actionResult.stopped) {
+            updateThinking(chat, false);
+            chat.messages.push({ role: 'agent', content: '🛑 Auto-reintento detenido por el usuario.' });
+            renderMessages();
+            return;
+        }
+
         let logsHtml = formatLogs(actionResult.logs);
 
         // Clean display text
@@ -1701,14 +1930,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
-        // CHECK FOR CONSOLE ERRORS (during retry)
-        updateThinking(chat, true, "Verificando errores", "Revisando consola del navegador...");
-        const consoleErrors = await getClientErrors();
-        if (consoleErrors.length > 0) {
-            const errorReport = consoleErrors.map(e => `[${e.timestamp}] ${e.messages.join(' ')}`).join('\n');
-            actionResult.errors.push(`🚫 Continúan los errores en la consola del navegador:\n${errorReport}`);
-            logsHtml += `<div class="log-step error"><span>🚫</span> <span>Errores persistentes en consola</span></div>`;
-        }
+
 
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
@@ -2045,6 +2267,8 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     globalSettingsBtn.onclick = () => {
         globalPromptTextarea.value = state.globalPrompt || '';
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
+        const internalPromptTextarea = document.getElementById('internal-agent-prompt');
+        if (internalPromptTextarea) internalPromptTextarea.value = getInternalAgentInstructions();
         globalSettingsModal.classList.remove('hidden');
     };
 
