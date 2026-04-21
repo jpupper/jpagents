@@ -194,14 +194,30 @@ async function checkSystemHealth() {
 }
 
 // New State Structure: Projects -> Chats & Files
+const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO: Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
+Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.`;
+
+const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.
+Tu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.
+
+INSTRUCCIONES DE COMANDO:
+Para delegar tareas, usa exactamente el formato:
+[@Nombre: "Tu instrucción"] o [@ID: "Tu instrucción"]
+
+REGLAS:
+1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.
+2. Si un agente te reporta que terminó, lee su resultado y decide si la tarea global está completa.
+3. Responde siempre al usuario informando qué estás haciendo.`;
+
 let state = {
     projects: [],
     activeProjectId: null,
     models: [],
     selectedModel: '',
     mode: 'auto', // 'auto' or 'supervised'
-    globalPrompt: '',
-    adminMessages: [], // To store Administrator Agent chat history
+    globalPrompt: DEFAULT_GLOBAL_PROMPT,
+    orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
+    adminMessages: [], 
     adminIsThinking: false
 };
 
@@ -276,7 +292,8 @@ async function loadData() {
             state.projects = data.map(sanitizeProject);
         } else if (data && typeof data === 'object') {
             state.projects = (data.projects || []).map(sanitizeProject);
-            state.globalPrompt = data.globalPrompt || '';
+            state.globalPrompt = data.globalPrompt || DEFAULT_GLOBAL_PROMPT;
+            state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
             state.activeProjectId = data.activeProjectId || null;
             state.adminMessages = data.adminMessages || [];
         }
@@ -329,6 +346,7 @@ async function saveData() {
         const payload = {
             projects: state.projects,
             globalPrompt: state.globalPrompt,
+            orchestratorPrompt: state.orchestratorPrompt,
             activeProjectId: state.activeProjectId,
             adminMessages: state.adminMessages
         };
@@ -1007,14 +1025,16 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (actionResult.reads && actionResult.reads.length > 0) {
             // Add read content to history and auto-continue
             const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
-            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora que tienes el código, procede con las modificaciones solicitadas.` });
+            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora que tienes el código real, procede con las modificaciones solicitadas usando [REPLACE] o [WRITE].` });
             await autoRetry("Continuando tras lectura...", project, chat);
         } else if (actionResult.errors.length > 0) {
-            // Auto-feedback loop: Send errors back to IA for self-correction
-            const errorMsg = `⚠️ Se detectaron los siguientes problemas en la operación:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, asegúrate de que el bloque sea EXACTO. Si el archivo no cambió, revisa si realmente estás aplicando un cambio con respecto al contenido actual.`;
+            // Auto-feedback loop
+            const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, lee el archivo de nuevo para asegurarte de copiar el bloque EXACTO. Si no usaste etiquetas, hazlo ahora.`;
             chat.messages.push({ role: 'agent', content: errorMsg });
             await autoRetry(errorMsg, project, chat);
             renderMessages();
+        } else if (actionResult.actionsPerformed === 0) {
+             // Just finished without actions or reads.
         }
 
         updateThinking(chat, false);
@@ -1178,9 +1198,11 @@ Carpeta de trabajo: ${p.folder}\n`;
     prompt += `\nArchivos actuales en el directorio:
 ${p.currentFiles.map(f => "- " + f.name).join('\n')}
 
-INSTRUCCIONES DE OPERACIÓN:
+INSTRUCCIONES DE OPERACIÓN (OBLIGATORIAS):
 
-1. LECTURA DE ARCHIVOS: Si necesitas modificar un archivo pero NO conoces su contenido exacto, DEBES leerlo primero usando:
+0. REGLA DE ORO DE LECTURA (CRÍTICA): NO PUEDES modificar un archivo sin haberlo leído primero en esta misma conversación. Aunque creas conocer el contenido, DEBES usar [READ:archivo]. Si intentas un [REPLACE] o [WRITE] sin un [READ] previo, el sistema rechazará la acción.
+
+1. LECTURA DE ARCHIVOS: Usa este comando para obtener el contenido actual EXACTO:
 [READ:nombre_del_archivo]
 
 2. MODIFICACIÓN DE ARCHIVOS (REPLACE): Para realizar cambios parciales, usa el siguiente formato EXACTO:
@@ -1198,13 +1220,12 @@ INSTRUCCIONES DE OPERACIÓN:
 [/WRITE]
 
 REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
-- Sé 100% autónomo. Si el usuario te pide un cambio y no tienes el contenido del archivo, usa [READ] de inmediato. No preguntes.
-- El bloque SEARCH debe ser UNA COPIA EXACTA, carácter por carácter, del texto en el archivo original. Si hay un solo espacio de diferencia, el cambio FALLARÁ.
-- Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas, sin texto adicional antes o después.
-- Puedes realizar varias acciones en una sola respuesta (ej: leer un archivo y escribir en otro).
-- El sistema verificará automáticamente si hubo cambios reales en el archivo tras tu acción. Si no los hubo o hubo un error, se te notificará y deberás reintentar con una nueva aproximación (por ejemplo, leyendo el archivo de nuevo para verificar el contenido exacto).
-- También se verificará la consola del frontend. Si tus cambios rompen algo en el navegador, el sistema te pasará el error de consola para que lo arregles.
-- Se realizarán reintentos automáticos hasta que la operación sea exitosa y no haya errores de consola. No te rindas.`;
+- Sé 100% autónomo. Si el usuario te pide un cambio y no tienes el contenido reciente del archivo, usa [READ] de inmediato. No preguntes "puedo leer?".
+- El bloque SEARCH debe ser UNA COPIA IDENTICA, carácter por carácter. El sistema es sensible a espacios, saltos de línea y tabulaciones.
+- Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas.
+- SIEMPRE comprueba si tu acción tuvo éxito. Si el sistema te devuelve un error de "SEARCH NO ENCONTRADO", el primer paso es volver a LEER el archivo para verificar si el código cambió o si cometiste un error de copia.
+- El sistema realizará reintentos automáticos si fallas. Utiliza cada reintento para corregir el formato o la precisión del código buscado.`;
+
 
     return prompt;
 }
@@ -1289,6 +1310,11 @@ function buildAdminSystemPrompt() {
         chatId: c.id,
         status: c.isThinking ? 'OCUPADO' : 'OCIOSO'
     })));
+
+    if (state.orchestratorPrompt) {
+        return state.orchestratorPrompt + "\n\nLISTA DE AGENTES ACTIVOS:\n" + 
+               agentsList.map(a => `- Nombre: "${a.name}" | Proyecto: "${a.projectName}" | ID: "${a.chatId}" | Estado: ${a.status}`).join('\n');
+    }
 
     let prompt = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.
 Tu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.
@@ -1444,8 +1470,17 @@ async function processAgentActions(text, project, chat) {
     const errors = [];
     const reads = [];
     const logs = [];
+    let actionsPerformed = 0;
 
-    // 0. Handle Reads
+    // 0. Detect Broken Tags (Safety Check)
+    if (text.includes('[/REPLACE]') && !text.includes('[REPLACE:')) {
+        errors.push("⚠️ Detecté un cierre de etiqueta [/REPLACE] sin una apertura [REPLACE:archivo]. Asegúrate de abrir siempre con [REPLACE:nombre_archivo].");
+    }
+    if (text.includes('[/WRITE]') && !text.includes('[WRITE:')) {
+        errors.push("⚠️ Detecté un cierre de etiqueta [/WRITE] sin una apertura [WRITE:archivo].");
+    }
+
+    // 1. Handle Reads
     const readRegex = /\[READ:(.*?)\]/g;
     let match;
     while ((match = readRegex.exec(text)) !== null) {
@@ -1457,12 +1492,13 @@ async function processAgentActions(text, project, chat) {
         try {
             const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
             const data = await res.json();
-            if (data.content) {
+            if (data.content !== undefined) {
                 reads.push({ fileName, content: data.content });
                 logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}**` });
+                actionsPerformed++;
             } else {
-                errors.push(`- El archivo ${fileName} parece estar vacío o no existe.`);
-                logs.push({ type: 'error', message: `Archivo vacío o inexistente: **${fileName}**` });
+                errors.push(`- El archivo ${fileName} parece no existir o está vacío.`);
+                logs.push({ type: 'error', message: `Archivo no encontrado o vacío: **${fileName}**` });
             }
         } catch(e) {
             errors.push(`- Error al leer ${fileName}: ${e.message}`);
@@ -1470,7 +1506,7 @@ async function processAgentActions(text, project, chat) {
         }
     }
 
-    // 1. Handle New Files / Full Write
+    // 2. Handle New Files / Full Write
     const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
     while ((match = writeRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
@@ -1480,19 +1516,20 @@ async function processAgentActions(text, project, chat) {
         const writeRes = await performWrite(fileName, content, project, chat);
         
         if (writeRes && writeRes.success) {
+            actionsPerformed++;
             if (!writeRes.hasChanged) {
-                errors.push(`- En ${fileName}: El archivo no cambió. El contenido enviado es idéntico al que ya tiene el archivo.`);
+                errors.push(`- En ${fileName}: El archivo no cambió. El contenido enviado es idéntico al actual.`);
                 logs.push({ type: 'error', message: `Sin cambios en WRITE: **${fileName}**` });
             } else {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
             }
         } else {
-            errors.push(`- Error al escribir ${fileName}: ${writeRes ? writeRes.error : 'Fallo de conexión'}`);
+            errors.push(`- Error al escribir ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
             logs.push({ type: 'error', message: `Error en WRITE: **${fileName}**` });
         }
     }
 
-    // 2. Handle Partial Replacement (SEARCH/REPLACE)
+    // 3. Handle Partial Replacement (SEARCH/REPLACE)
     const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
     while ((match = replaceRegex.exec(text)) !== null) {
         const fileName = match[1].trim();
@@ -1508,7 +1545,7 @@ async function processAgentActions(text, project, chat) {
         try {
             const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
             const data = await res.json();
-            currentFileContent = data.content;
+            currentFileContent = data.content !== undefined ? data.content : "";
         } catch(e) {
             errors.push(`- No se pudo leer el archivo ${fileName} para aplicar el reemplazo.`);
             logs.push({ type: 'error', message: `No se pudo leer para reemplazo: **${fileName}**` });
@@ -1528,8 +1565,8 @@ async function processAgentActions(text, project, chat) {
             let searchText = srMatch[1]; 
             const replaceText = srMatch[2];
 
-            // Robust matching: Normalize line endings to \n and trim trailing whitespace from lines
-            const normalize = (text) => text.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '');
+            // Robust matching: Normalize line endings and trim trailing spaces
+            const normalize = (t) => t.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '');
             const normContent = normalize(updatedContent);
             const normSearch = normalize(searchText);
 
@@ -1552,7 +1589,7 @@ async function processAgentActions(text, project, chat) {
                     failCount++;
                     logs.push({ 
                         type: 'error', 
-                        message: `Bloque SEARCH ${blocksFound} NOT FOUND en **${fileName}**`,
+                        message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**`,
                         details: searchText
                     });
                 }
@@ -1560,29 +1597,39 @@ async function processAgentActions(text, project, chat) {
         }
 
         if (blocksFound === 0) {
-            const err = `- En ${fileName}: No se encontró ningún bloque <<<<< SEARCH / ===== / >>>>> dentro del tag [REPLACE]. Revisa el formato solicitado.`;
-            errors.push(err);
+            errors.push(`- En ${fileName}: Se usó [REPLACE] pero no se encontró un bloque válido de <<<<< SEARCH / ===== / >>>>>.`);
             logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**` });
         } else if (successCount > 0) {
             const writeRes = await performWrite(fileName, updatedContent, project, chat);
             if (writeRes && writeRes.success) {
+                actionsPerformed++;
                 if (!writeRes.hasChanged) {
-                    errors.push(`- En ${fileName}: Los bloques SEARCH coincidieron, pero el contenido resultante es idéntico al actual. ¿Quizás el cambio ya estaba aplicado?`);
+                    errors.push(`- En ${fileName}: Los bloques SEARCH coincidieron, pero el resultado final es idéntico al actual.`);
                     logs.push({ type: 'error', message: `Sin cambios efectivos en REPLACE: **${fileName}**` });
                 } else {
                     logs.push({ type: 'success', message: `Cambios aplicados y verificados en **${fileName}**` });
                 }
             } else {
-                errors.push(`- Error al persistir cambios en ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
-                logs.push({ type: 'error', message: `Error al guardar REPLACE en **${fileName}**` });
+                errors.push(`- Error al guardar REPLACE en ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
+                logs.push({ type: 'error', message: `Error al persistir REPLACE: **${fileName}**` });
             }
-        } 
+        }
         
         if (failCount > 0) {
             errors.push(`- En ${fileName}: No se encontró el bloque SEARCH (${failCount} de ${blocksFound} bloques fallaron).`);
         }
     }
-    return { errors, reads, logs };
+
+    // 4. Intent Detection (If no actions found)
+    if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
+        const intentKeywords = ["modificar", "cambiar", "escribir", "actualizar", "reemplazar", "crear", "apply", "update", "write", "replace", "modify"];
+        const lowText = text.toLowerCase();
+        if (intentKeywords.some(kw => lowText.includes(kw) && lowText.indexOf(kw) < 600)) {
+             errors.push("🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas obligatorias ([READ], [WRITE] o [REPLACE]). Por favor, utiliza el formato correcto explicado.");
+        }
+    }
+
+    return { errors, reads, logs, actionsPerformed };
 }
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
@@ -1667,12 +1714,13 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         
         if (actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
-            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones.` });
+            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones correspondientes.` });
             await autoRetry("Continuando tras lectura...", project, chat, retryCount + 1);
         } else if (actionResult.errors.length > 0) {
             const retryHeader = retryCount === 0 ? "❌ El intento falló:" : `❌ Re-intento ${retryCount} falló:`;
-            chat.messages.push({ role: 'agent', content: `${retryHeader}\n${actionResult.errors.join('\n')}` });
-            await autoRetry("Re-intentando tras error...", project, chat, retryCount + 1);
+            const retryMsgText = `${retryHeader}\n${actionResult.errors.join('\n')}\n\nPor favor, inténtalo de nuevo corrigiendo el error.`;
+            chat.messages.push({ role: 'agent', content: retryMsgText });
+            await autoRetry(retryMsgText, project, chat, retryCount + 1);
         }
         
         updateThinking(chat, false);
@@ -1992,9 +2040,11 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     const closeModalBtn = document.querySelector('.close-modal');
     const saveGlobalBtn = document.getElementById('save-global-settings');
     const globalPromptTextarea = document.getElementById('global-prompt');
+    const orchestratorPromptTextarea = document.getElementById('orchestrator-prompt');
 
     globalSettingsBtn.onclick = () => {
         globalPromptTextarea.value = state.globalPrompt || '';
+        orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         globalSettingsModal.classList.remove('hidden');
     };
 
@@ -2010,6 +2060,7 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
 
     saveGlobalBtn.onclick = () => {
         state.globalPrompt = globalPromptTextarea.value;
+        state.orchestratorPrompt = orchestratorPromptTextarea.value;
         saveData();
         globalSettingsModal.classList.add('hidden');
     };

@@ -2,9 +2,9 @@
   {
     "type": "log",
     "messages": [
-      "📂 Project has folder, scanning: D:\\Programacion\\generativeantsystem\\kodahash_template"
+      "🚀 Switching to project: 1776708665649"
     ],
-    "timestamp": "2026-04-21T07:02:37.279Z",
+    "timestamp": "2026-04-21T07:28:42.481Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -13,7 +13,16 @@
     "messages": [
       "📂 Project has folder, scanning: D:\\Programacion\\sistemasfullscreen\\diploia"
     ],
-    "timestamp": "2026-04-21T07:02:38.113Z",
+    "timestamp": "2026-04-21T07:28:42.482Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🚀 Switching to project: mo85qfuf0chl5rrs5el8"
+    ],
+    "timestamp": "2026-04-21T07:28:44.380Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -22,16 +31,25 @@
     "messages": [
       "📂 Project has folder, scanning: D:\\Programacion\\generativeantsystem\\kodahash_template"
     ],
-    "timestamp": "2026-04-21T07:02:38.754Z",
+    "timestamp": "2026-04-21T07:28:44.381Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "📂 Project has folder, scanning: D:\\Programacion\\jpagents"
+      "🚀 Switching to project: mo8avul5mozb9iqet4q"
     ],
-    "timestamp": "2026-04-21T07:02:39.343Z",
+    "timestamp": "2026-04-21T07:29:02.894Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\testsite1"
+    ],
+    "timestamp": "2026-04-21T07:29:02.898Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

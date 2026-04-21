@@ -99,20 +99,26 @@ body {
   transition: transform 0.2s, opacity 0.2s;
 }
 
+==
 .btn-danger-outline {
   padding: 0.8rem;
   border-radius: 12px;
-  border: 1px solid rgba(244, 67, 54, 0.5);
-  background: rgba(244, 67, 54, 0.1);
-  color: #f44336;
-  font-weight: 600;
+  border: 2px solid rgba(244, 67, 54, 0.7); /* Más visible */
+  background: rgba(244, 67, 54, 0.15); /* Fondo más oscuro */
+  color: #ff5249; /* Rojo vibrante */
+  font-weight: 700; /* Más peso */
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); /* Transición más "pop" */
+  text-transform: uppercase; /* Texto en mayúsculas */
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 5px rgba(244, 67, 54, 0.3); /* Sombra visible */
 }
 
 .btn-danger-outline:hover {
   background: #f44336;
   color: white;
+  box-shadow: 0 4px 15px rgba(244, 67, 54, 0.6); /* Sombra más grande al pasar el ratón */
+  transform: translateY(-2px); /* Pequeño efecto de elevación */
 }
 
 .chat-list {
