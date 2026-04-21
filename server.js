@@ -11,6 +11,7 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const app = express();
 const port = 3001;
+let serverInstance = null; // Store server instance for graceful close
 
 // Agent & Restart State
 let isAgentBusy = false;
@@ -23,6 +24,61 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const OLLAMA_URL = 'http://localhost:11434';
 const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
+const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
+
+// Persistence Helpers
+async function loadLogs() {
+    try {
+        const data = await fs.readFile(CLIENT_LOGS_FILE, 'utf-8');
+        return JSON.parse(data);
+    } catch (e) {
+        return [];
+    }
+}
+
+async function saveLog(logEntry) {
+    let logs = await loadLogs();
+    logs.push(logEntry);
+    // Keep only last 50 entries
+    if (logs.length > 50) logs = logs.slice(-50);
+    await fs.writeFile(CLIENT_LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+}
+
+// Routes
+app.post('/api/utils/client-logs', async (req, res) => {
+    const { type, messages, timestamp, url } = req.body;
+    
+    const logEntry = {
+        type,
+        messages,
+        timestamp,
+        url,
+        seenByAgent: false
+    };
+
+    const colors = {
+        error: '\x1b[31m',
+        warn: '\x1b[33m',
+        log: '\x1b[32m',
+        reset: '\x1b[0m'
+    };
+
+    console.log(`${colors[type] || ''}[FRONTEND ${type.toUpperCase()}] [${timestamp}]${colors.reset}`);
+    console.log(messages.join(' '));
+    
+    await saveLog(logEntry);
+    res.status(204).send();
+});
+
+app.get('/api/utils/client-logs', async (req, res) => {
+    const logs = await loadLogs();
+    res.json(logs);
+});
+
+app.post('/api/utils/client-logs/clear', async (req, res) => {
+    await fs.writeFile(CLIENT_LOGS_FILE, JSON.stringify([], null, 2), 'utf-8');
+    res.json({ success: true });
+});
 
 // Persistence Helpers
 async function loadSessions() {
@@ -49,26 +105,50 @@ app.post('/api/sessions/save', async (req, res) => {
     res.json({ success: true });
 });
 
-// Native Folder Picker using PowerShell
+// Native Folder Picker using PowerShell (Improved for stability and syntax)
 app.get('/api/utils/pick-folder', async (req, res) => {
     console.log('[SERVER] Solicitando selector de carpetas (NATIVE)...');
     
+    // Ensure statements are separated by semicolons
+    const psCommand = `
+        Add-Type -AssemblyName System.Windows.Forms;
+        $f = New-Object System.Windows.Forms.Form;
+        $f.TopMost = $true;
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog;
+        $dialog.Description = "Selecciona una carpeta para tu proyecto";
+        $dialog.ShowNewFolderButton = $true;
+        if ($dialog.ShowDialog($f) -eq "OK") {
+            $dialog.SelectedPath
+        }
+    `.trim(); // We keep newlines or let it be passed as is, execFile handles it.
+
     const args = [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-STA',
         '-Command',
-        'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; $b = New-Object System.Windows.Forms.FolderBrowserDialog; $b.Description = \'Selecciona tu carpeta\'; if($b.ShowDialog($f) -eq \'OK\'){ $b.SelectedPath }'
+        psCommand
     ];
 
     try {
-        const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 60000 });
+        const { stdout, stderr } = await execFileAsync('powershell.exe', args, { timeout: 120000 });
+        
+        if (stderr && !stdout) {
+            console.warn('[SERVER] PowerShell Stderr:', stderr);
+        }
+
         const pickedPath = stdout.trim();
-        console.log('[SERVER] Carpeta seleccionada:', pickedPath);
+        console.log('[SERVER] Carpeta seleccionada:', pickedPath || '(Cancelado)');
         res.json({ path: pickedPath });
     } catch (e) {
         console.error('[SERVER] Error en pick-folder:', e.message);
-        res.status(500).json({ error: 'Error en el selector: ' + e.message });
+        if (e.stderr) console.error('[SERVER] PowerShell Error Output:', e.stderr);
+        
+        res.status(500).json({ 
+            error: 'Error en el selector de carpetas',
+            details: e.message,
+            stderr: e.stderr 
+        });
     }
 });
 
@@ -227,13 +307,37 @@ function triggerRestart(delay = 2000) {
     needsRestart = false;
     restartTimer = setTimeout(() => {
         console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
-        const child = spawn(process.argv[0], process.argv.slice(1), {
+        
+        // Attempt graceful close before exit
+        if (serverInstance) {
+            serverInstance.close(() => {
+                spawnNewProcess();
+            });
+            // Force exit if close hangs
+            setTimeout(() => {
+                console.log('[SYSTEM] Forced restart (graceful close timed out)');
+                spawnNewProcess();
+            }, 3000);
+        } else {
+            spawnNewProcess();
+        }
+    }, delay);
+}
+
+function spawnNewProcess() {
+    try {
+        // Wrap command in quotes to handle spaces in path (e.g., C:\Program Files\nodejs\node.exe)
+        const child = spawn(`"${process.argv[0]}"`, process.argv.slice(1), {
             detached: true,
-            stdio: 'inherit'
+            stdio: 'inherit',
+            shell: true
         });
         child.unref();
         process.exit();
-    }, delay);
+    } catch (e) {
+        console.error('[SYSTEM] Failed to spawn new process:', e);
+        process.exit(1);
+    }
 }
 
 // Simple File Watcher for auto-update (ignoring noise)
@@ -244,6 +348,7 @@ const watcher = watch(process.cwd(), { recursive: true }, (event, filename) => {
     if (filename.includes('node_modules') || 
         filename.includes('.git') || 
         filename.includes('sessions.json') ||
+        filename.includes('client_errors.json') ||
         filename.includes('public' + path.sep + 'dist')) {
         return;
     }
@@ -256,6 +361,16 @@ const watcher = watch(process.cwd(), { recursive: true }, (event, filename) => {
     }
 });
 
-app.listen(port, () => {
+serverInstance = app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
+});
+
+// Final safety net
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL] Uncaught Exception:', err);
+    // Optional: Log to file
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });

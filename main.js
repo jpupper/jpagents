@@ -1,6 +1,61 @@
 import './style.css'
 import { marked } from 'marked'
 
+// --- Console Log Interceptor ---
+(function() {
+    const API_BASE = 'http://localhost:3001/api';
+    const originalConsole = {
+        log: console.log,
+        error: console.error,
+        warn: console.warn
+    };
+
+    async function sendToServer(type, args) {
+        try {
+            const messages = Array.from(args).map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            );
+
+            await fetch(`${API_BASE}/utils/client-logs`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type,
+                    messages,
+                    timestamp: new Date().toISOString(),
+                    url: window.location.href
+                })
+            });
+        } catch (e) {
+            // Quiet fail
+        }
+    }
+
+    console.log = function() {
+        originalConsole.log.apply(console, arguments);
+        sendToServer('log', arguments);
+    };
+
+    console.error = function() {
+        originalConsole.error.apply(console, arguments);
+        sendToServer('error', arguments);
+    };
+
+    console.warn = function() {
+        originalConsole.warn.apply(console, arguments);
+        sendToServer('warn', arguments);
+    };
+
+    window.onerror = function(message, source, lineno, colno, error) {
+        sendToServer('error', [`Uncaught Error: ${message} at ${source}:${lineno}:${colno}`]);
+    };
+
+    window.onunhandledrejection = function(event) {
+        sendToServer('error', ['Unhandled Promise Rejection:', event.reason]);
+    };
+})();
+// -------------------------------
+
 // Configure marked
 marked.setOptions({
     breaks: true,
@@ -37,22 +92,104 @@ async function triggerSystemRestart() {
     }
 }
 
-// Helper for logging API errors
-async function fetchWithLog(url, options = {}) {
-    console.log(`🌐 API Request: ${url}`, options.method || 'GET');
-    try {
-        const res = await fetch(url, options);
-        if (!res.ok) {
-            console.error(`🔴 API Error: [${res.status}] ${url}`, {
-                status: res.status,
-                statusText: res.statusText,
-                url: url
-            });
+// Helper for logging API errors with auto-retry for transient failures
+async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) { 
+    const isBackend = url.startsWith(API_BASE);
+    const statusDot = isBackend ? document.getElementById('backend-status-dot') : document.getElementById('ollama-status-dot');
+
+    const maxRetries = noRetry ? 1 : retries;
+
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const res = await fetch(url, options);
+            
+            // If we successfully get a response, marking it as live
+            if (statusDot) {
+                statusDot.classList.remove('dead');
+                statusDot.classList.add('live');
+            }
+
+            if (res.ok) return res;
+            
+            // Transient errors (5xx) or Rate limits (429) trigger a retry
+            if (!noRetry && (res.status >= 500 || res.status === 429)) {
+                console.warn(`⚠️ API Transient Error [${res.status}]: ${url}. Reintentando (${i+1}/${retries})...`);
+                await new Promise(r => setTimeout(r, 1000 * Math.min(i + 1, 5)));
+                continue;
+            }
+
+            if (noRetry && res.status >= 500) {
+                 console.error(`🔴 API Error: [${res.status}] ${url}. Retries disabled for this request.`);
+            } else if (!noRetry) {
+                console.error(`🔴 API Error: [${res.status}] ${url}`, {
+                    status: res.status,
+                    statusText: res.statusText,
+                    url: url
+                });
+            }
+            return res;
+        } catch (err) {
+            // Mark as dead if connection is strictly refused or fails
+            if (statusDot) {
+                statusDot.classList.remove('live');
+                statusDot.classList.add('dead');
+            }
+
+            // Quiet during retry phase unless it's the last attempt
+            if (i === maxRetries - 1) {
+                if (!noRetry) console.error(`❌ Persistent Connection Error after ${retries} attempts: ${url}`, err);
+                throw err;
+            }
+            // Log as warning during retries
+            if (!noRetry) {
+                console.warn(`🔄 Connection lost, retrying (${i+1}/${retries}): ${url}`);
+                await new Promise(r => setTimeout(r, 1500)); 
+            }
         }
-        return res;
-    } catch (err) {
-        console.error(`❌ Connection Error: ${url}`, err);
-        throw err;
+    }
+}
+
+async function checkSystemHealth() {
+    // 1. Check Backend
+    try {
+        const res = await fetch(`${API_BASE}/sessions`);
+        const dot = document.getElementById('backend-status-dot');
+        if (dot) {
+            if (res.ok) {
+                dot.classList.remove('dead');
+                dot.classList.add('live');
+            } else {
+                dot.classList.remove('live');
+                dot.classList.add('dead');
+            }
+        }
+    } catch (e) {
+        const dot = document.getElementById('backend-status-dot');
+        if (dot) {
+            dot.classList.remove('live');
+            dot.classList.add('dead');
+        }
+    }
+
+    // 2. Check Ollama
+    try {
+        const res = await fetch(`${OLLAMA_BASE}/tags`); 
+        const dot = document.getElementById('ollama-status-dot');
+        if (dot) {
+            if (res.ok) {
+                dot.classList.remove('dead');
+                dot.classList.add('live');
+            } else {
+                dot.classList.remove('live');
+                dot.classList.add('dead');
+            }
+        }
+    } catch (e) {
+        const dot = document.getElementById('ollama-status-dot');
+        if (dot) {
+            dot.classList.remove('live');
+            dot.classList.add('dead');
+        }
     }
 }
 
@@ -94,6 +231,12 @@ const dashboardProjectName = document.getElementById('dashboard-project-name');
 const dashboardProjectPath = document.getElementById('dashboard-project-path');
 const statChats = document.getElementById('stat-chats');
 const statFiles = document.getElementById('stat-files');
+const adminMonitorBtn = document.getElementById('admin-monitor-btn');
+const adminTabContent = document.getElementById('admin-tab-content');
+const monitorTbody = document.getElementById('monitor-tbody');
+const adminChatMessages = document.getElementById('admin-chat-messages');
+const adminGlobalInput = document.getElementById('admin-global-input');
+const adminSendBtn = document.getElementById('admin-send-btn');
 
 // Vision Support
 const attachImgBtn = document.getElementById('attach-img');
@@ -113,9 +256,13 @@ let currentAttachedImages = [];
 
 // Initialize
 async function init() {
+    await checkSystemHealth();
     await fetchModels();
     await loadData();
     setupEventListeners();
+    
+    // Periodically check health
+    setInterval(checkSystemHealth, 5000);
 }
 
 async function loadData() {
@@ -160,9 +307,11 @@ function sanitizeProject(p) {
         folder: p.folder || '',
         chats: Array.isArray(p.chats) ? p.chats.map(c => ({
             ...c,
-            mode: c.mode || 'auto'
+            mode: c.mode || 'auto',
+            lastProgress: c.lastProgress || Date.now(),
+            isStopped: false
         })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto' }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
@@ -186,6 +335,56 @@ async function saveData() {
         });
     } catch (e) {}
 }
+
+async function clearClientLogs() {
+    try {
+        await fetch(`${API_BASE}/utils/client-logs/clear`, { method: 'POST' });
+    } catch (e) {}
+}
+
+async function getClientErrors() {
+    try {
+        const res = await fetch(`${API_BASE}/utils/client-logs`);
+        const logs = await res.json();
+        return logs.filter(l => l.type === 'error');
+    } catch (e) {
+        return [];
+    }
+}
+
+async function refreshConsoleUI() {
+    const consoleOutput = document.getElementById('frontend-console-output');
+    if (!consoleOutput) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/utils/client-logs`);
+        const logs = await res.json();
+        
+        if (!logs || logs.length === 0) {
+            consoleOutput.innerHTML = '<div class="log-empty">No hay logs registrados.</div>';
+            return;
+        }
+
+        consoleOutput.innerHTML = logs.reverse().map(l => {
+            const time = new Date(l.timestamp).toLocaleTimeString();
+            return `
+                <div class="log-entry ${l.type}">
+                    <span class="log-time">[${time}]</span>
+                    <span class="log-type">${l.type.toUpperCase()}:</span>
+                    <span class="log-msg">${l.messages.join(' ')}</span>
+                </div>
+            `;
+        }).join('');
+        
+    } catch (e) {
+        consoleOutput.innerHTML = 'Error al cargar logs.';
+    }
+}
+
+window.clearConsoleUI = async () => {
+    await clearClientLogs();
+    refreshConsoleUI();
+};
 
 function createNewProject() {
     const id = generateId(); // Fix: define id
@@ -387,6 +586,9 @@ function updateViewVisibility() {
         if (chat) {
             syncModeUI(chat.mode);
         }
+    } else if (project.activeTabId === 'admin') {
+        adminTabContent.classList.remove('hidden');
+        renderAdminMonitor();
     } else if (isOpenFile) {
         editorTabContent.classList.remove('hidden');
         const file = project.openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
@@ -410,6 +612,9 @@ function updateViewVisibility() {
         // Stats
         if (statChats) statChats.textContent = project.chats.length;
         if (statFiles) statFiles.textContent = project.openFiles.length;
+
+        // Refresh Console Output
+        refreshConsoleUI();
 
         // Sync project prompt UI
         const projectPromptInput = document.getElementById('project-prompt');
@@ -528,7 +733,9 @@ window.addChat = () => {
         name: 'Agente ' + nextNum, 
         messages: [], 
         isThinking: false,
-        mode: 'auto'
+        mode: 'auto',
+        lastProgress: Date.now(),
+        isStopped: false
     };
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
@@ -672,6 +879,12 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
     chat.isThinking = isThinking;
     chat.thinkingStatus = status;
     chat.thinkingSubtext = subtext;
+    if (isThinking) {
+        chat.lastProgress = Date.now();
+        // If we are in admin view, refresh it
+        const project = getActiveProject();
+        if (project && project.activeTabId === 'admin') renderAdminMonitor();
+    }
     renderMessages(false);
 }
 
@@ -693,6 +906,9 @@ async function sendMessage() {
     // Signal system that we are busy
     await setAgentActive(true);
 
+    // Clear logs before starting to catch only new ones
+    await clearClientLogs();
+
     // Add user message to state
     const userMsg = { role: 'user', content };
     if (currentAttachedImages.length > 0) {
@@ -701,6 +917,7 @@ async function sendMessage() {
     chat.messages.push(userMsg);
     
     updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
+    chat.isStopped = false; // Reset stop flag on new message
     chatInput.value = '';
     clearImages();
     renderMessages();
@@ -731,6 +948,14 @@ async function sendMessage() {
         
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
+        // Check if stopped before processing
+        if (chat.isStopped) {
+            updateThinking(chat, false);
+            chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario.' });
+            renderMessages();
+            return;
+        }
+
         const data = await response.json();
         updateThinking(chat, true, "Procesando acciones", "El agente está aplicando cambios...");
         
@@ -755,6 +980,15 @@ async function sendMessage() {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
+        // CHECK FOR CONSOLE ERRORS
+        updateThinking(chat, true, "Verificando errores", "Revisando consola del navegador...");
+        const consoleErrors = await getClientErrors();
+        if (consoleErrors.length > 0) {
+            const errorReport = consoleErrors.map(e => `[${e.timestamp}] ${e.messages.join(' ')}`).join('\n');
+            actionResult.errors.push(`🚫 Se detectaron errores en la consola del frontend tras tus cambios:\n${errorReport}\nPor favor, analiza estos errores y corrígelos.`);
+            logsHtml += `<div class="log-step error"><span>🚫</span> <span>Errores detectados en consola</span></div>`;
+        }
+
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
         if (actionResult.reads && actionResult.reads.length > 0) {
@@ -764,7 +998,7 @@ async function sendMessage() {
             await autoRetry("Continuando tras lectura...", project, chat);
         } else if (actionResult.errors.length > 0) {
             // Auto-feedback loop: Send errors back to IA for self-correction
-            const errorMsg = `⚠️ Los siguientes cambios fallaron:\n${actionResult.errors.join('\n')}\n\nPor favor, revisa el contenido de los archivos y asegúrate de que el bloque SEARCH sea EXACTO al texto del archivo original. Si necesitas volver a leer el archivo para estar seguro, usa [READ:nombre_del_archivo].`;
+            const errorMsg = `⚠️ Se detectaron los siguientes problemas en la operación:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, asegúrate de que el bloque sea EXACTO. Si el archivo no cambió, revisa si realmente estás aplicando un cambio con respecto al contenido actual.`;
             chat.messages.push({ role: 'agent', content: errorMsg });
             await autoRetry(errorMsg, project, chat);
         }
@@ -891,8 +1125,18 @@ function renderFileList() {
 
 function buildSystemPrompt() {
     const p = getActiveProject();
+    const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE (Conectado)' : 'OFFLINE (Desconectado)';
+    const ollamaStatus = document.getElementById('ollama-status-dot')?.classList.contains('live') ? 'ONLINE (Conectado)' : 'OFFLINE (Desconectado)';
     
-    let prompt = `Eres un subagente profesional experto en codificación. Carpeta de trabajo: ${p.folder}\n`;
+    let prompt = `Eres un subagente profesional experto en codificación. 
+ESTADO DEL SISTEMA:
+- Backend Server (Files & Scripts): ${backendStatus}
+- Ollama (LLM Core): ${ollamaStatus}
+Carpeta de trabajo: ${p.folder}\n`;
+
+    if (backendStatus === 'OFFLINE (Desconectado)') {
+        prompt += `\n⚠️ ADVERTENCIA: El Backend Server está desconectado. NO puedes leer ni escribir archivos ni ejecutar scripts en este momento. Informa al usuario que debe ejecutar "run.bat" o iniciar el servidor.\n`;
+    }
     
     if (state.globalPrompt) {
         prompt += `\nINSTRUCCIONES GLOBALES:\n${state.globalPrompt}\n`;
@@ -929,9 +1173,70 @@ REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
 - El bloque SEARCH debe ser UNA COPIA EXACTA, carácter por carácter, del texto en el archivo original. Si hay un solo espacio de diferencia, el cambio FALLARÁ.
 - Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas, sin texto adicional antes o después.
 - Puedes realizar varias acciones en una sola respuesta (ej: leer un archivo y escribir en otro).
-- Si una operación falla, usa [READ] para obtener la versión más reciente del archivo y verifica qué falló en tu bloque SEARCH.`;
+- El sistema verificará automáticamente si hubo cambios reales en el archivo tras tu acción. Si no los hubo o hubo un error, se te notificará y deberás reintentar con una nueva aproximación (por ejemplo, leyendo el archivo de nuevo para verificar el contenido exacto).
+- También se verificará la consola del frontend. Si tus cambios rompen algo en el navegador, el sistema te pasará el error de consola para que lo arregles.
+- Se realizarán reintentos automáticos hasta que la operación sea exitosa y no haya errores de consola. No te rindas.`;
 
     return prompt;
+}
+
+    return { errors, reads, logs };
+}
+
+window.stopAgent = (projectId, chatId) => {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    const chat = project.chats.find(c => c.id === chatId);
+    if (!chat) return;
+    
+    chat.isStopped = true;
+    chat.isThinking = false;
+    adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
+    
+    if (state.activeProjectId === projectId && project.activeTabId === chatId) {
+        renderMessages();
+    }
+    if (project.activeTabId === 'admin') renderAdminMonitor();
+};
+
+function adminLog(msg) {
+    if (!adminChatMessages) return;
+    const time = new Date().toLocaleTimeString();
+    adminChatMessages.innerHTML += `<div class="message system"><span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ${msg}</div>`;
+    adminChatMessages.scrollTop = adminChatMessages.scrollHeight;
+}
+
+function renderAdminMonitor() {
+    if (!monitorTbody) return;
+    
+    let html = '';
+    state.projects.forEach(p => {
+        p.chats.forEach(c => {
+            const lastTime = new Date(c.lastProgress || Date.now()).toLocaleTimeString();
+            const statusClass = c.isThinking ? 'busy' : 'idle';
+            const statusText = c.isThinking ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
+            const stopBtnDisabled = !c.isThinking ? 'disabled' : '';
+            
+            html += `
+                <tr>
+                    <td><span class="agent-name">🤖 ${c.name}</span></td>
+                    <td><span class="project-name">${p.name}</span></td>
+                    <td>
+                        <div class="status-cell">
+                            <div class="dot ${statusClass}"></div>
+                            <span>${statusText}</span>
+                        </div>
+                    </td>
+                    <td><span class="time-cell">${lastTime}</span></td>
+                    <td>
+                        <button class="btn-stop" ${stopBtnDisabled} onclick="window.stopAgent('${p.id}', '${c.id}')">STOP</button>
+                    </td>
+                </tr>
+            `;
+        });
+    });
+    
+    monitorTbody.innerHTML = html || '<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
 }
 
 async function processAgentActions(text, project, chat) {
@@ -971,8 +1276,19 @@ async function processAgentActions(text, project, chat) {
         const content = match[2];
         logs.push({ type: 'info', message: `Escritura completa (WRITE): **${fileName}**` });
         updateThinking(chat, true, "Escribiendo archivo", fileName);
-        await performWrite(fileName, content, project, chat);
-        logs.push({ type: 'success', message: `Escritura enviada para **${fileName}**` });
+        const writeRes = await performWrite(fileName, content, project, chat);
+        
+        if (writeRes && writeRes.success) {
+            if (!writeRes.hasChanged) {
+                errors.push(`- En ${fileName}: El archivo no cambió. El contenido enviado es idéntico al que ya tiene el archivo.`);
+                logs.push({ type: 'error', message: `Sin cambios en WRITE: **${fileName}**` });
+            } else {
+                logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
+            }
+        } else {
+            errors.push(`- Error al escribir ${fileName}: ${writeRes ? writeRes.error : 'Fallo de conexión'}`);
+            logs.push({ type: 'error', message: `Error en WRITE: **${fileName}**` });
+        }
     }
 
     // 2. Handle Partial Replacement (SEARCH/REPLACE)
@@ -1047,7 +1363,18 @@ async function processAgentActions(text, project, chat) {
             errors.push(err);
             logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**` });
         } else if (successCount > 0) {
-            await performWrite(fileName, updatedContent, project, chat);
+            const writeRes = await performWrite(fileName, updatedContent, project, chat);
+            if (writeRes && writeRes.success) {
+                if (!writeRes.hasChanged) {
+                    errors.push(`- En ${fileName}: Los bloques SEARCH coincidieron, pero el contenido resultante es idéntico al actual. ¿Quizás el cambio ya estaba aplicado?`);
+                    logs.push({ type: 'error', message: `Sin cambios efectivos en REPLACE: **${fileName}**` });
+                } else {
+                    logs.push({ type: 'success', message: `Cambios aplicados y verificados en **${fileName}**` });
+                }
+            } else {
+                errors.push(`- Error al persistir cambios en ${fileName}: ${writeRes ? writeRes.error : 'Fallo'}`);
+                logs.push({ type: 'error', message: `Error al guardar REPLACE en **${fileName}**` });
+            }
         } 
         
         if (failCount > 0) {
@@ -1058,8 +1385,8 @@ async function processAgentActions(text, project, chat) {
 }
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
-    if (retryCount >= 3) {
-        chat.messages.push({ role: 'agent', content: `⚠️ **Límite de auto-corrección alcanzado (3 intentos).** El agente no pudo resolver el error automáticamente. Por favor, revisa el código o guía al agente manualmente.` });
+    if (retryCount >= 20) {
+        chat.messages.push({ role: 'agent', content: `⚠️ **Límite de seguridad alcanzado (20 intentos).** Se detuvo la auto-corrección infinita para evitar bucles de costos o recursos. Por favor, revisa el problema manualmente.` });
         updateThinking(chat, false);
         return;
     }
@@ -1067,7 +1394,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     // Feedback directo en el chat como pidió el usuario
     const retryMsg = { 
         role: 'agent', 
-        content: `🔄 **Auto-corrección: Intento ${retryCount + 1} de 3**...\nEl agente está analizando los errores y re-intentando la operación con un formato corregido.` 
+        content: `🔄 **Auto-reintento/Corrección: Intento ${retryCount + 1}**...\nEstamos verificando la operación y solicitando al agente que corrija o re-intente hasta que los cambios sean efectivos.` 
     };
     chat.messages.push(retryMsg);
 
@@ -1082,6 +1409,11 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
 
     const messages = [systemMsg, ...history];
 
+    if (chat.isStopped) {
+        updateThinking(chat, false);
+        return;
+    }
+
     try {
         const response = await fetchWithLog(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
@@ -1094,6 +1426,11 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
+        if (chat.isStopped) {
+            updateThinking(chat, false);
+            return;
+        }
+
         const data = await response.json();
         const assistantResponse = data.message.content;
         
@@ -1115,6 +1452,15 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
             .replace(/\[READ:(.*?)\]/g, (match, fileName) => {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
+
+        // CHECK FOR CONSOLE ERRORS (during retry)
+        updateThinking(chat, true, "Verificando errores", "Revisando consola del navegador...");
+        const consoleErrors = await getClientErrors();
+        if (consoleErrors.length > 0) {
+            const errorReport = consoleErrors.map(e => `[${e.timestamp}] ${e.messages.join(' ')}`).join('\n');
+            actionResult.errors.push(`🚫 Continúan los errores en la consola del navegador:\n${errorReport}`);
+            logsHtml += `<div class="log-step error"><span>🚫</span> <span>Errores persistentes en consola</span></div>`;
+        }
 
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
         
@@ -1184,21 +1530,32 @@ async function performWrite(fileName, content, project, chat) {
         });
         const writeResult = await res.json();
         
+        let hasChanged = false;
+        if (writeResult.success) {
+            // Check mtime OR size OR direct content comparison if available
+            hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
+            
+            // If stats didn't change, double check with content (sometimes mtime doesn't update on identical writes)
+            if (!hasChanged && oldContent !== content) {
+                hasChanged = true; 
+            }
+        }
+
         if (targetChat) {
             updateThinking(targetChat, true, "Verificando cambios", fileName);
             
             if (writeResult.success) {
-                const hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
                 if (hasChanged) {
                     targetChat.messages.push({ role: 'agent', content: `✅ **${fileName}** actualizado y verificado (mtime: ${new Date(writeResult.mtime).toLocaleTimeString()}).` });
                 } else {
-                    targetChat.messages.push({ role: 'agent', content: `⚠️ **${fileName}** no parece haber cambiado (mtime idéntico). El contenido enviado era igual al original.` });
+                    targetChat.messages.push({ role: 'agent', content: `⚠️ **AVISO DE SISTEMA:** El archivo **${fileName}** NO recibió cambios reales (el contenido enviado es idéntico al actual).` });
                 }
             } else {
-                targetChat.messages.push({ role: 'agent', content: `❌ Error al escribir **${fileName}**: ${writeResult.error}` });
+                targetChat.messages.push({ role: 'agent', content: `❌ **ERROR DE SISTEMA:** Fallo al escribir **${fileName}**: ${writeResult.error}` });
             }
         }
         
+        // ... rest of logic for tabs ...
         const diff = Diff.diffLines(oldContent, content);
         
         if (openFile) { 
@@ -1214,8 +1571,12 @@ async function performWrite(fileName, content, project, chat) {
         }
         window.scanFolder(project.folder);
         saveData();
+        
+        return { success: writeResult.success, hasChanged, error: writeResult.error };
+
     } catch (e) {
         console.error("Write error:", e);
+        return { success: false, hasChanged: false, error: e.message };
     }
 }
 
@@ -1285,14 +1646,61 @@ window.openFile = async (path) => {
 async function nativePickFolder() {
     scanFolderBtn.innerHTML = '⏳';
     try {
-        const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`);
-        const data = await res.json();
-        if (data.path) { folderPathInput.value = data.path; window.scanFolder(data.path); }
-    } catch (e) {}
+        // No retries for folder picking, if it fails, it fails (user can click again)
+        const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`, {}, 1, true);
+        if (res && res.ok) {
+            const data = await res.json();
+            if (data.path) { 
+                folderPathInput.value = data.path; 
+                window.scanFolder(data.path); 
+            }
+        } else if (res) {
+            const errorData = await res.json().catch(() => ({}));
+            alert("No se pudo abrir el selector de carpetas. " + (errorData.error || "Error desconocido"));
+        }
+    } catch (e) {
+        console.error("Exception in nativePickFolder:", e);
+    }
     finally { scanFolderBtn.innerHTML = '📁'; }
 }
 
+function formatLogs(logs) {
+    if (!logs || logs.length === 0) return "";
+    let html = '<div class="action-logs">';
+    logs.forEach(log => {
+        const icon = log.type === 'success' ? '✅' : (log.type === 'error' ? '❌' : 'ℹ️');
+        html += `<div class="log-step ${log.type}"><span>${icon}</span> <span>${log.message}</span></div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
 function setupEventListeners() {
+    adminMonitorBtn.onclick = () => {
+        const p = getActiveProject();
+        if (p) {
+            p.activeTabId = 'admin';
+            renderTabs();
+            updateViewVisibility();
+        }
+    };
+
+    adminSendBtn.onclick = () => {
+        const cmd = adminGlobalInput.value.trim();
+        if (!cmd) return;
+        adminLog(`📢 Comando Global: <em>"${cmd}"</em>`);
+        
+        state.projects.forEach(p => {
+            p.chats.forEach(c => {
+                if (c.isThinking) {
+                    c.messages.push({ role: 'system', content: `🚨 INSTRUCCIÓN ADMINISTRATIVA GLOBAL: ${cmd}` });
+                    adminLog(`   ↳ Enviado a <strong>${c.name}</strong> (${p.name})`);
+                }
+            });
+        });
+        adminGlobalInput.value = '';
+    };
+
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
