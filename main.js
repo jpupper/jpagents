@@ -1077,9 +1077,24 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     // Prepare history for Ollama /api/chat
     const systemMsg = { role: 'system', content: buildSystemPrompt() };
     const history = chat.messages.map(m => {
+        let content = m.content;
+        
+        // --- CLEANUP FOR LLM CONTEXT ---
+        // We remove the UI-only "execution logs" and other HTML decorations 
+        // to prevent the agent from hallucinating or mimicking the UI format.
+        if (m.role === 'agent') {
+            content = content
+                .replace(/<details class="execution-log">[\s\S]*?<\/details>/g, '') // Remove logs
+                .replace(/<div class="file-action-link"[\s\S]*?<\/div>/g, (match) => {
+                    // Extract the text part (e.g., "📝 Modificar main.js") or just the tags
+                    const textMatch = match.match(/<strong>(.*?)<\/strong>/);
+                    return textMatch ? `[Action performed on: ${textMatch[1]}]` : '';
+                });
+        }
+
         const msg = {
             role: m.role === 'agent' ? 'assistant' : m.role,
-            content: m.content
+            content: content
         };
         if (m.images) msg.images = m.images;
         return msg;
@@ -1268,29 +1283,107 @@ window.scanFolder = async function(pathInput = null) {
     }
 }
 
-function renderFileList() {
+function renderFileList(container = fileList, files = null, parentPath = "") {
     const p = getActiveProject();
     if (!p) {
-        fileList.innerHTML = '<p class="empty-state">No hay proyecto activo</p>';
+        container.innerHTML = '<p class="empty-state">No hay proyecto activo</p>';
         return;
     }
 
-    const files = p.currentFiles || [];
-    const backButton = `<div class="file-item directory" onclick="window.goUp()">.. (Subir nivel)</div>`;
-    const filesHtml = files.map(f => {
-        const icon = f.isDirectory ? '📁' : '📄';
+    const currentFiles = files || p.currentFiles || [];
+    
+    if (currentFiles.length === 0 && !p.folder && !parentPath) {
+        container.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
+        return;
+    }
+
+    let html = '';
+    
+    // Solo mostramos el "atrás" en el nivel raíz y si no estamos usando vista de árbol expandida todavía
+    if (!parentPath && p.folder) {
+        html += `<div class="file-item directory back-nav" onclick="window.goUp()">
+            <span class="file-icon">⤴️</span>
+            <span class="file-name">.. (Subir nivel)</span>
+        </div>`;
+    }
+
+    html += currentFiles.map(f => {
+        const isDir = f.isDirectory;
+        const icon = isDir ? '📁' : getFileIcon(f.name);
         const path = f.path.replace(/\\/g, '/');
-        const action = f.isDirectory ? `window.scanFolder('${path}')` : `window.openFile('${path}')`;
-        return `<div class="file-item ${f.isDirectory ? 'directory' : 'file'}" onclick="${action}">${icon} ${f.name}</div>`;
+        const id = `file-${btoa(path).replace(/=/g, '')}`;
+        
+        if (isDir) {
+            return `
+                <div class="tree-item-wrapper" id="wrapper-${id}">
+                    <div class="file-item directory" onclick="window.toggleFolder('${path}', '${id}')">
+                        <span class="folder-caret">▶</span>
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name">${f.name}</span>
+                    </div>
+                    <div class="folder-content hidden" id="content-${id}"></div>
+                </div>
+            `;
+        } else {
+            return `
+                <div class="file-item file" onclick="window.openFile('${path}')">
+                    <span class="folder-caret invisible">▶</span>
+                    <span class="file-icon">${icon}</span>
+                    <span class="file-name">${f.name}</span>
+                </div>
+            `;
+        }
     }).join('');
 
-    if (files.length === 0 && !p.folder) {
-        fileList.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
+    if (currentFiles.length === 0 && !parentPath) {
+        html += '<p class="empty-state">La carpeta está vacía</p>';
+    }
+
+    container.innerHTML = html;
+}
+
+function getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const icons = {
+        'js': 'js', 'ts': 'ts', 'html': '🌐', 'css': '🎨', 
+        'json': '⚙️', 'md': '📝', 'txt': '📄', 'py': '🐍',
+        'png': '🖼️', 'jpg': '🖼️', 'svg': '🖼️', 'bat': '🐚'
+    };
+    return icons[ext] || '📄';
+}
+
+window.toggleFolder = async (path, id) => {
+    const wrapper = document.getElementById(`wrapper-${id}`);
+    const content = document.getElementById(`content-${id}`);
+    const caret = wrapper.querySelector('.folder-caret');
+    
+    if (!content.classList.contains('hidden')) {
+        content.classList.add('hidden');
+        caret.classList.remove('open');
         return;
     }
 
-    fileList.innerHTML = (p.folder ? backButton : '') + filesHtml + (files.length === 0 ? '<p class="empty-state">La carpeta está vacía</p>' : '');
-}
+    // Load content if empty
+    if (content.innerHTML === "") {
+        content.innerHTML = '<div class="loading-small">Cargando...</div>';
+        try {
+            const res = await fetchWithLog(`${API_BASE}/files/list`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ folderPath: path }) 
+            });
+            const data = await res.json();
+            if (data.files) {
+                renderFileList(content, data.files, path);
+            }
+        } catch (e) {
+            content.innerHTML = '<div class="error-small">Error al cargar</div>';
+        }
+    }
+
+    content.classList.remove('hidden');
+    caret.classList.add('open');
+};
 
 function buildSystemPrompt() {
     const p = getActiveProject();
@@ -1708,7 +1801,7 @@ async function processAgentActions(text, project, chat) {
     }
 
     // 2. Handle New Files / Full Write
-    const writeRegex = /\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g;
+    const writeRegex = /\[WRITE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/WRITE\]/g;
     while ((match = writeRegex.exec(text)) !== null) {
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();
@@ -1721,7 +1814,7 @@ async function processAgentActions(text, project, chat) {
             actionsPerformed++;
             if (!writeRes.hasChanged) {
                 errors.push(`- En ${fileName}: El archivo no cambió. El contenido enviado es idéntico al actual.`);
-                logs.push({ type: 'error', message: `Sin cambios en WRITE: **${fileName}**` });
+                logs.push({ type: 'info', message: `Sin cambios en WRITE: **${fileName}**` });
             } else {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
             }
@@ -1732,7 +1825,7 @@ async function processAgentActions(text, project, chat) {
     }
 
     // 3. Handle Partial Replacement (SEARCH/REPLACE)
-    const replaceRegex = /\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g;
+    const replaceRegex = /\[REPLACE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/REPLACE\]/g;
     while ((match = replaceRegex.exec(text)) !== null) {
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const fileName = match[1].trim();

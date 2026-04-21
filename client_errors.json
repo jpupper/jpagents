@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "type": "error",
+    "messages": [
+      "🔴 API Error: [400] http://localhost:3001/api/files/read",
+      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+    ],
+    "timestamp": "2026-04-21T16:43:24.144Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "🔴 API Error: [400] http://localhost:3001/api/files/read",
+      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+    ],
+    "timestamp": "2026-04-21T16:43:24.146Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "🔴 API Error: [400] http://localhost:3001/api/files/read",
+      "{\n  \"status\": 400,\n  \"statusText\": \"Bad Request\",\n  \"url\": \"http://localhost:3001/api/files/read\"\n}"
+    ],
+    "timestamp": "2026-04-21T16:43:24.150Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  }
+]
