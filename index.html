@@ -26,6 +26,7 @@
           <!-- Chat sessions will appear here -->
         </div>
         <div class="sidebar-footer">
+          <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración Global</button>
           <div class="status-indicator">
             <span class="dot live"></span> Ollama Live
           </div>
@@ -71,6 +72,8 @@
                 <div style="margin: 1rem 0;">o</div>
                 <button onclick="document.getElementById('scan-folder').click()" class="btn-primary" style="width: auto; padding-inline: 2rem; background: var(--card-bg); border: 1px solid var(--border-color);">📁 Seleccionar Carpeta</button>
               </div>
+              
+              <!-- Project Info Stats -->
               <div class="dashboard-info">
                 <h3>Resumen del Proyecto</h3>
                 <div class="stats-grid">
@@ -83,6 +86,16 @@
                     <span class="stat-label">Archivos Abiertos</span>
                   </div>
                 </div>
+              </div>
+
+              <!-- Project Settings Section -->
+              <div class="project-config-section">
+                <div class="section-header">
+                  <h3>🎯 Skill / Instrucciones del Proyecto</h3>
+                  <span id="skill-source-indicator" class="skill-indicator hidden">Cargado desde skill.md</span>
+                </div>
+                <p class="config-help">Estas instrucciones se envían al agente además del prompt global. Puedes crear un archivo <code>skill.md</code> en la carpeta del proyecto para cargarlas automáticamente.</p>
+                <textarea id="project-prompt" class="config-textarea" placeholder="Escribe instrucciones específicas para este proyecto..."></textarea>
               </div>
             </div>
           </div>
@@ -151,6 +164,26 @@
           <p class="empty-state">No hay carpeta seleccionada</p>
         </div>
       </aside>
+
+      <!-- Global Settings Modal -->
+      <div id="global-settings-modal" class="modal hidden">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>⚙️ Configuración Global</h3>
+            <button class="close-modal">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="config-field">
+              <label>System Prompt Global</label>
+              <p class="field-help">Este prompt se aplicará a TODOS los proyectos y agentes.</p>
+              <textarea id="global-prompt" class="config-textarea" rows="10" placeholder="Eres un asistente de programación experto..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="save-global-settings" class="btn-primary">Guardar Cambios</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/main.js"></script>
   </body>

@@ -13,13 +13,33 @@ marked.setOptions({
 const API_BASE = 'http://localhost:3001/api';
 const OLLAMA_BASE = 'http://localhost:11434/api';
 
+// Helper for logging API errors
+async function fetchWithLog(url, options = {}) {
+    console.log(`🌐 API Request: ${url}`, options.method || 'GET');
+    try {
+        const res = await fetch(url, options);
+        if (!res.ok) {
+            console.error(`🔴 API Error: [${res.status}] ${url}`, {
+                status: res.status,
+                statusText: res.statusText,
+                url: url
+            });
+        }
+        return res;
+    } catch (err) {
+        console.error(`❌ Connection Error: ${url}`, err);
+        throw err;
+    }
+}
+
 // New State Structure: Projects -> Chats & Files
 let state = {
     projects: [],
     activeProjectId: null,
     models: [],
     selectedModel: '',
-    mode: 'auto' // 'auto' or 'supervised'
+    mode: 'auto', // 'auto' or 'supervised'
+    globalPrompt: ''
 };
 
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -68,11 +88,20 @@ async function init() {
 
 async function loadData() {
     try {
-        const res = await fetch(`${API_BASE}/sessions`);
+        const res = await fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
         
-        if (Array.isArray(data) && data.length > 0) {
+        if (Array.isArray(data)) {
             state.projects = data.map(sanitizeProject);
+        } else if (data && typeof data === 'object') {
+            state.projects = (data.projects || []).map(sanitizeProject);
+            state.globalPrompt = data.globalPrompt || '';
+            state.activeProjectId = data.activeProjectId || null;
+        }
+
+        if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
+            console.log("📍 Restored active project:", state.activeProjectId);
+        } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
         } else {
             createNewProject();
@@ -102,16 +131,22 @@ function sanitizeProject(p) {
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
-        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : []
+        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
+        projectPrompt: p.projectPrompt || ''
     };
 }
 
 async function saveData() {
     try {
-        await fetch(`${API_BASE}/sessions/save`, {
+        const payload = {
+            projects: state.projects,
+            globalPrompt: state.globalPrompt,
+            activeProjectId: state.activeProjectId
+        };
+        await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(state.projects)
+            body: JSON.stringify(payload)
         });
     } catch (e) {}
 }
@@ -127,7 +162,8 @@ function createNewProject() {
         ],
         openFiles: [],
         activeTabId: null,
-        currentFiles: []
+        currentFiles: [],
+        projectPrompt: ''
     };
     newProject.activeTabId = newProject.chats[0].id;
     state.projects.push(newProject);
@@ -158,7 +194,7 @@ function getActiveChat() {
 
 async function fetchModels() {
     try {
-        const res = await fetch(`${API_BASE}/models`);
+        const res = await fetchWithLog(`${API_BASE}/models`);
         const data = await res.json();
         state.models = data.models || [];
         modelSelect.innerHTML = state.models.map(m => {
@@ -187,7 +223,9 @@ function renderProjectList() {
     chatList.innerHTML = state.projects.map(p => {
         const isThinking = p.chats && p.chats.some(c => c.isThinking);
         return `
-            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" data-id="${p.id}">
+            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" 
+                 data-id="${p.id}" 
+                 onclick="window.switchProject('${p.id}', event)">
                 <div class="chat-item-main">
                     <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
                     <div class="dot ${isThinking ? 'busy' : ''}"></div>
@@ -196,13 +234,6 @@ function renderProjectList() {
             </div>
         `;
     }).join('');
-
-    document.querySelectorAll('.chat-item').forEach(item => {
-        item.onclick = (e) => {
-            if (e.target.classList.contains('session-name') || e.target.classList.contains('btn-delete')) return;
-            switchProject(item.dataset.id);
-        };
-    });
 
     document.querySelectorAll('.session-name').forEach(name => {
         name.onblur = () => {
@@ -304,12 +335,23 @@ function updateViewVisibility() {
             }
         }
     } else {
-        // Dashboard View
         dashboardTabContent.classList.remove('hidden');
         dashboardProjectName.textContent = project.name;
         dashboardProjectPath.textContent = project.folder || "Sin carpeta seleccionada";
-        statChats.textContent = project.chats.length;
-        statFiles.textContent = project.openFiles.length;
+        
+        // Stats
+        if (statChats) statChats.textContent = project.chats.length;
+        if (statFiles) statFiles.textContent = project.openFiles.length;
+
+        // Sync project prompt UI
+        const projectPromptInput = document.getElementById('project-prompt');
+        if (projectPromptInput) {
+            projectPromptInput.value = project.projectPrompt || '';
+            projectPromptInput.oninput = (e) => {
+                project.projectPrompt = e.target.value;
+                saveData();
+            };
+        }
     }
 }
 
@@ -463,22 +505,35 @@ window.closeFileTab = (path) => {
     saveData();
 };
 
-function switchProject(id) {
+window.switchProject = (id, event = null) => {
+    if (event) {
+        // If it's the active project and we clicked the name, let contenteditable work
+        if (event.target.classList.contains('session-name') && id === state.activeProjectId) return;
+        if (event.target.classList.contains('btn-delete')) return;
+    }
+
+    console.log(`🚀 Switching to project: ${id}`);
     state.activeProjectId = id;
     const project = getActiveProject();
-    if (!project) return;
+    if (!project) {
+        console.error("❌ Project not found:", id);
+        return;
+    }
     
     folderPathInput.value = project.folder || '';
     renderProjectList();
     renderTabs();
     
     if (project.folder) {
+        console.log(`📂 Project has folder, scanning: ${project.folder}`);
         scanFolder(project.folder);
     } else {
+        console.log("📂 Project has no folder.");
         renderFileList();
         projectRunContainer.classList.add('hidden');
     }
-}
+    saveData();
+};
 
 window.deleteProject = (id) => {
     if (!confirm('¿Eliminar proyecto completo?')) return;
@@ -658,7 +713,7 @@ async function scanFolder(pathInput = null) {
     }
 
     try {
-        const res = await fetch(`${API_BASE}/files/list`, { 
+        const res = await fetchWithLog(`${API_BASE}/files/list`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ folderPath }) 
@@ -679,6 +734,33 @@ async function scanFolder(pathInput = null) {
             // Auto-detect run.bat
             const hasRunBat = project.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
             projectRunContainer.classList.toggle('hidden', !hasRunBat);
+
+            // Auto-detect skill.md
+            const skillFile = project.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
+            const skillIndicator = document.getElementById('skill-source-indicator');
+            
+            if (skillFile && !project.projectPrompt) {
+                try {
+                    const res = await fetchWithLog(`${API_BASE}/files/read`, { 
+                        method: 'POST', 
+                        headers: { 'Content-Type': 'application/json' }, 
+                        body: JSON.stringify({ filePath: skillFile.path.replace(/\\/g, '/') }) 
+                    });
+                    const skillData = await res.json();
+                    if (skillData.content) {
+                        project.projectPrompt = skillData.content;
+                        const projectPromptInput = document.getElementById('project-prompt');
+                        if (projectPromptInput) projectPromptInput.value = project.projectPrompt;
+                        if (skillIndicator) skillIndicator.classList.remove('hidden');
+                    }
+                } catch (e) {
+                    console.error("Error loading skill.md:", e);
+                }
+            } else if (skillFile) {
+                if (skillIndicator) skillIndicator.classList.remove('hidden');
+            } else {
+                if (skillIndicator) skillIndicator.classList.add('hidden');
+            }
             
             renderFileList();
             saveData();
@@ -712,8 +794,18 @@ function renderFileList() {
 
 function buildSystemPrompt() {
     const p = getActiveProject();
-    return `Eres un subagente profesional experto en codificación. Carpeta de trabajo: ${p.folder}
-Archivos actuales en el directorio:
+    
+    let prompt = `Eres un subagente profesional experto en codificación. Carpeta de trabajo: ${p.folder}\n`;
+    
+    if (state.globalPrompt) {
+        prompt += `\nINSTRUCCIONES GLOBALES:\n${state.globalPrompt}\n`;
+    }
+    
+    if (p.projectPrompt) {
+        prompt += `\nINSTRUCCIONES ESPECÍFICAS DEL PROYECTO (SKILL):\n${p.projectPrompt}\n`;
+    }
+
+    prompt += `\nArchivos actuales en el directorio:
 ${p.currentFiles.map(f => "- " + f.name).join('\n')}
 
 INSTRUCCIONES DE OPERACIÓN:
@@ -741,6 +833,8 @@ REGLAS CRÍTICAS DE FORMATO Y LÓGICA:
 - Los marcadores <<<<< SEARCH, ===== y >>>>> deben ir en sus propias líneas, sin texto adicional antes o después.
 - Puedes realizar varias acciones en una sola respuesta (ej: leer un archivo y escribir en otro).
 - Si una operación falla, usa [READ] para obtener la versión más reciente del archivo y verifica qué falló en tu bloque SEARCH.`;
+
+    return prompt;
 }
 
 async function processAgentActions(text, project, chat) {
@@ -758,7 +852,7 @@ async function processAgentActions(text, project, chat) {
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
         try {
-            const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+            const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
             const data = await res.json();
             if (data.content) {
                 reads.push({ fileName, content: data.content });
@@ -798,7 +892,7 @@ async function processAgentActions(text, project, chat) {
         // Read file content first
         let currentFileContent = "";
         try {
-            const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
+            const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
             const data = await res.json();
             currentFileContent = data.content;
         } catch(e) {
@@ -892,7 +986,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     const messages = [systemMsg, ...history];
 
     try {
-        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+        const response = await fetchWithLog(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
             body: JSON.stringify({ 
                 model: modelSelect.value, 
@@ -953,7 +1047,7 @@ async function performWrite(fileName, content, project, chat) {
     // Read old stats for verification
     let oldStats = { mtime: null, size: 0 };
     try {
-        const res = await fetch(`${API_BASE}/files/read`, { 
+        const res = await fetchWithLog(`${API_BASE}/files/read`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ filePath: sanPath }) 
@@ -986,7 +1080,7 @@ async function performWrite(fileName, content, project, chat) {
     }
 
     try {
-        const res = await fetch(`${API_BASE}/files/write`, { 
+        const res = await fetchWithLog(`${API_BASE}/files/write`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ filePath, content }) 
@@ -1073,7 +1167,7 @@ window.openFile = async (path) => {
     const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
     if (existing) { p.activeTabId = san; renderTabs(); return; }
     try {
-        const res = await fetch(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
+        const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
         if (!res.ok) {
             console.error("Error opening file:", res.statusText);
             return;
@@ -1091,7 +1185,7 @@ window.openFile = async (path) => {
 async function nativePickFolder() {
     scanFolderBtn.innerHTML = '⏳';
     try {
-        const res = await fetch(`${API_BASE}/utils/pick-folder`);
+        const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`);
         const data = await res.json();
         if (data.path) { folderPathInput.value = data.path; scanFolder(data.path); }
     } catch (e) {}
@@ -1144,7 +1238,7 @@ function setupEventListeners() {
         if (!runBat) return;
 
         try {
-            const res = await fetch(`${API_BASE}/utils/run-script`, {
+            const res = await fetchWithLog(`${API_BASE}/utils/run-script`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -1159,6 +1253,34 @@ function setupEventListeners() {
         } catch (e) {
             alert("Error de conexión: " + e.message);
         }
+    };
+
+    // Modal Controls
+    const globalSettingsBtn = document.getElementById('global-settings-btn');
+    const globalSettingsModal = document.getElementById('global-settings-modal');
+    const closeModalBtn = document.querySelector('.close-modal');
+    const saveGlobalBtn = document.getElementById('save-global-settings');
+    const globalPromptTextarea = document.getElementById('global-prompt');
+
+    globalSettingsBtn.onclick = () => {
+        globalPromptTextarea.value = state.globalPrompt || '';
+        globalSettingsModal.classList.remove('hidden');
+    };
+
+    closeModalBtn.onclick = () => {
+        globalSettingsModal.classList.add('hidden');
+    };
+
+    window.onclick = (event) => {
+        if (event.target == globalSettingsModal) {
+            globalSettingsModal.classList.add('hidden');
+        }
+    };
+
+    saveGlobalBtn.onclick = () => {
+        state.globalPrompt = globalPromptTextarea.value;
+        saveData();
+        globalSettingsModal.classList.add('hidden');
     };
 }
 
