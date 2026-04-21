@@ -13,6 +13,30 @@ marked.setOptions({
 const API_BASE = 'http://localhost:3001/api';
 const OLLAMA_BASE = 'http://localhost:11434/api';
 
+// System Control Helpers
+async function setAgentActive(busy) {
+    try {
+        await fetch(`${API_BASE}/system/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ busy })
+        });
+    } catch (e) {
+        console.error("Error setting system status:", e);
+    }
+}
+
+async function triggerSystemRestart() {
+    if (!confirm("¿Reiniciar el servidor backend ahora?")) return;
+    try {
+        await fetch(`${API_BASE}/system/restart`, { method: 'POST' });
+        // Optional: show a loading state while it restarts
+        chatMessages.innerHTML += `<div class="message agent">♻️ Solicitando reinicio del servidor... La página podría desconectarse brevemente.</div>`;
+    } catch (e) {
+        console.error("Error triggering restart:", e);
+    }
+}
+
 // Helper for logging API errors
 async function fetchWithLog(url, options = {}) {
     console.log(`🌐 API Request: ${url}`, options.method || 'GET');
@@ -77,6 +101,14 @@ const imageInput = document.getElementById('image-input');
 const imagePreviewContainer = document.getElementById('image-preview-container');
 const projectRunContainer = document.getElementById('project-run-container');
 const runProjectBtn = document.getElementById('run-project-btn');
+
+// Git Controls
+const gitControlsContainer = document.getElementById('git-controls-container');
+const gitBtn = document.getElementById('git-btn');
+const gitCommitContainer = document.getElementById('git-commit-container');
+const gitCommitMessageInput = document.getElementById('git-commit-message');
+const gitConfirmBtn = document.getElementById('git-confirm-btn');
+
 let currentAttachedImages = [];
 
 // Initialize
@@ -107,9 +139,12 @@ async function loadData() {
             createNewProject();
         }
         
+        // Initial health check for all projects
+        checkAllProjectsHealth();
+
         renderProjectList();
         const active = getActiveProject();
-        if (active && active.folder) scanFolder(active.folder);
+        if (active && active.folder) window.scanFolder(active.folder);
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
@@ -132,7 +167,8 @@ function sanitizeProject(p) {
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
         currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
-        projectPrompt: p.projectPrompt || ''
+        projectPrompt: p.projectPrompt || '',
+        isCorrupted: p.isCorrupted || false
     };
 }
 
@@ -172,6 +208,30 @@ function createNewProject() {
     renderTabs();
     renderFileList(); // Clear file list for new project
     saveData();
+}
+
+async function checkProjectHealth(project) {
+    if (!project.folder) return;
+    try {
+        const res = await fetch(`${API_BASE}/files/list`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ folderPath: project.folder }) 
+        });
+        const data = await res.json();
+        project.isCorrupted = !!data.error;
+    } catch (e) {
+        project.isCorrupted = true;
+    }
+    renderProjectList();
+}
+
+async function checkAllProjectsHealth() {
+    for (const p of state.projects) {
+        if (p.folder) {
+            checkProjectHealth(p);
+        }
+    }
 }
 
 function getActiveProject() {
@@ -222,13 +282,21 @@ function checkVisionCapability() {
 function renderProjectList() {
     chatList.innerHTML = state.projects.map(p => {
         const isThinking = p.chats && p.chats.some(c => c.isThinking);
+        const corruptedClass = p.isCorrupted ? 'corrupted' : '';
+        const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
+        const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
+        
         return `
-            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''}" 
+            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass}" 
                  data-id="${p.id}" 
+                 title="${corruptedTitle}"
                  onclick="window.switchProject('${p.id}', event)">
                 <div class="chat-item-main">
-                    <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
-                    <div class="dot ${isThinking ? 'busy' : ''}"></div>
+                    <div class="name-row">
+                        <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
+                        ${corruptedBadge}
+                    </div>
+                    <div class="dot ${isThinking ? 'busy' : ''} ${p.isCorrupted ? 'error' : ''}"></div>
                 </div>
                 <button class="btn-delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject('${p.id}')">🗑️</button>
             </div>
@@ -526,11 +594,12 @@ window.switchProject = (id, event = null) => {
     
     if (project.folder) {
         console.log(`📂 Project has folder, scanning: ${project.folder}`);
-        scanFolder(project.folder);
+        window.scanFolder(project.folder);
     } else {
         console.log("📂 Project has no folder.");
         renderFileList();
         projectRunContainer.classList.add('hidden');
+        gitControlsContainer.classList.add('hidden');
     }
     saveData();
 };
@@ -547,6 +616,13 @@ window.deleteProject = (id) => {
     } else {
         renderProjectList();
     }
+    saveData();
+};
+
+window.deleteAllProjects = () => {
+    if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
+    state.projects = [];
+    createNewProject();
     saveData();
 };
 
@@ -613,6 +689,9 @@ async function sendMessage() {
     const project = getActiveProject();
     const chat = getActiveChat();
     if (!content || !project || !chat) return;
+
+    // Signal system that we are busy
+    await setAgentActive(true);
 
     // Add user message to state
     const userMsg = { role: 'user', content };
@@ -697,11 +776,18 @@ async function sendMessage() {
         updateThinking(chat, false);
         chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
         renderMessages();
+    } finally {
+        // Only signal ready if we are not in an auto-retry loop
+        // (Wait, autoRetry will also signal. We handle it by always signalling ready at the end 
+        // of a process that doesn't trigger another process)
+        if (!chat.isThinking) {
+            await setAgentActive(false);
+        }
     }
 }
 
 
-async function scanFolder(pathInput = null) {
+window.scanFolder = async function(pathInput = null) {
     const p = getActiveProject();
     if (!p) return;
 
@@ -722,11 +808,17 @@ async function scanFolder(pathInput = null) {
         
         if (data.error) {
             console.error("Scan error:", data.error);
+            const project = getActiveProject();
+            if (project) {
+                project.isCorrupted = true;
+                renderProjectList();
+            }
             return;
         }
 
         const project = getActiveProject();
         if (project) {
+            project.isCorrupted = false;
             project.currentFiles = data.files || [];
             project.folder = data.currentPath;
             folderPathInput.value = data.currentPath;
@@ -734,6 +826,9 @@ async function scanFolder(pathInput = null) {
             // Auto-detect run.bat
             const hasRunBat = project.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
             projectRunContainer.classList.toggle('hidden', !hasRunBat);
+            
+            // Show Git controls if folder is selected
+            gitControlsContainer.classList.toggle('hidden', !project.folder);
 
             // Auto-detect skill.md
             const skillFile = project.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
@@ -778,18 +873,20 @@ function renderFileList() {
     }
 
     const files = p.currentFiles || [];
-    if (files.length === 0) { 
-        fileList.innerHTML = `<p class="empty-state">${p.folder ? 'La carpeta está vacía' : 'No hay carpeta seleccionada'}</p>`; 
-        return; 
-    }
-    
     const backButton = `<div class="file-item directory" onclick="window.goUp()">.. (Subir nivel)</div>`;
-    fileList.innerHTML = (p.folder ? backButton : '') + files.map(f => {
+    const filesHtml = files.map(f => {
         const icon = f.isDirectory ? '📁' : '📄';
         const path = f.path.replace(/\\/g, '/');
         const action = f.isDirectory ? `window.scanFolder('${path}')` : `window.openFile('${path}')`;
         return `<div class="file-item ${f.isDirectory ? 'directory' : 'file'}" onclick="${action}">${icon} ${f.name}</div>`;
     }).join('');
+
+    if (files.length === 0 && !p.folder) {
+        fileList.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
+        return;
+    }
+
+    fileList.innerHTML = (p.folder ? backButton : '') + filesHtml + (files.length === 0 ? '<p class="empty-state">La carpeta está vacía</p>' : '');
 }
 
 function buildSystemPrompt() {
@@ -1115,7 +1212,7 @@ async function performWrite(fileName, content, project, chat) {
             renderTabs();
             updateViewVisibility();
         }
-        scanFolder(project.folder);
+        window.scanFolder(project.folder);
         saveData();
     } catch (e) {
         console.error("Write error:", e);
@@ -1158,7 +1255,10 @@ function pathJoin(dir, file) {
 window.goUp = () => {
     const cur = folderPathInput.value;
     const last = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'));
-    if (last > 0) scanFolder(cur.substring(0, last));
+    if (last > -1) {
+        const top = cur.substring(0, last);
+        window.scanFolder(top || "/");
+    }
 };
 
 window.openFile = async (path) => {
@@ -1187,7 +1287,7 @@ async function nativePickFolder() {
     try {
         const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`);
         const data = await res.json();
-        if (data.path) { folderPathInput.value = data.path; scanFolder(data.path); }
+        if (data.path) { folderPathInput.value = data.path; window.scanFolder(data.path); }
     } catch (e) {}
     finally { scanFolderBtn.innerHTML = '📁'; }
 }
@@ -1196,7 +1296,7 @@ function setupEventListeners() {
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
-    folderPathInput.oninput = (e) => scanFolder(e.target.value);
+    folderPathInput.oninput = (e) => window.scanFolder(e.target.value);
     newChatBtn.onclick = createNewProject;
     modelSelect.onchange = checkVisionCapability;
 
@@ -1255,6 +1355,21 @@ function setupEventListeners() {
         }
     };
 
+    // Git Controls
+    gitBtn.onclick = () => {
+        gitCommitContainer.classList.toggle('hidden');
+        if (!gitCommitContainer.classList.contains('hidden')) {
+            gitCommitMessageInput.focus();
+        }
+    };
+
+    gitConfirmBtn.onclick = window.handleGitPush;
+    gitCommitMessageInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            window.handleGitPush();
+        }
+    };
+
     // Modal Controls
     const globalSettingsBtn = document.getElementById('global-settings-btn');
     const globalSettingsModal = document.getElementById('global-settings-modal');
@@ -1282,6 +1397,12 @@ function setupEventListeners() {
         saveData();
         globalSettingsModal.classList.add('hidden');
     };
+
+    // System Restart Button
+    const systemRestartBtn = document.getElementById('system-restart-btn');
+    if (systemRestartBtn) {
+        systemRestartBtn.onclick = triggerSystemRestart;
+    }
 }
 
 async function handleImageSelection(e) {
@@ -1365,5 +1486,56 @@ function formatLogs(logs) {
     html += '</div></details>';
     return html;
 }
+
+window.handleGitPush = async () => {
+    const p = getActiveProject();
+    const chat = getActiveChat();
+    const message = gitCommitMessageInput.value.trim();
+    
+    if (!message) {
+        alert("Por favor ingresa un mensaje para el commit.");
+        return;
+    }
+
+    if (!p || !p.folder) return;
+
+    gitConfirmBtn.disabled = true;
+    gitConfirmBtn.textContent = "WAIT...";
+
+    updateThinking(chat, true, "GIT COMMIT & PUSH", "Añadiendo, comiteando y pusheando cambios...");
+
+    try {
+        const res = await fetchWithLog(`${API_BASE}/utils/git-commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                folderPath: p.folder,
+                message: message
+            })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            chat.messages.push({ 
+                role: 'agent', 
+                content: `🚀 **Git Push Exitoso**\nLos cambios han sido subidos correctamente.\n\n\`\`\`\n${data.stdout || 'Sin salida'}\n\`\`\`` 
+            });
+            gitCommitContainer.classList.add('hidden');
+            gitCommitMessageInput.value = '';
+        } else {
+            chat.messages.push({ 
+                role: 'agent', 
+                content: `❌ **Error en Git**\nHubo un problema al realizar la operación:\n\n\`\`\`\n${data.error}\n${data.stderr || ''}\n\`\`\`` 
+            });
+        }
+    } catch (e) {
+        chat.messages.push({ role: 'agent', content: `❌ **Error de conexión**\nNo se pudo contactar con el servidor: ${e.message}` });
+    } finally {
+        gitConfirmBtn.disabled = false;
+        gitConfirmBtn.textContent = "PUSH";
+        updateThinking(chat, false);
+        renderMessages();
+    }
+};
 
 init();

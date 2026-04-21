@@ -55,8 +55,14 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
+.header-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 1.5rem;
+}
+
 .btn-primary {
-  width: 100%;
+  flex: 1;
   padding: 0.8rem;
   border-radius: 12px;
   border: none;
@@ -65,7 +71,22 @@ body {
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.2s, opacity 0.2s;
-  margin-bottom: 1.5rem;
+}
+
+.btn-danger-outline {
+  padding: 0.8rem;
+  border-radius: 12px;
+  border: 1px solid rgba(244, 67, 54, 0.5);
+  background: rgba(244, 67, 54, 0.1);
+  color: #f44336;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-danger-outline:hover {
+  background: #f44336;
+  color: white;
 }
 
 .chat-list {
@@ -93,10 +114,43 @@ body {
   color: var(--text-primary);
 }
 
-.session-name { flex: 1; outline: none; cursor: text; padding: 2px 4px; border-radius: 4px; }
-.session-name:focus { background: rgba(255,255,255,0.1); }
-.dot { margin-left: 10px; width: 8px; height: 8px; background-color: #666; border-radius: 50%;}
+.chat-item-main { display: flex; align-items: center; justify-content: space-between; flex: 1; min-width: 0; }
+.name-row { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.corrupted-badge {
+  font-size: 0.6rem;
+  background: #f44336;
+  color: white;
+  padding: 1px 4px;
+  border-radius: 4px;
+  width: fit-content;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.dot { margin-left: 10px; width: 8px; height: 8px; background-color: #666; border-radius: 50%; flex-shrink: 0;}
 .dot.busy { background-color: #ff9800; box-shadow: 0 0 8px #ff9800; animation: pulse 1.5s infinite; }
+.dot.error { background-color: #f44336; box-shadow: 0 0 8px #f44336; }
+
+.chat-item.corrupted {
+  background: rgba(244, 67, 54, 0.08);
+  border-color: rgba(244, 67, 54, 0.3);
+}
+
+.chat-item.corrupted:hover {
+  background: rgba(244, 67, 54, 0.15);
+}
+
+.chat-item.active.corrupted {
+  background: rgba(244, 67, 54, 0.2);
+  border-color: #f44336;
+}
+
+.chat-item.corrupted .session-name {
+  color: #ff8a80;
+}
+
 @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
 
 /* Main Content area */
@@ -216,7 +270,76 @@ select:hover, input[type="text"]:focus {
   transform: translateY(1px);
 }
 
+.btn-git {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  width: 44px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-git:hover {
+  background: #24292e;
+  border-color: #fff;
+  color: #fff;
+}
+
+.git-input-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.git-commit-wrapper {
+    display: flex;
+    gap: 8px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    padding: 2px 8px 2px 2px;
+    border-radius: 12px;
+    animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.git-commit-wrapper input {
+    border: none;
+    background: transparent;
+    width: 200px;
+    font-size: 0.85rem;
+}
+
+.git-commit-wrapper input:focus {
+    box-shadow: none;
+}
+
+.btn-git-confirm {
+    background: #2ea44f;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: filter 0.2s;
+}
+
+.btn-git-confirm:hover {
+    filter: brightness(1.1);
+}
+
 .toggle-group {
+
   display: flex;
   background: #000;
   padding: 4px;

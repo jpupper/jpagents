@@ -3,13 +3,19 @@ import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { watch } from 'fs';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const app = express();
 const port = 3001;
+
+// Agent & Restart State
+let isAgentBusy = false;
+let needsRestart = false;
+let restartTimer = null;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -149,6 +155,104 @@ app.post('/api/utils/run-script', async (req, res) => {
         res.json({ success: true, message: 'Script iniciado en nueva ventana' });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/utils/git-commit', async (req, res) => {
+    const { folderPath, message } = req.body;
+    if (!folderPath || !message) return res.status(400).json({ error: 'Missing folderPath or message' });
+
+    console.log(`[SERVER] Git Commit & Push en: ${folderPath} con mensaje: ${message}`);
+
+    try {
+        // 1. Add all
+        await execAsync('git add .', { cwd: folderPath });
+        
+        // 2. Commit
+        try {
+            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: folderPath });
+        } catch (commitError) {
+            // If nothing to commit, we might want to still try to push or just return success
+            if (commitError.stdout.includes('nothing to commit') || commitError.stderr.includes('nothing to commit')) {
+                console.log('[SERVER] Nada para comitear, intentando push por las dudas...');
+            } else {
+                throw commitError;
+            }
+        }
+
+        // 3. Push
+        const { stdout, stderr } = await execAsync('git push', { cwd: folderPath });
+        
+        res.json({ success: true, stdout, stderr });
+    } catch (error) {
+        console.error('[SERVER] Git Error:', error.message);
+        res.status(500).json({ 
+            error: error.message, 
+            stdout: error.stdout, 
+            stderr: error.stderr 
+        });
+    }
+});
+
+// System Control Routes
+app.post('/api/system/status', (req, res) => {
+    const { busy } = req.body;
+    isAgentBusy = !!busy;
+    console.log(`[SYSTEM] Agent status changed: ${isAgentBusy ? 'BUSY' : 'READY'}`);
+    
+    // If agent finished and we had a pending restart, do it now
+    if (!isAgentBusy && needsRestart) {
+        console.log('[SYSTEM] Agent finished, performing PENDING RESTART...');
+        triggerRestart(1000);
+    }
+    
+    res.json({ success: true, isAgentBusy, needsRestart });
+});
+
+app.post('/api/system/restart', (req, res) => {
+    console.log('[SYSTEM] Manual restart requested');
+    triggerRestart(100);
+    res.json({ success: true });
+});
+
+function triggerRestart(delay = 2000) {
+    if (restartTimer) clearTimeout(restartTimer);
+    
+    if (isAgentBusy) {
+        console.log('[SYSTEM] Restart requested but AGENT IS BUSY. Queuing restart...');
+        needsRestart = true;
+        return;
+    }
+
+    needsRestart = false;
+    restartTimer = setTimeout(() => {
+        console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
+        const child = spawn(process.argv[0], process.argv.slice(1), {
+            detached: true,
+            stdio: 'inherit'
+        });
+        child.unref();
+        process.exit();
+    }, delay);
+}
+
+// Simple File Watcher for auto-update (ignoring noise)
+const watcher = watch(process.cwd(), { recursive: true }, (event, filename) => {
+    if (!filename) return;
+    
+    // Ignore common noise
+    if (filename.includes('node_modules') || 
+        filename.includes('.git') || 
+        filename.includes('sessions.json') ||
+        filename.includes('public' + path.sep + 'dist')) {
+        return;
+    }
+
+    // Only watch source files
+    const ext = path.extname(filename);
+    if (['.js', '.json', '.html', '.css'].includes(ext)) {
+        console.log(`[WATCHER] Change detected: ${filename}`);
+        triggerRestart(2500); // 2.5s debounce
     }
 });
 
