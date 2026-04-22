@@ -194,8 +194,7 @@ async function checkSystemHealth() {
 }
 
 // New State Structure: Projects -> Chats & Files
-const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO 1 (SANDBOX): TODO el código que escribas, crees o modifiques DEBE estar dentro de la carpeta 'tmp1' de tu directorio actual. No escribas fuera de 'tmp1'.
-REGLA DE ORO 2 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
+const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
@@ -1221,7 +1220,11 @@ function buildRefactoredSystemPrompt(taskState) {
         `[Step ${s.id}] Action: ${s.action} -> Result: ${s.result.substring(0, 500)}${s.result.length > 500 ? '...' : ''}`
     ).join('\n');
 
-    return `### ROLE: EXPERT DEVELOPER AGENT (CODE-FIRST)
+    // --- INSTRUCCIONES PERSONALIZADAS ---
+    const globalInstructions = state.globalPrompt ? `### GLOBAL SYSTEM INSTRUCTIONS:\n${state.globalPrompt}\n\n` : '';
+    const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
+
+    return `${globalInstructions}${projectInstructions}### ROLE: EXPERT DEVELOPER AGENT (CODE-FIRST)
 ### ENVIRONMENT:
 - Backend: ${backendStatus}
 - Project Directory: ${p.folder}
@@ -2323,7 +2326,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         const response = await fetchWithLog(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
             body: JSON.stringify({ 
-                model: modelSelect.value, 
+                model: chat.model || project.model || modelSelect.value, 
                 messages: messages,
                 stream: true 
             })
@@ -2805,12 +2808,40 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     const saveGlobalBtn = document.getElementById('save-global-settings');
     const globalPromptTextarea = document.getElementById('global-prompt');
     const orchestratorPromptTextarea = document.getElementById('orchestrator-prompt');
+    const internalAgentDisplay = document.getElementById('internal-agent-display');
+
+    // Tab Switching Logic for Modal
+    const modalSideTabs = document.querySelectorAll('.modal-side-tab');
+    const modalSubTabs = document.querySelectorAll('.modal-sub-tab');
+
+    modalSideTabs.forEach(tab => {
+        tab.onclick = () => {
+            modalSideTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const target = tab.dataset.modalTab;
+            
+            document.querySelectorAll('.modal-tab-content').forEach(pane => pane.classList.add('hidden'));
+            const targetPane = document.getElementById(`modal-tab-${target}`);
+            if (targetPane) targetPane.classList.remove('hidden');
+        };
+    });
+
+    modalSubTabs.forEach(tab => {
+        tab.onclick = () => {
+            modalSubTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const target = tab.dataset.modalSubTab;
+            
+            document.querySelectorAll('.sub-tab-pane').forEach(pane => pane.classList.add('hidden'));
+            const targetPane = document.getElementById(`sub-tab-${target}`);
+            if (targetPane) targetPane.classList.remove('hidden');
+        };
+    });
 
     globalSettingsBtn.onclick = () => {
         globalPromptTextarea.value = state.globalPrompt || '';
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
-        const internalPromptTextarea = document.getElementById('internal-agent-prompt');
-        if (internalPromptTextarea) internalPromptTextarea.value = getInternalAgentInstructions();
+        if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
         globalSettingsModal.classList.remove('hidden');
     };
 

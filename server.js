@@ -155,16 +155,31 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
     if (!projectName) return res.status(400).json({ error: 'Missing projectName' });
 
     const baseDir = "D:\\Programacion\\jpagents\\proyects";
-    const folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
-    const folderPath = path.join(baseDir, folderName);
-    const tmpPath = path.join(folderPath, 'tmp1');
+    let folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+    
+    let folderPath = path.join(baseDir, folderName);
+    let counter = 1;
 
+    // Ensure unique folder name
     try {
         await fs.mkdir(baseDir, { recursive: true });
+        
+        while (true) {
+            try {
+                await fs.access(folderPath);
+                // If it exists, try next name
+                folderName = `${projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase()}_${counter++}`;
+                folderPath = path.join(baseDir, folderName);
+            } catch (err) {
+                // Folder does not exist, we can use it
+                break;
+            }
+        }
+
         await fs.mkdir(folderPath, { recursive: true });
-        await fs.mkdir(tmpPath, { recursive: true });
-        console.log(`[SERVER] Carpeta de proyecto y tmp1 creada: ${folderPath}`);
-        res.json({ path: folderPath });
+        
+        console.log(`[SERVER] Carpeta de proyecto creada: ${folderPath}`);
+        res.json({ path: folderPath, folderName }); // Return both for the frontend to potentially sync
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

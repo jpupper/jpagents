@@ -268,28 +268,62 @@
 
       <!-- Global Settings Modal -->
       <div id="global-settings-modal" class="modal hidden">
-        <div class="modal-content">
+        <div class="modal-content modal-large">
           <div class="modal-header">
             <h3>⚙️ Configuración Global</h3>
             <button class="close-modal">&times;</button>
           </div>
-          <div class="modal-body">
-            <div class="config-field">
-              <label>System Prompt Global</label>
-              <p class="field-help">Este prompt se aplicará a TODOS los proyectos y agentes.</p>
-              <textarea id="global-prompt" class="config-textarea" rows="6" placeholder="Eres un asistente de programación experto..."></textarea>
-            </div>
-            <div class="config-field">
-              <label>System Prompt del Orquestador (Admin)</label>
-              <p class="field-help">Este prompt define el comportamiento del Agente Administrador que gestiona a los demás agentes.</p>
-              <textarea id="orchestrator-prompt" class="config-textarea" rows="6" placeholder="Eres el AGENTE ADMINISTRADOR y ORQUESTADOR..."></textarea>
-            </div>
-            <div class="config-field">
-              <label>Instrucciones de Agente (Internas - Sólo Lectura)</label>
-              <p class="field-help">Estas instrucciones manejan la lectura y escritura de archivos. Son la base del funcionamiento de los agentes.</p>
-              <textarea id="internal-agent-prompt" class="config-textarea" rows="6" readonly placeholder="Cargando instrucciones internas..."></textarea>
+          
+          <div class="modal-container">
+            <!-- Sidebar Navigation -->
+            <aside class="modal-sidebar">
+              <button class="modal-side-tab active" data-modal-tab="system-prompts">
+                <span>📝 System Prompts</span>
+              </button>
+            </aside>
+
+            <!-- Main Content Area -->
+            <div class="modal-main-body">
+              <div id="modal-tab-system-prompts" class="modal-tab-content">
+                <!-- Sub-tabs for System Prompts -->
+                <div class="modal-sub-nav">
+                  <button class="modal-sub-tab active" data-modal-sub-tab="global">System Prompt Global</button>
+                  <button class="modal-sub-tab" data-modal-sub-tab="orchestrator">System Prompt del Orquestador (Admin)</button>
+                  <button class="modal-sub-tab" data-modal-sub-tab="internal">Instrucciones de Agente (Solo Lectura)</button>
+                </div>
+
+                <div class="modal-body-content">
+                  <!-- Global Prompt Pane -->
+                  <div id="sub-tab-global" class="sub-tab-pane">
+                    <div class="config-field">
+                      <label>System Prompt Global</label>
+                      <p class="field-help">Este prompt se aplicará a TODOS los proyectos y agentes.</p>
+                      <textarea id="global-prompt" class="config-textarea" rows="12" placeholder="Eres un asistente de programación experto..."></textarea>
+                    </div>
+                  </div>
+
+                  <!-- Orchestrator Prompt Pane -->
+                  <div id="sub-tab-orchestrator" class="sub-tab-pane hidden">
+                    <div class="config-field">
+                      <label>System Prompt del Orquestador (Admin)</label>
+                      <p class="field-help">Define el comportamiento del Agente Administrador que gestiona a los demás agentes.</p>
+                      <textarea id="orchestrator-prompt" class="config-textarea" rows="12" placeholder="Eres el AGENTE ADMINISTRADOR y ORQUESTADOR..."></textarea>
+                    </div>
+                  </div>
+
+                  <!-- Internal Agent Instructions Pane (Read Only) -->
+                  <div id="sub-tab-internal" class="sub-tab-pane hidden">
+                    <div class="config-field">
+                      <label>Instrucciones de Agente (Internas)</label>
+                      <p class="field-help">Estas instrucciones manejan la lectura y escritura de archivos. (Sólo lectura)</p>
+                      <div id="internal-agent-display" class="readonly-display">Cargando instrucciones...</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
+
           <div class="modal-footer">
             <button id="save-global-settings" class="btn-primary">Guardar Cambios</button>
           </div>
