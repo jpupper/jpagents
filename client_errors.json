@@ -1,72 +1,24 @@
 [
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_3_8/poema.txt\",\n    \"content\": \"En el jardín del alma, donde el tiempo se detiene,\\nFlorece un verso etéreo, que el silencio enmene.\\nCon tinta de nostalgia y rocío de mañana,\\nTejió un hilo de magia, sin prisa, sin gana.\\n\\nEs la luz que en la sombra teje un color dorado,\\nEl susurro del viento en un día pausado.\\nUn poema no escrito, un sueño que despierta,\\nDonde el alma navega y su calma concierta.\\n\\nQue estas palabras te encuentren en un rincón sereno,\\nUn refugio de belleza, un abrazo ameno.\"\n  },\n  \"id\": 1\n}"
     ],
-    "timestamp": "2026-04-22T04:48:27.609Z",
-    "url": "http://localhost:5173/",
+    "timestamp": "2026-04-22T16:09:05.634Z",
+    "url": "http://localhost:5174/",
     "seenByAgent": false
   },
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_3_8\\\\poema.txt\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1\n}"
     ],
-    "timestamp": "2026-04-22T04:48:32.974Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "error",
-    "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
-    ],
-    "timestamp": "2026-04-22T04:48:38.347Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "error",
-    "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
-    ],
-    "timestamp": "2026-04-22T04:48:43.713Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "error",
-    "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
-    ],
-    "timestamp": "2026-04-22T04:48:49.072Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "error",
-    "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
-    ],
-    "timestamp": "2026-04-22T04:48:54.444Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "error",
-    "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
-    ],
-    "timestamp": "2026-04-22T04:48:59.793Z",
-    "url": "http://localhost:5173/",
+    "timestamp": "2026-04-22T16:09:05.647Z",
+    "url": "http://localhost:5174/",
     "seenByAgent": false
   }
 ]

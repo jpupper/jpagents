@@ -6,8 +6,11 @@ import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 
+import { fileURLToPath } from 'url';
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const app = express();
 const port = 3001;
 let serverInstance = null; // Store server instance for graceful close
@@ -255,27 +258,30 @@ app.post('/api/files/read', async (req, res) => {
     try {
         const stats = await fs.stat(filePath);
         if (stats.isDirectory()) {
+            console.warn(`[SERVER] Intento de leer un directorio como archivo: ${filePath}`);
             return res.status(400).json({ error: 'Path is a directory' });
         }
         const content = await fs.readFile(filePath, 'utf-8');
+        console.log(`[FILE] Leído con éxito: ${filePath} (${stats.size} bytes)`);
         res.json({ content, mtime: stats.mtime, size: stats.size });
     } catch (error) {
         if (error.code === 'ENOENT') {
-            return res.json({ content: '', mtime: null, size: 0 }); // Return empty for non-existent files (new files)
+            console.log(`[FILE] Archivo no existe (se asume nuevo): ${filePath}`);
+            return res.json({ content: '', mtime: null, size: 0 }); 
         }
+        console.error(`[FILE] Error leyendo ${filePath}:`, error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/files/write', async (req, res) => {
-    const { filePath, content } = req.body;
     try {
         const dir = path.dirname(filePath);
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(filePath, content, 'utf-8');
         
         const stats = await fs.stat(filePath);
-        console.log(`[AGENT] Arquivo escrito em: ${filePath}`);
+        console.log(`\x1b[32m[WRITE SUCCESS]\x1b[0m Archivo escrito: ${filePath} (${stats.size} bytes)`);
         res.json({ 
             success: true, 
             savedAt: filePath,
@@ -283,6 +289,7 @@ app.post('/api/files/write', async (req, res) => {
             size: stats.size
         });
     } catch (error) {
+        console.error(`\x1b[31m[WRITE ERROR]\x1b[0m Fallo al escribir en ${filePath}:`, error.message);
         res.status(500).json({ error: error.message });
     }
 });

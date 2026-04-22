@@ -131,32 +131,101 @@ class MCPClient {
         this.eventSource = null;
         this.messageId = 0;
         this.onConnected = null;
+        this.pendingRequests = new Map(); // ID -> {resolve, reject}
+        this.history = []; // Track protocol messages
+    }
+
+    log(type, direction, data) {
+        const entry = {
+            timestamp: new Date().toLocaleTimeString(),
+            type, // 'connect', 'message', 'error', 'tool'
+            direction, // 'sent', 'received'
+            data
+        };
+        this.history.push(entry);
+        if (this.history.length > 50) this.history.shift();
+        
+        // Update UI if debugger is visible
+        if (window.refreshMCPDebugger) window.refreshMCPDebugger();
+        
+        // Also log to real console
+        const color = direction === 'sent' ? 'color: #3b82f6' : 'color: #10b981';
+        console.log(`%c[MCP] ${direction.toUpperCase()} ${type}:`, color, data);
     }
 
     async connect() {
+        if (this.eventSource) this.eventSource.close();
+        
         return new Promise((resolve, reject) => {
             console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
             this.eventSource = new EventSource(`${this.baseUrl}/sse`);
             
             this.eventSource.onopen = () => {
-                console.log("[MCP-CLIENT] SSE connection opened");
+                this.log('connect', 'received', 'SSE connection opened');
             };
 
+            // Some versions of MCP SDK might send the endpoint as a named event
+            this.eventSource.addEventListener('endpoint', (event) => {
+                this.log('endpoint-event', 'received', event.data);
+                try {
+                    const data = { endpoint: event.data }; // Wrap it to match our handler logic
+                    this.handleSSEMessage(data, resolve);
+                } catch (e) {
+                    console.error("Error handling endpoint event:", e);
+                }
+            });
+
             this.eventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.endpoint) {
-                    this.messageEndpoint = `${this.baseUrl}${data.endpoint}`;
-                    console.log("[MCP-CLIENT] Message endpoint discovered:", this.messageEndpoint);
-                    if (this.onConnected) this.onConnected();
-                    resolve();
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleSSEMessage(data, resolve);
+                } catch (e) {
+                    console.error("[MCP-CLIENT] Error processing SSE message:", e, event.data);
                 }
             };
 
             this.eventSource.onerror = (error) => {
                 console.error("[MCP-CLIENT] SSE Error:", error);
+                const dot = document.getElementById('mcp-status-dot');
+                if (dot) {
+                    dot.classList.remove('live');
+                    dot.classList.add('dead');
+                }
                 reject(error);
             };
         });
+    }
+
+    handleSSEMessage(data, resolve) {
+        this.log('message', 'received', data);
+        
+        // Discover endpoint
+        if (data.endpoint) {
+            this.messageEndpoint = `${this.baseUrl}${data.endpoint}`;
+            console.log("[MCP-CLIENT] Message endpoint discovered:", this.messageEndpoint);
+            
+            const dot = document.getElementById('mcp-status-dot');
+            if (dot) {
+                dot.classList.remove('dead');
+                dot.classList.add('live');
+            }
+
+            if (this.onConnected) this.onConnected();
+            if (resolve) resolve();
+            return;
+        }
+
+        // Handle JSON-RPC responses
+        if (data.id !== undefined && this.pendingRequests.has(data.id)) {
+            const { resolve, reject } = this.pendingRequests.get(data.id);
+            this.pendingRequests.delete(data.id);
+            
+            if (data.error) {
+                reject(new Error(data.error.message || "MCP Tool Error"));
+            } else {
+                resolve(data.result);
+            }
+        }
     }
 
     async callTool(name, args) {
@@ -175,24 +244,79 @@ class MCPClient {
             }
         };
 
-        const res = await fetch(this.messageEndpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+        return new Promise(async (resolve, reject) => {
+            this.pendingRequests.set(id, { resolve, reject });
+            this.log('tool', 'sent', { name, args, id });
 
-        const data = await res.json();
-        if (data.error) {
-            throw new Error(data.error.message || "MCP Tool Call Error");
-        }
-        return data.result;
+            try {
+                const res = await fetch(this.messageEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    this.pendingRequests.delete(id);
+                    const errorText = await res.text();
+                    this.log('error', 'received', `Transport Error: ${res.status} ${errorText}`);
+                    reject(new Error(`MCP Transport Error (${res.status}): ${errorText}`));
+                    return;
+                }
+                
+                // We DON'T resolve here. We wait for the SSE message.
+                // But we set a timeout just in case
+                setTimeout(() => {
+                    if (this.pendingRequests.has(id)) {
+                        this.pendingRequests.delete(id);
+                        this.log('error', 'received', `Timeout (30s) for tool: ${name}`);
+                        reject(new Error(`MCP Tool Call Timeout (30s) for ${name}`));
+                    }
+                }, 30000);
+
+            } catch (err) {
+                this.pendingRequests.delete(id);
+                this.log('error', 'received', err.message);
+                reject(err);
+            }
+        });
     }
 }
 
-const mcpClient = new MCPClient('http://localhost:3002');
+const mcpClient = new MCPClient('http://localhost:2998');
 mcpClient.connect().catch(e => console.error("MCP Connection failed:", e));
 
 // Helper for logging API errors with auto-retry for transient failures
+
+window.clearMCPHistory = () => {
+    mcpClient.history = [];
+    window.refreshMCPDebugger();
+};
+
+window.refreshMCPDebugger = () => {
+    const output = document.getElementById('mcp-debug-output');
+    if (!output) return;
+
+    if (mcpClient.history.length === 0) {
+        output.innerHTML = '<div class="log-empty">Esperando actividad del protocolo...</div>';
+        return;
+    }
+
+    output.innerHTML = mcpClient.history.slice().reverse().map(entry => {
+        const directionIcon = entry.direction === 'sent' ? '📤' : '📥';
+        const typeClass = entry.type;
+        const dataStr = typeof entry.data === 'object' ? JSON.stringify(entry.data, null, 2) : String(entry.data);
+        
+        return `
+            <div class="log-entry mcp-${typeClass}">
+                <span class="log-time">[${entry.timestamp}]</span>
+                <span class="log-direction">${directionIcon}</span>
+                <span class="log-type">${entry.type.toUpperCase()}:</span>
+                <pre class="log-data">${escapeHtml(dataStr)}</pre>
+            </div>
+        `;
+    }).join('');
+};
+
 async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) { 
     const isBackend = url.startsWith(API_BASE);
     const statusDot = isBackend ? document.getElementById('backend-status-dot') : document.getElementById('ollama-status-dot');
@@ -299,6 +423,28 @@ async function checkSystemHealth() {
         }
     } catch (e) {
         const dot = document.getElementById('ollama-status-dot');
+        if (dot) {
+            dot.classList.remove('live');
+            dot.classList.add('dead');
+        }
+    }
+
+    // 3. Check MCP (Port 2998)
+    try {
+        const res = await fetch(`http://localhost:2998/health`, { method: 'GET' });
+        const dot = document.getElementById('mcp-status-dot');
+        if (dot) {
+            // Si responde (aunque sea con 404/405), el servidor está arriba
+            if (res.ok || res.status === 405 || res.status === 404) {
+                dot.classList.remove('dead');
+                dot.classList.add('live');
+            } else {
+                dot.classList.remove('live');
+                dot.classList.add('dead');
+            }
+        }
+    } catch (e) {
+        const dot = document.getElementById('mcp-status-dot');
         if (dot) {
             dot.classList.remove('live');
             dot.classList.add('dead');
@@ -2183,33 +2329,59 @@ async function processAgentActions(text, project, chat) {
     }
 
     // 0.1 NEW: MCP Tool Call Detection [CALL:tool_name]{...args...}
-    const callRegex = /\[CALL:(.*?)\](\{[\s\S]*?\})/g;
+    const callRegex = /\[CALL:(\w+)\]\s*(\{[\s\S]*?\})(?=\s*\[CALL:|\s*$)/g;
     while ((match = callRegex.exec(text)) !== null) {
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
         const toolName = match[1].trim();
-        const toolArgsRaw = match[2].trim();
-        let toolArgs = {};
-        
-        try {
-            toolArgs = JSON.parse(toolArgsRaw);
-        } catch (e) {
-            errors.push(`- Error parseando argumentos para ${toolName}: ${e.message}`);
-            continue;
-        }
+        let argsText = match[2].trim();
 
-        logs.push({ type: 'info', message: `MCP Call: **${toolName}**` });
-        updateThinking(chat, true, "Usando herramienta MCP", toolName);
+        logs.push({ type: 'info', message: `Llamando a herramienta MCP: **${toolName}**...` });
+        updateThinking(chat, true, "Usando herramienta MCP", `Llamando a ${toolName}...`);
         
         try {
+            let toolArgs;
+            try {
+                toolArgs = JSON.parse(argsText);
+            } catch (jsonErr) {
+                console.warn("[MCP] Initial JSON parse failed, trying cleanup...", jsonErr);
+                // Handle unescaped newlines and other common model formatting errors
+                const sanitized = argsText
+                    .replace(/\\n/g, "\\\\n") // Preserve existing escapes
+                    .replace(/\n/g, "\\n")    // Escape real newlines
+                    .replace(/\r/g, "\\r");
+                toolArgs = JSON.parse(sanitized);
+            }
+
+            const isAbsolute = (p) => p.startsWith('/') || /^[a-zA-Z]:/.test(p);
+            const pathJoin = (...parts) => parts.map(p => p.replace(/\/+$/, '')).join('/').replace(/\/+/g, '/');
+
             // Adjust paths to be relative to project root if they aren't absolute
-            if (toolArgs.path && !path.isAbsolute(toolArgs.path)) {
+            if (toolArgs.path && !isAbsolute(toolArgs.path)) {
                 toolArgs.path = pathJoin(project.folder, toolArgs.path).replace(/\\/g, '/');
             }
-            if (toolArgs.cwd && !path.isAbsolute(toolArgs.cwd)) {
+            if (toolArgs.cwd && !isAbsolute(toolArgs.cwd)) {
                 toolArgs.cwd = pathJoin(project.folder, toolArgs.cwd).replace(/\\/g, '/');
             }
 
-            const result = await mcpClient.callTool(toolName, toolArgs);
+            // Create a promise that rejects if the chat is stopped
+            const stopPromise = new Promise((_, reject) => {
+                const checkStop = setInterval(() => {
+                    if (chat.isStopped) {
+                        clearInterval(checkStop);
+                        reject(new Error("AGENT_STOPPED"));
+                    }
+                }, 100);
+                // Also clear interval if the tool actually finishes
+            });
+
+            const result = await Promise.race([
+                mcpClient.callTool(toolName, toolArgs),
+                stopPromise
+            ]).finally(() => {
+                // The interval will be cleaned up by garbage collection or we can manage it better
+                // But for now, this ensures we don't wait forever if stopped
+            });
+            
             actionsPerformed++;
 
             const resultText = result.content.map(c => c.text).join('\n');
@@ -2432,16 +2604,25 @@ async function processAgentActions(text, project, chat) {
         }
     }
 
-    // 4. Intent Detection (If no actions found)
+    // 4. Hallucination & Intent Detection (Critical for models like Qwen)
     if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
-        const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo"];
+        const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo", "proyects/", "proyecto_"];
+        const codeKeywords = ["<!DOCTYPE", "function ", "class ", "let ", "const ", "var ", "import "];
         const lowText = text.toLowerCase();
         
         const hasIntent = intentKeywords.some(kw => lowText.includes(kw));
+        const hasPotentialCode = codeKeywords.some(kw => text.includes(kw)) && text.length > 300;
         
-        if (hasIntent) {
-             errors.push("🚫 PROTOCOL VIOLATION: Has dicho que has realizado cambios o creado archivos, pero NO has usado los comandos [CALL:write_file]. El sistema no ha guardado NADA. Debes repetir tu respuesta incluyendo las etiquetas [CALL:...] para que los cambios tengan efecto.");
+        if (hasIntent || hasPotentialCode) {
+             const errorMsg = "🚫 PROTOCOL VIOLATION: Has enviado código o has dicho que has realizado cambios, pero NO has usado las etiquetas obligatorias [CALL:write_file]. El sistema NO ha guardado nada. Debes repetir tu respuesta envolviendo CADA archivo en un bloque [CALL:write_file]{\"path\": \"...\", \"content\": \"...\"}.";
+             errors.push(errorMsg);
+             logs.push({ type: 'error', message: "Violación de Protocolo detectada", details: "El modelo envió texto/código sin etiquetas MCP." });
+             await recordAction(`[PROTOCOL_ERROR]`, `Model hallucinated tool usage without tags.`);
         }
+    }
+
+    if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
+        logs.push({ type: 'info', message: "No se detectaron acciones de herramientas en esta respuesta." });
     }
 
     return { errors, reads, logs, actionsPerformed };

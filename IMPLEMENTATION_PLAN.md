@@ -10,7 +10,7 @@ Este documento detalla el análisis de situación actual y el plan estratégico 
 | :--- | :--- | :--- | :--- |
 | **1** | **Estado Centrado en Archivos** | **✅ Completada** | Sistema de checkpoints y persistencia de `state.json` operativo. |
 | **2** | **Bucle "Code-First" / ReAct** | **✅ Completada** | El agente ya ejecuta scripts Node.js mediante `/api/execute/node` para manipular archivos. |
-| **3** | **Integración de MCP** | **✅ Completada** | Herramientas estandarizadas bajo protocolo MCP en puerto 3002. |
+| **3** | **Integración de MCP** | **✅ Completada** | Herramientas estandarizadas bajo protocolo MCP en puerto 2998. |
 | **4** | **Aislamiento y Seguridad** | **⏳ Pendiente** | Falta implementar el "Workspace Jail" y ejecución en sandbox. |
 
 ---
@@ -44,7 +44,7 @@ Este documento detalla el análisis de situación actual y el plan estratégico 
 ### Fase 3: Estandarización de Herramientas (MCP)
 *   **Objetivo**: Centralizar todas las capacidades del servidor bajo una interfaz única y autodescubrible.
 *   **Acciones**:
-    *   **✅ Completada**: Servidor MCP levantado en puerto 3002 usando SSEServerTransport.
+    *   **✅ Completada**: Servidor MCP levantado en puerto 2998 usando SSEServerTransport.
     *   **✅ Completada**: Mapeo de herramientas (list_files, read_file, write_file, search_files, execute_js) como herramientas MCP.
     *   **✅ Completada**: Cliente MCP integrado en el frontend (main.js) para invocar herramientas bajo demanda.
 *   **Archivos**: `server.js`.
