@@ -2,48 +2,111 @@
   {
     "type": "log",
     "messages": [
-      "[MCP-CLIENT] Message endpoint discovered:",
-      "http://127.0.0.1:2998/messages/4398eef8-5c6f-430d-95ea-6ef548625b43?sessionId=b715d7cc-5b51-4408-a992-e98202e044ae"
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"read_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_3_3/script.js\"\n  },\n  \"id\": 6\n}"
     ],
-    "timestamp": "2026-04-22T17:34:46.658Z",
+    "timestamp": "2026-04-22T17:37:29.541Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "[PROMPTS] Cargado: orchestrator_agent"
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"// Sketch de p5.js interactivo\\n\\nlet lastX = 0;\\nlet lastY = 0;\\n\\nfunction setup() {\\n    // Configura el canvas para que ocupe toda la ventana (fullscreen)\\n    createCanvas(windowWidth, windowHeight);\\n    background(10, 10, 30);\\n    // Inicializa las posiciones anteriores con las actuales\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para crear un efecto de estela\\n    background(10, 10, 30, 40); \\n\\n    // Calcular la distancia recorrida desde el último frame\\n    let dx = mouseX - lastX;\\n    let dy = mouseY - lastY;\\n    let distance = dist(lastX, lastY, mouseX, mouseY);\\n\\n    // 1. Dibujar un círculo que sigue al ratón\\n    // El tamaño y el color dependen de la velocidad de movimiento\\n    let circleSize = map(distance, 0, 50, 5, 50); // Tamaño entre 5px y 50px\\n    let alphaValue = map(distance, 0, 50, 200, 255); // Opacidad\\n    \\n    // Color que cambia ligeramente con el tiempo (usando la función sin para un cambio suave)\\n    let r = (sin(frameCount * 0.05) * 127 + 127) % 255;\\n    let g = (cos(frameCount * 0.05) * 127 + 127) % 255;\\n    let b = (frameCount * 0.5) % 255;\\n    \\n    noStroke();\\n    fill(r, g, b, alphaValue);\\n    ellipse(mouseX, mouseY, circleSize, circleSize);\\n    \\n    // 2. Dejar un rastro más tenue donde estuvo el ratón en el frame anterior\\n    fill(0, 100, 200, 50); // Color azul oscuro y transparente\\n    ellipse(lastX, lastY, 10, 10);\\n\\n    // Actualizar las posiciones anteriores para el próximo frame\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\n// Asegurar que el canvas se redimensiona al cambiar el tamaño de la ventana\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    background(10, 10, 30);\\n}\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 6\n}"
     ],
-    "timestamp": "2026-04-22T17:34:46.666Z",
+    "timestamp": "2026-04-22T17:37:29.544Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "[PROMPTS] Cargado: global_rules"
+      "🔄 AutoRetry 1/20: Continuando tras lectura..."
     ],
-    "timestamp": "2026-04-22T17:34:46.668Z",
+    "timestamp": "2026-04-22T17:37:29.549Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "📍 Restored active project:",
-      "moabv8loi83wzss04mt"
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_3_3/script.js\",\n    \"content\": \"// Sketch de p5.js interactivo\\n\\nlet lastX = 0;\\nlet lastY = 0;\\n// Variable global para el color de fondo (R, G, B)\\nconst GLOBAL_BG_COLOR = [10, 10, 30];\\n\\nfunction setup() {\\n    // Configura el canvas para que ocupe toda la ventana (fullscreen)\\n    createCanvas(windowWidth, windowHeight);\\n    // Uso de la variable global\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2]);\\n    // Inicializa las posiciones anteriores con las actuales\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para crear un efecto de estela\\n    // Usamos los componentes globales y mantenemos el alpha de 40\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2], 40); \\n\\n    // Calcular la distancia recorrida desde el último frame\\n    let dx = mouseX - lastX;\\n    let dy = mouseY - lastY;\\n    let distance = dist(lastX, lastY, mouseX, mouseY);\\n\\n    // 1. Dibujar un círculo que sigue al ratón\\n    // El tamaño y el color dependen de la velocidad de movimiento\\n    let circleSize = map(distance, 0, 50, 5, 50); // Tamaño entre 5px y 50px\\n    let alphaValue = map(distance, 0, 50, 200, 255); // Opacidad\\n    \\n    // Color que cambia ligeramente con el tiempo (usando la función sin para un cambio suave)\\n    let r = (sin(frameCount * 0.05) * 127 + 127) % 255;\\n    let g = (cos(frameCount * 0.05) * 127 + 127) % 255;\\n    let b = (frameCount * 0.5) % 255;\\n    \\n    noStroke();\\n    fill(r, g, b, alphaValue);\\n    ellipse(mouseX, mouseY, circleSize, circleSize);\\n    \\n    // 2. Dejar un rastro más tenue donde estuvo el ratón en el frame anterior\\n    fill(0, 100, 200, 50); // Color azul oscuro y transparente\\n    ellipse(lastX, lastY, 10, 10);\\n\\n    // Actualizar las posiciones anteriores para el próximo frame\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\n// Asegurar que el canvas se redimensiona al cambiar el tamaño de la ventana\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    // Uso de la variable global\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2]);\\n}\\n\"\n  },\n  \"id\": 7\n}"
     ],
-    "timestamp": "2026-04-22T17:34:46.698Z",
+    "timestamp": "2026-04-22T17:37:41.145Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "error",
+    "type": "log",
     "messages": [
-      "[MCP-CLIENT] SSE Error:",
-      "{\n  \"isTrusted\": true\n}"
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_3_3\\\\script.js\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7\n}"
     ],
-    "timestamp": "2026-04-22T17:35:34.293Z",
+    "timestamp": "2026-04-22T17:37:41.150Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP write_file..."
+    ],
+    "timestamp": "2026-04-22T17:37:41.153Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 8\n}"
+    ],
+    "timestamp": "2026-04-22T17:37:41.156Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 8\n}"
+    ],
+    "timestamp": "2026-04-22T17:37:41.196Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP execute_js..."
+    ],
+    "timestamp": "2026-04-22T17:37:41.201Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🚀 Switching to project: mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-22T17:38:17.008Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\jpagents"
+    ],
+    "timestamp": "2026-04-22T17:38:17.010Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
