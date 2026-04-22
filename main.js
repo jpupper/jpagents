@@ -76,6 +76,30 @@ marked.setOptions({
 const API_BASE = 'http://localhost:3001/api';
 const OLLAMA_BASE = 'http://localhost:11434/api';
 
+// PROMPTS MANAGEMENT
+let promptsCache = {
+    developer_agent: "",
+    orchestrator_agent: "",
+    global_rules: ""
+};
+
+async function loadPrompts() {
+    console.log("[PROMPTS] Cargando instrucciones desde la carpeta PROMPTS...");
+    const promptNames = Object.keys(promptsCache);
+    for (const name of promptNames) {
+        try {
+            const res = await fetch(`${API_BASE}/prompts/${name}`);
+            const data = await res.json();
+            if (data.content) {
+                promptsCache[name] = data.content;
+                console.log(`[PROMPTS] Cargado: ${name}`);
+            }
+        } catch (e) {
+            console.error(`[PROMPTS] Error cargando ${name}:`, e);
+        }
+    }
+}
+
 // System Control Helpers
 async function setAgentActive(busy) {
     try {
@@ -377,6 +401,7 @@ let currentAttachedImages = [];
 
 // Initialize
 async function init() {
+    await loadPrompts();
     await checkSystemHealth();
     await fetchModels();
     await loadData();
@@ -1309,29 +1334,29 @@ function buildRefactoredSystemPrompt(taskState) {
         `[Step ${s.id}] Action: ${s.action} -> Result: ${s.result.substring(0, 500)}${s.result.length > 500 ? '...' : ''}`
     ).join('\n');
 
-    // --- INSTRUCCIONES PERSONALIZADAS ---
-    const globalInstructions = state.globalPrompt ? `### GLOBAL SYSTEM INSTRUCTIONS:\n${state.globalPrompt}\n\n` : '';
+    // --- CARGAR PROMPTS DESDE CACHE (EXTERNALIZADOS) ---
+    const developerAgentBase = promptsCache.developer_agent || "USE MCP TOOLS FOR ALL ACTIONS.";
+    const globalRules = promptsCache.global_rules || state.globalPrompt || "";
     const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
 
-    return `${globalInstructions}${projectInstructions}### ROLE: EXPERT DEVELOPER AGENT (CODE-FIRST)
+    return `${developerAgentBase}
+
+### GLOBAL RULES & STYLE:
+${globalRules}
+
+${projectInstructions}
+
 ### ENVIRONMENT:
 - Backend: ${backendStatus}
 - Project Directory: ${p.folder}
 - Current Files: ${p.currentFiles.map(f => f.name).join(', ')}
 
 ### TASK CONTEXT:
-- **MAIN OBJECTIVE**: ${taskState.objective || 'No active technical task.'}
-- **EXECUTION HISTORY**:
-${recentStepsText || 'No actions performed yet.'}
-
-### OPERATIONAL MODES:
-1. **CONVERSATIONAL**: Reply with text only if the user is just chatting.
-2. **MCP TOOL CALLING (MANDATORY)**: 
-   - Use: [CALL:tool_name]{"arg": "val"}
-   - Tools: read_file, write_file, list_files, search_files, execute_js.
+- **MAIN OBJECTIVE**: ${taskState.objective || 'No active task.'}
+- **EXECUTION HISTORY**: ${recentStepsText || 'No actions yet.'}
 
 ### MISSION:
-Use MCP tools to solve the task. ALWAYS read before write.`;
+Solve the task using the tools above.`;
 }
 
 async function triggerAgentLogic(project, chat, origin = 'user') {
@@ -1881,7 +1906,7 @@ function buildAdminSystemPrompt() {
 
     const agentsTable = agentsList.map(a => `| ${a.chatId} | ${a.name} | ${a.projectName} | ${a.status} |`).join('\n');
 
-    let prompt = (state.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT) + `
+    let prompt = (promptsCache.orchestrator_agent || state.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT) + `
 
 LISTA DE AGENTES ACTIVOS:
 | ID (USAR ESTE) | NOMBRE | PROYECTO | ESTADO |
@@ -2409,15 +2434,13 @@ async function processAgentActions(text, project, chat) {
 
     // 4. Intent Detection (If no actions found)
     if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
-        const intentKeywords = ["modificar", "cambiar", "escribir", "actualizar", "reemplazar", "crear", "apply", "update", "write", "replace", "modify"];
-        const skipKeywords = ["hola", "saludos", "¿cómo", "puedo", "ayudar"];
+        const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo"];
         const lowText = text.toLowerCase();
         
         const hasIntent = intentKeywords.some(kw => lowText.includes(kw));
-        const isActuallyActing = lowText.includes("debo") || lowText.includes("voy a") || lowText.includes("aplicando");
         
-        if (hasIntent && isActuallyActing && lowText.indexOf(lowText.match(new RegExp(intentKeywords.join('|')))[0]) < 400) {
-             errors.push("🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas obligatorias ([READ], [WRITE] o [REPLACE]). Úsalas para actuar.");
+        if (hasIntent) {
+             errors.push("🚫 PROTOCOL VIOLATION: Has dicho que has realizado cambios o creado archivos, pero NO has usado los comandos [CALL:write_file]. El sistema no ha guardado NADA. Debes repetir tu respuesta incluyendo las etiquetas [CALL:...] para que los cambios tengan efecto.");
         }
     }
 

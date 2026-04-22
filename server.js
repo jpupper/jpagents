@@ -197,6 +197,31 @@ app.get('/api/models', async (req, res) => {
     }
 });
 
+// PROMPTS ENDPOINTS
+app.get('/api/prompts/:name', async (req, res) => {
+    try {
+        const name = req.params.name;
+        const filePath = path.join(__dirname, 'PROMPTS', `${name}.md`);
+        const content = await fs.readFile(filePath, 'utf-8');
+        res.json({ content });
+    } catch (err) {
+        res.status(404).json({ error: 'Prompt not found' });
+    }
+});
+
+app.post('/api/prompts/:name', async (req, res) => {
+    try {
+        const name = req.params.name;
+        const { content } = req.body;
+        const filePath = path.join(__dirname, 'PROMPTS', `${name}.md`);
+        await fs.mkdir(path.join(__dirname, 'PROMPTS'), { recursive: true });
+        await fs.writeFile(filePath, content, 'utf-8');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to save prompt' });
+    }
+});
+
 app.post('/api/files/list', async (req, res) => {
     let { folderPath } = req.body;
     

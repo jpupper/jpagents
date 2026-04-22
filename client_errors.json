@@ -1,59 +1,71 @@
 [
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "[MCP-CLIENT] Connecting to:",
-      "http://localhost:3002/sse"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:39:39.996Z",
+    "timestamp": "2026-04-22T04:48:27.609Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "[MCP-CLIENT] SSE connection opened"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:39:40.063Z",
+    "timestamp": "2026-04-22T04:48:32.974Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "📍 Restored active project:",
-      "mo9k7bqsox2sluuzaa9"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:39:40.092Z",
+    "timestamp": "2026-04-22T04:48:38.347Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "[MCP-CLIENT] Connecting to:",
-      "http://localhost:3002/sse"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:40:46.001Z",
+    "timestamp": "2026-04-22T04:48:43.713Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "[MCP-CLIENT] SSE connection opened"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:40:46.010Z",
+    "timestamp": "2026-04-22T04:48:49.072Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "📍 Restored active project:",
-      "mo9k7bqsox2sluuzaa9"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T04:40:46.097Z",
+    "timestamp": "2026-04-22T04:48:54.444Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T04:48:59.793Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
