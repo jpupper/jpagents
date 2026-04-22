@@ -1,5 +1,5 @@
 {
-  "objective": "Creame un archivo : poema.txt y ponele un lindo poema dentro",
+  "objective": "Crea un sketch de p5js interactivo con el mouse",
   "currentState": "PROCESSING ACTIONS",
   "lastActions": [
     {
@@ -10,10 +10,46 @@
   "steps": [
     {
       "id": 1,
-      "timestamp": 1776874145648,
+      "timestamp": 1776875053640,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 2,
+      "timestamp": 1776875053652,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 3,
+      "timestamp": 1776875053658,
+      "action": "[MCP:write_file]",
+      "result": "Error: Expected ',' or '}' after property value in JSON at position 2568 (line 1 column 2569)"
+    },
+    {
+      "id": 4,
+      "timestamp": 1776875064550,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 5,
+      "timestamp": 1776875064564,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 6,
+      "timestamp": 1776875064575,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 7,
+      "timestamp": 1776875064588,
       "action": "[MCP:write_file]",
       "result": "Success"
     }
   ],
-  "currentStep": 1
+  "currentStep": 7
 }

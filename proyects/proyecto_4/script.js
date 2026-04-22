@@ -1,93 +1,80 @@
+// Variables de seguimiento para la interacción
+let circles = [];
+const MAX_CIRCLES = 20;
 
-let particles = [];
-const NUM_PARTICLES = 8; // A bit more particles for a stronger burst
-
-// Clase para representar una partícula
-class Particle {
-    constructor(x, y) {
-        this.historyX = x;
-        this.historyY = y;
-        this.x = x;
-        this.y = y;
-        this.lifespan = 255; // Vida inicial (opacidad)
-        this.radius = random(3, 6);
-        
-        // Velocidad inicial (se calcula en mouseMoved)
-        this.vx = random(-5, 5); 
-        this.vy = random(-5, 5); 
-    }
-
-    // Actualiza la posición y la vida aplicando física simple
-    update() {
-        // Aplicar fricción o desaceleración
-        this.vx *= 0.98;
-        this.vy *= 0.98;
-        
-        // Aplicar movimiento
-        this.x += this.vx;
-        this.y += this.vy;
-
-        // Gravedad ligera (opcional, pero añade realismo)
-        this.vy += 0.1; 
-
-        // Reducir vida y opacidad
-        this.lifespan -= 3;
-        if (this.lifespan < 0) {
-            this.lifespan = 0;
-        }
-    }
-
-    // Dibuja la partícula en su nueva posición
-    display() {
-        stroke(255, 150, 0, this.lifespan); // Color naranja brillante, con opacidad
-        strokeWeight(this.radius);
-        // Dibujamos en la posición actual (x, y)
-        point(this.x, this.y);
-    }
-}
-
-// Función que se ejecuta al iniciar la sketch
 function setup() {
+    // Fullscreen canvas
     createCanvas(windowWidth, windowHeight);
     background(0);
 }
 
-// Función que se ejecuta en cada frame
 function draw() {
-    // Fondo semi-transparente: Esto crea el efecto de estela persistente.
-    background(0, 10); 
+    // Dibujar un semiclear para crear el efecto de estela/arrastre
+    fill(0, 10); // Negro con baja opacidad para el rastro
+    rect(0, 0, width, height);
 
-    // 1. Actualizar y dibujar partículas
-    for (let i = particles.length - 1; i >= 0; i--) {
-        let p = particles[i];
-        p.update();
-        p.display();
+    // 1. Dibujar el círculo que sigue al mouse
+    // Usaremos un tamaño dinámico basado en la velocidad o el tiempo
+    let currentSize = map(mouseX, 0, width, 5, 80, true); // Tamaño basado en X
+    let currentAlpha = map(mouseY, 0, height, 100, 255, true);
+    
+    stroke(255, 50, 150, currentAlpha); // Color Magenta con transparencia
+    strokeWeight(5);
+    point(mouseX, mouseY);
 
-        // Eliminar partículas muertas
-        if (p.lifespan <= 0) {
-            particles.splice(i, 1);
+    // 2. Generar o actualizar círculos de cola (interacción pasiva)
+    if (frameCount % 3 === 0) { // Crear un nuevo elemento cada 3 frames
+        circles.push(new Circle(mouseX, mouseY));
+    }
+
+    // Actualizar y dibujar todos los círculos de la cola
+    for (let i = circles.length - 1; i >= 0; i--) {
+        circles[i].update();
+        circles[i].display();
+        
+        // Remover círculos que se han desvanecido o salido del área
+        if (circles[i].isFinished()) {
+            circles.splice(i, 1);
         }
     }
 }
 
-// Evento clave: Se activa cuando el ratón se mueve
-function mouseMoved() {
-    // Creamos N partículas al pasar el ratón
-    for (let i = 0; i < NUM_PARTICLES; i++) {
-        // Creamos la partícula en la posición actual del ratón
-        let p = new Particle(mouseX, mouseY);
-        
-        // *** MODIFICACIÓN CLAVE: Darle un impulso aleatorio hacia afuera ***
-        // Esto hace que la partícula "salte" o se "dispare" ligeramente desde el punto del cursor.
-        p.vx = random(-8, 8); 
-        p.vy = random(-8, 8); 
-        
-        particles.push(p);
-    }
-}
-
-// Manejar el redimensionamiento de la ventana
+// Función para manejar el redimensionamiento (importante para fullscreen)
 function windowResized() {
     resizeCanvas(windowWidth, windowHeight);
     background(0);
+}
+
+/**
+ * Clase Circle: Representa un punto de la estela interactiva.
+ */
+class Circle {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.size = random(10, 40);
+        this.life = 255; // Alpha inicial
+        this.maxLife = 255;
+    }
+
+    update() {
+        // Simular movimiento hacia abajo ligeramente y desvanecimiento
+        this.y += 1.5;
+        this.life -= 3; // Disminuir la vida/opacidad
+    }
+
+    display() {
+        // El color cambia ligeramente basado en la vida restante
+        let r = map(this.life, 0, this.maxLife, 0, 255);
+        let g = map(this.life, 0, this.maxLife, 100, 255);
+        let b = map(this.life, 0, this.maxLife, 255, 100);
+        
+        fill(r, g, b, this.life);
+        noStroke();
+        ellipse(this.x, this.y, this.size, this.size);
+    }
+
+    isFinished() {
+        return this.life < 0 || this.y > height + 50;
+    }
 }

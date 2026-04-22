@@ -2405,6 +2405,12 @@ async function processAgentActions(text, project, chat) {
                 });
                 await recordAction(`[MCP:${toolName}]`, `Success`);
             }
+
+            // REFRESH UI after tool call
+            if (toolName !== 'read_file' && project.folder) {
+                console.log(`🔄 Refreshing file list after MCP ${toolName}...`);
+                window.scanFolder(project.folder);
+            }
         } catch (e) {
             errors.push(`- Error en herramienta MCP ${toolName}: ${e.message}`);
             logs.push({ type: 'error', message: `Fallo MCP: **${toolName}**`, details: e.message });
