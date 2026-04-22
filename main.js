@@ -100,6 +100,74 @@ async function triggerSystemRestart() {
     }
 }
 
+// MCP Client Implementation
+class MCPClient {
+    constructor(baseUrl) {
+        this.baseUrl = baseUrl;
+        this.eventSource = null;
+        this.messageId = 0;
+        this.onConnected = null;
+    }
+
+    async connect() {
+        return new Promise((resolve, reject) => {
+            console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
+            this.eventSource = new EventSource(`${this.baseUrl}/sse`);
+            
+            this.eventSource.onopen = () => {
+                console.log("[MCP-CLIENT] SSE connection opened");
+            };
+
+            this.eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.endpoint) {
+                    this.messageEndpoint = `${this.baseUrl}${data.endpoint}`;
+                    console.log("[MCP-CLIENT] Message endpoint discovered:", this.messageEndpoint);
+                    if (this.onConnected) this.onConnected();
+                    resolve();
+                }
+            };
+
+            this.eventSource.onerror = (error) => {
+                console.error("[MCP-CLIENT] SSE Error:", error);
+                reject(error);
+            };
+        });
+    }
+
+    async callTool(name, args) {
+        if (!this.messageEndpoint) {
+            await this.connect();
+        }
+
+        const id = ++this.messageId;
+        const payload = {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: {
+                name,
+                arguments: args
+            }
+        };
+
+        const res = await fetch(this.messageEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.error) {
+            throw new Error(data.error.message || "MCP Tool Call Error");
+        }
+        return data.result;
+    }
+}
+
+const mcpClient = new MCPClient('http://localhost:3002');
+mcpClient.connect().catch(e => console.error("MCP Connection failed:", e));
+
 // Helper for logging API errors with auto-retry for transient failures
 async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) { 
     const isBackend = url.startsWith(API_BASE);
@@ -1258,21 +1326,12 @@ ${recentStepsText || 'No actions performed yet.'}
 
 ### OPERATIONAL MODES:
 1. **CONVERSATIONAL**: Reply with text only if the user is just chatting.
-2. **CODE-FIRST REAct (MANDATORY for edits)**: 
-   - Instead of complex multi-step instructions, YOU SHOULD WRITE SMALL JAVASCRIPT SCRIPTS to perform tasks.
-   - Wrap your code in standard markdown blocks: \`\`\`javascript (code) \`\`\`.
-   - Access pre-injected helpers: 
-      * \`write(path, content)\`: Writes a file relative to the project root.
-      * \`fs\`, \`path\`, \`execSync\`: Standard Node.js modules are pre-imported.
-      * \`log(...args)\`: Use this to output data back to the chat context.
-
-### TRADITIONAL PROTOCOL (BACKUP/QUICK):
-You can still use these tags for simple one-off operations:
-- [READ:filename] -> To read content.
-- [SEARCH:filename:query] -> To find strings.
+2. **MCP TOOL CALLING (MANDATORY)**: 
+   - Use: [CALL:tool_name]{"arg": "val"}
+   - Tools: read_file, write_file, list_files, search_files, execute_js.
 
 ### MISSION:
-Analyze the objective, read files if necessary, then write and execute a script to apply the changes or solve the problem.`;
+Use MCP tools to solve the task. ALWAYS read before write.`;
 }
 
 async function triggerAgentLogic(project, chat, origin = 'user') {
@@ -2096,6 +2155,64 @@ async function processAgentActions(text, project, chat) {
     }
     if (text.includes('[/WRITE]') && !text.includes('[WRITE:')) {
         errors.push("⚠️ Detecté un cierre de etiqueta [/WRITE] sin una apertura [WRITE:archivo].");
+    }
+
+    // 0.1 NEW: MCP Tool Call Detection [CALL:tool_name]{...args...}
+    const callRegex = /\[CALL:(.*?)\](\{[\s\S]*?\})/g;
+    while ((match = callRegex.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
+        const toolName = match[1].trim();
+        const toolArgsRaw = match[2].trim();
+        let toolArgs = {};
+        
+        try {
+            toolArgs = JSON.parse(toolArgsRaw);
+        } catch (e) {
+            errors.push(`- Error parseando argumentos para ${toolName}: ${e.message}`);
+            continue;
+        }
+
+        logs.push({ type: 'info', message: `MCP Call: **${toolName}**` });
+        updateThinking(chat, true, "Usando herramienta MCP", toolName);
+        
+        try {
+            // Adjust paths to be relative to project root if they aren't absolute
+            if (toolArgs.path && !path.isAbsolute(toolArgs.path)) {
+                toolArgs.path = pathJoin(project.folder, toolArgs.path).replace(/\\/g, '/');
+            }
+            if (toolArgs.cwd && !path.isAbsolute(toolArgs.cwd)) {
+                toolArgs.cwd = pathJoin(project.folder, toolArgs.cwd).replace(/\\/g, '/');
+            }
+
+            const result = await mcpClient.callTool(toolName, toolArgs);
+            actionsPerformed++;
+
+            const resultText = result.content.map(c => c.text).join('\n');
+            
+            if (toolName === 'read_file') {
+                const fileName = toolArgs.path.split('/').pop();
+                reads.push({ fileName, content: resultText });
+                logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
+                await recordAction(`[MCP:read_file]`, `Read ${fileName}`);
+            } else if (toolName === 'write_file' || toolName === 'execute_js') {
+                logs.push({ type: 'success', message: `Ejecución MCP exitosa: **${toolName}**` });
+                chat.messages.push({ 
+                    role: 'system', 
+                    content: `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\`` 
+                });
+                await recordAction(`[MCP:${toolName}]`, `Success`);
+            } else {
+                chat.messages.push({ 
+                    role: 'system', 
+                    content: `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 500)}${resultText.length > 500 ? '...' : ''}\n\`\`\`` 
+                });
+                await recordAction(`[MCP:${toolName}]`, `Success`);
+            }
+        } catch (e) {
+            errors.push(`- Error en herramienta MCP ${toolName}: ${e.message}`);
+            logs.push({ type: 'error', message: `Fallo MCP: **${toolName}**`, details: e.message });
+            await recordAction(`[MCP:${toolName}]`, `Error: ${e.message}`);
+        }
     }
 
     // 1. Handle Reads

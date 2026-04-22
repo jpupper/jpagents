@@ -2,9 +2,58 @@
   {
     "type": "log",
     "messages": [
-      "🔄 AutoRetry 1/20: ⚠️ No se pudieron aplicar tus cambios:\n- Error en ejecución: Command failed: node D:\\Programacion\\jp"
+      "[MCP-CLIENT] Connecting to:",
+      "http://localhost:3002/sse"
     ],
-    "timestamp": "2026-04-22T04:06:15.026Z",
+    "timestamp": "2026-04-22T04:39:39.996Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] SSE connection opened"
+    ],
+    "timestamp": "2026-04-22T04:39:40.063Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo9k7bqsox2sluuzaa9"
+    ],
+    "timestamp": "2026-04-22T04:39:40.092Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] Connecting to:",
+      "http://localhost:3002/sse"
+    ],
+    "timestamp": "2026-04-22T04:40:46.001Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] SSE connection opened"
+    ],
+    "timestamp": "2026-04-22T04:40:46.010Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo9k7bqsox2sluuzaa9"
+    ],
+    "timestamp": "2026-04-22T04:40:46.097Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
