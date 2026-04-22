@@ -1,0 +1,3 @@
+{
+  "message": "@Agente 1: Busca el botón 'git-reset-btn' en index.html. No tiene lógica en main.js. Programa la funcionalidad para que al hacer clic pida confirmación y luego ejecute un 'git reset --hard origin/main'. Debes implementar la lógica en main.js y, si es necesario, añadir un endpoint en server.js para ejecutar el comando git. Asegúrate de modificar los archivos físicamente. No digas que lo hiciste si no lo has hecho."
+}

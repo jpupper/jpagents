@@ -120,5 +120,25 @@
     "timestamp": "2026-04-21T17:41:46.384Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-22T03:03:44.497Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mo8c2n14rdjo6x65n1"
+    ],
+    "timestamp": "2026-04-22T03:04:35.670Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
   }
 ]

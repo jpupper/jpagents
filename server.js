@@ -5,7 +5,6 @@ import path from 'path';
 import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { watch } from 'fs';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -25,6 +24,8 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const OLLAMA_URL = 'http://localhost:11434';
 const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
 const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
+const TASK_STATE_FILE = path.join(process.cwd(), 'state.json');
+
 
 // Persistence Helpers
 async function loadLogs() {
@@ -114,13 +115,20 @@ app.get('/api/utils/pick-folder', async (req, res) => {
         Add-Type -AssemblyName System.Windows.Forms;
         $f = New-Object System.Windows.Forms.Form;
         $f.TopMost = $true;
+        $f.Opacity = 0;
+        $f.Show();
+        $f.Activate();
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog;
-        $dialog.Description = "Selecciona una carpeta para tu proyecto";
+        $dialog.Description = "Selecciona la carpeta raíz de tu proyecto";
+        $defaultPath = "D:\Programacion\jpagents\proyects";
+        if (Test-Path $defaultPath) { $dialog.SelectedPath = $defaultPath };
         $dialog.ShowNewFolderButton = $true;
-        if ($dialog.ShowDialog($f) -eq "OK") {
+        $result = $dialog.ShowDialog($f);
+        if ($result -eq "OK") {
             $dialog.SelectedPath
         }
-    `.trim(); // We keep newlines or let it be passed as is, execFile handles it.
+        $f.Close();
+    `.trim(); 
 
     const args = [
         '-NoProfile',
@@ -131,26 +139,36 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     ];
 
     try {
-        const { stdout, stderr } = await execFileAsync('powershell.exe', args, { timeout: 120000 });
+        console.log('[SERVER] Ejecutando PowerShell para selector de carpetas...');
+        const { stdout, stderr } = await execFileAsync('powershell.exe', args, { timeout: 60000 });
         
-        if (stderr && !stdout) {
-            console.warn('[SERVER] PowerShell Stderr:', stderr);
-        }
-
         const pickedPath = stdout.trim();
-        console.log('[SERVER] Carpeta seleccionada:', pickedPath || '(Cancelado)');
+        console.log('[SERVER] PowerShell Result:', pickedPath || '(Cancelado)');
         res.json({ path: pickedPath });
     } catch (e) {
-        console.error('[SERVER] Error en pick-folder:', e.message);
-        if (e.stderr) console.error('[SERVER] PowerShell Error Output:', e.stderr);
-        
-        res.status(500).json({ 
-            error: 'Error en el selector de carpetas',
-            details: e.message,
-            stderr: e.stderr 
-        });
+        console.error('[SERVER] Fallo crítico en pick-folder:', e.message);
+        res.status(500).json({ error: 'No se pudo abrir el selector de carpetas.', details: e.message });
     }
 });
+app.post('/api/utils/create-project-folder', async (req, res) => {
+    const { projectName } = req.body;
+    if (!projectName) return res.status(400).json({ error: 'Missing projectName' });
+
+    const baseDir = "D:\\Programacion\\jpagents\\proyects";
+    const folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+    const folderPath = path.join(baseDir, folderName);
+
+    try {
+        await fs.mkdir(baseDir, { recursive: true });
+        await fs.mkdir(folderPath, { recursive: true });
+        console.log(`[SERVER] Carpeta de proyecto creada: ${folderPath}`);
+        res.json({ path: folderPath });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
 
 app.get('/api/models', async (req, res) => {
     try {
@@ -238,6 +256,68 @@ app.post('/api/utils/run-script', async (req, res) => {
     }
 });
 
+// Fase 2: Motor de Ejecución Code-First
+app.post('/api/execute/node', async (req, res) => {
+    const { code, cwd } = req.body;
+    if (!code) return res.status(400).json({ error: 'No code provided' });
+
+    console.log(`[CODE-ENGINE] Ejecutando bloque de código en: ${cwd || 'root'}`);
+
+    // Crear un archivo temporal para ejecutar el código
+    const tempFileName = `temp_agent_${Date.now()}.js`;
+    const tempFilePath = path.join(process.cwd(), 'scratch', tempFileName);
+
+    try {
+        await fs.mkdir(path.join(process.cwd(), 'scratch'), { recursive: true });
+        
+        // Inyectamos utilidades básicas para que el agente no tenga que importar todo
+        const wrappedCode = `
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const log = (...args) => console.log(...args);
+const write = (p, c) => {
+    const fullPath = path.isAbsolute(p) ? p : path.join('${(cwd || '').replace(/\\/g, '\\\\')}', p);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, c, 'utf-8');
+    return fullPath;
+};
+
+try {
+    ${code}
+} catch (err) {
+    console.error('Runtime Error:', err.message);
+    process.exit(1);
+}
+        `;
+
+        await fs.writeFile(tempFilePath, wrappedCode, 'utf-8');
+
+        const { stdout, stderr } = await execFileAsync('node', [tempFilePath], { 
+            cwd: cwd || process.cwd(),
+            timeout: 30000 
+        });
+
+        res.json({ success: true, stdout, stderr });
+
+    } catch (error) {
+        res.json({ 
+            success: false, 
+            error: error.message, 
+            stdout: error.stdout, 
+            stderr: error.stderr 
+        });
+    } finally {
+        // Limpieza del archivo temporal
+        try {
+            await fs.unlink(tempFilePath);
+        } catch (e) {}
+    }
+});
+
 app.post('/api/utils/git-commit', async (req, res) => {
     const { folderPath, message } = req.body;
     if (!folderPath || !message) return res.status(400).json({ error: 'Missing folderPath or message' });
@@ -273,6 +353,55 @@ app.post('/api/utils/git-commit', async (req, res) => {
         });
     }
 });
+
+app.post('/api/utils/git-reset', async (req, res) => {
+    const { folderPath, target } = req.body; // target could be 'origin/main'
+    if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
+    
+    console.log(`[SERVER] Git Hard Reset en: ${folderPath} a ${target || 'HEAD'}`);
+    
+    try {
+        await execAsync('git fetch', { cwd: folderPath });
+        const { stdout, stderr } = await execAsync(`git reset --hard ${target || 'HEAD'}`, { cwd: folderPath });
+        res.json({ success: true, stdout, stderr });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/utils/search', async (req, res) => {
+    const { filePath, query } = req.body;
+    if (!filePath || !query) return res.status(400).json({ error: 'Missing filePath or query' });
+
+    try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split(/\r?\n/);
+        const matches = [];
+        const contextLines = 5;
+
+        lines.forEach((line, index) => {
+            if (line.toLowerCase().includes(query.toLowerCase())) {
+                const start = Math.max(0, index - contextLines);
+                const end = Math.min(lines.length, index + contextLines + 1);
+                matches.push({
+                    line: index + 1,
+                    text: line.trim(),
+                    context: lines.slice(start, end).join('\n')
+                });
+            }
+        });
+
+        res.json({ 
+            success: true, 
+            matches: matches.slice(0, 10), // Limit to 10 matches to avoid overwhelming
+            totalMatches: matches.length 
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 
 // Admin API
 app.get('/api/admin/stats', async (req, res) => {
@@ -358,17 +487,75 @@ app.post('/api/admin/communicate/admin', async (req, res) => {
 });
 
 
+// Task State Persistence (Historial de pasos)
+app.get('/api/task/state', async (req, res) => {
+    try {
+        const data = await fs.readFile(TASK_STATE_FILE, 'utf-8');
+        const state = JSON.parse(data);
+        // Devolvemos el estado actual (último paso) y la meta-información
+        res.json(state);
+    } catch (e) {
+        res.json({ objective: '', steps: [], currentStep: 0 });
+    }
+});
+
+app.post('/api/task/state', async (req, res) => {
+    try {
+        const newState = req.body;
+        let history = { objective: '', steps: [], currentStep: 0 };
+        
+        try {
+            const data = await fs.readFile(TASK_STATE_FILE, 'utf-8');
+            history = JSON.parse(data);
+            // Asegurar que la estructura nueva exista si el archivo es antiguo
+            if (!Array.isArray(history.steps)) history.steps = [];
+            if (history.currentStep === undefined) history.currentStep = history.steps.length;
+        } catch (e) {}
+
+        // Si el objetivo cambia, resetear o iniciar nuevo flujo
+        if (newState.objective && newState.objective !== history.objective) {
+            history.objective = newState.objective;
+            history.steps = [];
+            history.currentStep = 0;
+        }
+
+        // Añadir nuevo paso si viene en el body
+        if (newState.step) {
+            history.steps.push({
+                id: history.steps.length + 1,
+                timestamp: Date.now(),
+                ...newState.step
+            });
+            history.currentStep = history.steps.length;
+        }
+
+        // Limitar historial a los últimos 20 pasos para no saturar el archivo
+        if (history.steps.length > 20) {
+            history.steps = history.steps.slice(-20);
+        }
+
+        await fs.writeFile(TASK_STATE_FILE, JSON.stringify(history, null, 2), 'utf-8');
+        res.json({ success: true, currentStep: history.currentStep });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
 // System Control Routes
+
 app.post('/api/system/status', (req, res) => {
     const { busy } = req.body;
     isAgentBusy = !!busy;
     console.log(`[SYSTEM] Agent status changed: ${isAgentBusy ? 'BUSY' : 'READY'}`);
     
-    // If agent finished and we had a pending restart, do it now
+    // Auto-restart DISABLED as per user request
+    /*
     if (!isAgentBusy && needsRestart) {
         console.log('[SYSTEM] Agent finished, performing PENDING RESTART...');
         triggerRestart(1000);
     }
+    */
     
     res.json({ success: true, isAgentBusy, needsRestart });
 });
@@ -423,27 +610,6 @@ function spawnNewProcess() {
         process.exit(1);
     }
 }
-
-// Simple File Watcher for auto-update (ignoring noise)
-const watcher = watch(process.cwd(), { recursive: true }, (event, filename) => {
-    if (!filename) return;
-    
-    // Ignore common noise
-    if (filename.includes('node_modules') || 
-        filename.includes('.git') || 
-        filename.includes('sessions.json') ||
-        filename.includes('client_errors.json') ||
-        filename.includes('public' + path.sep + 'dist')) {
-        return;
-    }
-
-    // Only watch source files
-    const ext = path.extname(filename);
-    if (['.js', '.json', '.html', '.css'].includes(ext)) {
-        console.log(`[WATCHER] Change detected: ${filename}`);
-        triggerRestart(2500); // 2.5s debounce
-    }
-});
 
 serverInstance = app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);

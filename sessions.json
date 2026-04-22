@@ -4,6 +4,7 @@
       "id": "mo8c1l4e4jjpncx3u1p",
       "name": "NFT",
       "folder": "D:\\Programacion\\generativeantsystem\\kodahash_template",
+      "model": "",
       "chats": [
         {
           "id": "chat-mo8c1l4ewjxy9mtpsl",
@@ -12,7 +13,8 @@
           "isThinking": false,
           "mode": "auto",
           "lastProgress": 1776758363681,
-          "isStopped": false
+          "isStopped": false,
+          "model": ""
         }
       ],
       "openFiles": [],
@@ -76,6 +78,7 @@
       "id": "mo8c2n14rdjo6x65n1",
       "name": "JPAGENTS",
       "folder": "D:\\Programacion\\jpagents",
+      "model": "",
       "chats": [
         {
           "id": "chat-mo8wr4aq1rkwbflb1uej",
@@ -84,7 +87,8 @@
           "isThinking": false,
           "mode": "auto",
           "lastProgress": 1776793128578,
-          "isStopped": false
+          "isStopped": false,
+          "model": ""
         }
       ],
       "openFiles": [],
@@ -121,6 +125,11 @@
           "path": "D:\\Programacion\\jpagents\\client_errors.json"
         },
         {
+          "name": "IMPLEMENTATION_PLAN.md",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\IMPLEMENTATION_PLAN.md"
+        },
+        {
           "name": "index.html",
           "isDirectory": false,
           "path": "D:\\Programacion\\jpagents\\index.html"
@@ -134,6 +143,11 @@
           "name": "main.js",
           "isDirectory": false,
           "path": "D:\\Programacion\\jpagents\\main.js"
+        },
+        {
+          "name": "msg.json",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\msg.json"
         },
         {
           "name": "node_modules",
@@ -154,6 +168,11 @@
           "name": "poema.txt",
           "isDirectory": false,
           "path": "D:\\Programacion\\jpagents\\poema.txt"
+        },
+        {
+          "name": "proyects",
+          "isDirectory": true,
+          "path": "D:\\Programacion\\jpagents\\proyects"
         },
         {
           "name": "public",
@@ -181,9 +200,19 @@
           "path": "D:\\Programacion\\jpagents\\sessions.json"
         },
         {
+          "name": "sketch.js",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\sketch.js"
+        },
+        {
           "name": "src",
           "isDirectory": true,
           "path": "D:\\Programacion\\jpagents\\src"
+        },
+        {
+          "name": "state.json",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\state.json"
         },
         {
           "name": "style.css",

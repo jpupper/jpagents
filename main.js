@@ -224,8 +224,14 @@ let state = {
     globalPrompt: DEFAULT_GLOBAL_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
     adminMessages: [], 
-    adminIsThinking: false
+    adminIsThinking: false,
+    taskState: {
+        objective: '',
+        steps: [],
+        currentStep: 0
+    }
 };
+
 
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
 
@@ -394,13 +400,15 @@ function sanitizeProject(p) {
         id: id,
         name: p.name || 'Proyecto sin nombre',
         folder: p.folder || '',
+        model: p.model || '', // Preserve project model
         chats: Array.isArray(p.chats) ? p.chats.map(c => ({
             ...c,
             mode: c.mode || 'auto',
             lastProgress: c.lastProgress || Date.now(),
-            isStopped: false
+            isStopped: false,
+            model: c.model || p.model || '' // Agent model
         })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, model: p.model || '' }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
@@ -432,6 +440,27 @@ async function clearClientLogs() {
         await fetch(`${API_BASE}/utils/client-logs/clear`, { method: 'POST' });
     } catch (e) {}
 }
+
+async function getTaskState() {
+    try {
+        const res = await fetch(`${API_BASE}/task/state`);
+        return await res.json();
+    } catch (e) {
+        return { objective: '', steps: [], currentStep: 0 };
+    }
+}
+
+async function saveTaskState(taskState) {
+    try {
+        await fetch(`${API_BASE}/task/state`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskState)
+        });
+        state.taskState = taskState;
+    } catch (e) {}
+}
+
 
 async function getClientErrors() {
     try {
@@ -477,14 +506,38 @@ window.clearConsoleUI = async () => {
     refreshConsoleUI();
 };
 
-function createNewProject() {
-    const id = generateId(); // Fix: define id
+async function createNewProject() {
+    const id = generateId();
+    const projectName = `Proyecto ${state.projects.length + 1}`;
+    
+    // Call server to create default folder
+    let folderPath = '';
+    try {
+        const res = await fetch(`${API_BASE}/utils/create-project-folder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectName })
+        });
+        const data = await res.json();
+        if (data.path) folderPath = data.path;
+    } catch (e) {
+        console.error("Error creating project folder:", e);
+    }
+
     const newProject = {
         id,
-        name: `Proyecto ${state.projects.length + 1}`,
-        folder: '',
+        name: projectName,
+        folder: folderPath,
+        model: modelSelect.value, // Save current global model as default for this project
         chats: [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto' }
+            { 
+                id: 'chat-' + generateId(), 
+                name: 'Agente 1', 
+                messages: [], 
+                isThinking: false, 
+                mode: 'auto',
+                model: modelSelect.value // Agent also gets the model
+            }
         ],
         openFiles: [],
         activeTabId: null,
@@ -494,9 +547,16 @@ function createNewProject() {
     newProject.activeTabId = newProject.chats[0].id;
     state.projects.push(newProject);
     state.activeProjectId = id;
+    
     renderProjectList();
     renderTabs();
-    renderFileList(); // Clear file list for new project
+    
+    if (folderPath) {
+        window.scanFolder(folderPath);
+    } else {
+        renderFileList(); 
+    }
+    
     saveData();
 }
 
@@ -546,11 +606,24 @@ async function fetchModels() {
     try {
         const res = await fetchWithLog(`${API_BASE}/models`);
         const data = await res.json();
+        
         state.models = data.models || [];
-        modelSelect.innerHTML = state.models.map(m => {
+        const modelOptions = state.models.map(m => {
             const isVision = m.details && m.details.families && m.details.families.includes('clip');
             return `<option value="${m.name}" data-vision="${isVision}">${m.name} ${isVision ? '👁️' : ''}</option>`;
         }).join('');
+
+        modelSelect.innerHTML = modelOptions;
+        
+        const projectModelSelect = document.getElementById('project-model-select');
+        if (projectModelSelect) {
+            projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + modelOptions;
+        }
+
+        const chatModelSelect = document.getElementById('chat-model-select');
+        if (chatModelSelect) {
+            chatModelSelect.innerHTML = '<option value="">Usar Proyecto</option>' + modelOptions;
+        }
         
         // Initial vision check
         checkVisionCapability();
@@ -766,6 +839,12 @@ function updateViewVisibility() {
             if (stopBtn) stopBtn.classList.toggle('hidden', !chat.isThinking);
             if (thinkingInd) thinkingInd.classList.toggle('hidden', !chat.isThinking);
             if (statusSpan && chat.thinkingStatus) statusSpan.textContent = chat.thinkingStatus;
+
+            // Sync chat model select
+            const chatModelSelect = document.getElementById('chat-model-select');
+            if (chatModelSelect) {
+                chatModelSelect.value = chat.model || '';
+            }
         }
     } else if (project.activeTabId === 'admin') {
         adminTabContent.classList.remove('hidden');
@@ -797,6 +876,12 @@ function updateViewVisibility() {
 
         // Refresh Console Output
         refreshConsoleUI();
+
+        // Sync project model UI
+        const projectModelSelect = document.getElementById('project-model-select');
+        if (projectModelSelect) {
+            projectModelSelect.value = project.model || '';
+        }
 
         // Sync project prompt UI
         const projectPromptInput = document.getElementById('project-prompt');
@@ -1124,75 +1209,148 @@ async function sendMessage() {
     await triggerAgentLogic(project, chat);
 }
 
+function buildRefactoredSystemPrompt(taskState) {
+    const p = getActiveProject();
+    const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE' : 'OFFLINE';
+    
+    // Resumir los últimos pasos para el contexto del modelo
+    const recentStepsText = (taskState.steps || []).slice(-5).map(s => 
+        `[Step ${s.id}] Action: ${s.action} -> Result: ${s.result.substring(0, 500)}${s.result.length > 500 ? '...' : ''}`
+    ).join('\n');
+
+    return `### ROLE: EXPERT DEVELOPER AGENT (CODE-FIRST)
+### ENVIRONMENT:
+- Backend: ${backendStatus}
+- Project Directory: ${p.folder}
+- Current Files: ${p.currentFiles.map(f => f.name).join(', ')}
+
+### TASK CONTEXT:
+- **MAIN OBJECTIVE**: ${taskState.objective || 'No active technical task.'}
+- **EXECUTION HISTORY**:
+${recentStepsText || 'No actions performed yet.'}
+
+### OPERATIONAL MODES:
+1. **CONVERSATIONAL**: Reply with text only if the user is just chatting.
+2. **CODE-FIRST REAct (MANDATORY for edits)**: 
+   - Instead of complex multi-step instructions, YOU SHOULD WRITE SMALL JAVASCRIPT SCRIPTS to perform tasks.
+   - Wrap your code in standard markdown blocks: \`\`\`javascript (code) \`\`\`.
+   - Access pre-injected helpers: 
+      * \`write(path, content)\`: Writes a file relative to the project root.
+      * \`fs\`, \`path\`, \`execSync\`: Standard Node.js modules are pre-imported.
+      * \`log(...args)\`: Use this to output data back to the chat context.
+
+### TRADITIONAL PROTOCOL (BACKUP/QUICK):
+You can still use these tags for simple one-off operations:
+- [READ:filename] -> To read content.
+- [SEARCH:filename:query] -> To find strings.
+
+### MISSION:
+Analyze the objective, read files if necessary, then write and execute a script to apply the changes or solve the problem.`;
+}
+
 async function triggerAgentLogic(project, chat, origin = 'user') {
-    if (chat.isThinking) return; // Don't start twice
+    if (chat.isThinking) return; 
 
-    // Signal system that we are busy
     await setAgentActive(true);
-
-    // Clear logs before starting to catch only new ones
     await clearClientLogs();
 
     updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
-    chat.isStopped = false; // Reset stop flag
+    chat.isStopped = false; 
     renderMessages();
 
-    // Prepare history for Ollama /api/chat
-    const systemMsg = { role: 'system', content: buildSystemPrompt() };
-    const history = chat.messages.map(m => {
-        let content = m.content;
-        
-        // --- CLEANUP FOR LLM CONTEXT ---
-        // We remove the UI-only "execution logs" and other HTML decorations 
-        // to prevent the agent from hallucinating or mimicking the UI format.
-        if (m.role === 'agent') {
-            content = content
-                .replace(/<details class="execution-log">[\s\S]*?<\/details>/g, '') // Remove logs
-                .replace(/<div class="file-action-link"[\s\S]*?<\/div>/g, (match) => {
-                    // Extract the text part (e.g., "📝 Modificar main.js") or just the tags
-                    const textMatch = match.match(/<strong>(.*?)<\/strong>/);
-                    return textMatch ? `[Action performed on: ${textMatch[1]}]` : '';
-                });
-        }
+    // 1. Sync Task State
+    let taskState = await getTaskState();
+    
+    // If user just sent a message, determine if it's a technical task
+    const lastMsg = chat.messages[chat.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'user') {
+        const text = lastMsg.content.toLowerCase();
+        const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "lee", "busca", "implementa", "borra", "replace", "write", "read", "search", "fix", "update", "change"];
+        const isTechnical = technicalKeywords.some(kw => text.includes(kw));
+        const isGreeting = /^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|que tal|como estas|saludos)\b/i.test(text.trim());
 
-        const msg = {
-            role: m.role === 'agent' ? 'assistant' : m.role,
-            content: content
-        };
-        if (m.images) msg.images = m.images;
-        return msg;
-    });
+        if (isTechnical && (origin === 'user' || !taskState.objective)) {
+            taskState.objective = lastMsg.content;
+            taskState.currentState = "STARTING TASK";
+        } else if (isGreeting || !isTechnical) {
+            // Si es saludo o no es técnico, y no hay un objetivo previo, marcar como conversación
+            if (!taskState.objective || taskState.objective === "CONVERSATION") {
+                taskState.objective = "CONVERSATION";
+                taskState.currentState = "IDLE/CHATTING";
+            }
+        }
+    }
+
+    // 2. Build Refactored Prompt
+    const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
+    
+    // RESTORE CONTEXT: Enviar los últimos 5 mensajes para que el modelo sepa qué está pasando
+    const history = chat.messages.slice(-5).map(m => ({
+        role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
+        content: m.content
+    }));
 
     const messages = [systemMsg, ...history];
 
     try {
+
         const response = await fetch(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
             body: JSON.stringify({ 
-                model: modelSelect.value, 
+                model: chat.model || project.model || modelSelect.value, 
                 messages: messages,
-                stream: false 
+                stream: true // Habilitado para Fase 2: Visibilidad de progreso
             })
         });
 
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
-        // Check if stopped before processing
-        if (chat.isStopped) {
-            updateThinking(chat, false);
-            chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario.' });
-            renderMessages();
-            return;
-        }
+        // --- STREAMING PROCESSING ---
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantResponse = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const json = JSON.parse(line);
+                    if (json.done) break;
+                    if (json.message && json.message.content) {
+                        assistantResponse += json.message.content;
+                        // Opcional: Actualizar UI en tiempo real aquí si se desea
+                    }
+                } catch (e) {}
+            }
 
-        const data = await response.json();
-        updateThinking(chat, true, "Procesando acciones", "El agente está aplicando cambios...");
-        
-        const assistantResponse = data.message.content;
-        
+            if (chat.isStopped) {
+                reader.cancel();
+                updateThinking(chat, false);
+                return;
+            }
+        }
+        // --- END STREAMING ---
+
+
+        // 3. Update current state based on response
+        taskState.currentState = "PROCESSING ACTIONS";
+        await saveTaskState(taskState);
+
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
         
+        if (assistantResponse.includes("TASK COMPLETE")) {
+            taskState.currentState = "FINISHED";
+            taskState.objective = ""; // Clear objective for next task
+            await saveTaskState(taskState);
+        }
+
         if (actionResult.stopped) {
             updateThinking(chat, false);
             chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario durante el procesamiento.' });
@@ -1348,9 +1506,16 @@ window.scanFolder = async function(pathInput = null) {
             
             renderFileList();
             saveData();
+            renderFileList();
         }
     } catch (e) {
         console.error("Fetch error scanning folder:", e);
+    } finally {
+        // Reset icon state in case of failure or success
+        if (scanFolderBtn) {
+            scanFolderBtn.textContent = '📁';
+            scanFolderBtn.classList.remove('loading');
+        }
     }
 }
 
@@ -1361,9 +1526,15 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
         return;
     }
 
-    const currentFiles = files || p.currentFiles || [];
+    const searchInput = document.getElementById('file-search');
+    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : "";
+
+    const currentFilesFiltered = (files || p.currentFiles || []).filter(f => {
+        if (!searchTerm) return true;
+        return f.name.toLowerCase().includes(searchTerm);
+    });
     
-    if (currentFiles.length === 0 && !p.folder && !parentPath) {
+    if (currentFilesFiltered.length === 0 && !p.folder && !parentPath) {
         container.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
         return;
     }
@@ -1371,14 +1542,14 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
     let html = '';
     
     // Solo mostramos el "atrás" en el nivel raíz y si no estamos usando vista de árbol expandida todavía
-    if (!parentPath && p.folder) {
+    if (!parentPath && p.folder && !searchTerm) {
         html += `<div class="file-item directory back-nav" onclick="window.goUp()">
             <span class="file-icon">⤴️</span>
             <span class="file-name">.. (Subir nivel)</span>
         </div>`;
     }
 
-    html += currentFiles.map(f => {
+    html += currentFilesFiltered.map(f => {
         const isDir = f.isDirectory;
         const icon = isDir ? '📁' : getFileIcon(f.name);
         const path = f.path.replace(/\\/g, '/');
@@ -1406,12 +1577,13 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
         }
     }).join('');
 
-    if (currentFiles.length === 0 && !parentPath) {
-        html += '<p class="empty-state">La carpeta está vacía</p>';
+    if (currentFilesFiltered.length === 0 && !parentPath) {
+        html += `<p class="empty-state">${searchTerm ? 'No se encontraron resultados' : 'La carpeta está vacía'}</p>`;
     }
 
     container.innerHTML = html;
 }
+
 
 function getFileIcon(filename) {
     const ext = filename.split('.').pop().toLowerCase();
@@ -1458,58 +1630,57 @@ window.toggleFolder = async (path, id) => {
 
 function buildSystemPrompt() {
     const p = getActiveProject();
-    const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE (Conectado)' : 'OFFLINE (Desconectado)';
-    const ollamaStatus = document.getElementById('ollama-status-dot')?.classList.contains('live') ? 'ONLINE (Conectado)' : 'OFFLINE (Desconectado)';
+    const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE' : 'OFFLINE';
     
-    let prompt = `Eres un subagente profesional experto en codificación. 
-ESTADO DEL SISTEMA:
-- Backend Server (Files & Scripts): ${backendStatus}
-- Ollama (LLM Core): ${ollamaStatus}
-Carpeta de trabajo: ${p.folder}\n`;
+    return `### ROLE: EXPERT DEVELOPER AGENT
+### ENVIRONMENT:
+- Backend: ${backendStatus}
+- Project Directory: ${p.folder}
+- Current Files: ${p.currentFiles.map(f => f.name).join(', ')}
 
-    if (backendStatus === 'OFFLINE (Desconectado)') {
-        prompt += `\n⚠️ ADVERTENCIA: El Backend Server está desconectado. NO puedes leer ni escribir archivos ni ejecutar scripts en este momento. Informa al usuario que debe ejecutar "run.bat" o iniciar el servidor.\n`;
-    }
-    
-    if (state.globalPrompt) {
-        prompt += `\nINSTRUCCIONES GLOBALES:\n${state.globalPrompt}\n`;
-    }
-    
-    if (p.projectPrompt) {
-        prompt += `\nINSTRUCCIONES ESPECÍFICAS DEL PROYECTO (SKILL):\n${p.projectPrompt}\n`;
-    }
+### CRITICAL PROTOCOL (MANDATORY):
+All actions MUST be enclosed in these exact tags. Failure to use tags will result in action rejection.
 
-    prompt += `\nArchivos actuales en el directorio:
-${p.currentFiles.map(f => "- " + f.name).join('\n')}
+1. READ FILE (Entire content):
+[READ:filename]
 
-INSTRUCCIONES DE OPERACIÓN (OBLIGATORIAS):
+2. SEARCH IN FILE (Find specific logic + context):
+[SEARCH:filename:query_text]
 
-0. REGLA DE ORO DE LECTURA (CRÍTICA): NO PUEDES modificar un archivo sin haberlo leído primero en esta misma conversación. Aunque creas conocer el contenido, DEBES usar [READ:archivo]. Si intentas un [REPLACE] o [WRITE] sin un [READ] previo, el sistema rechazará la acción.
-
-1. LECTURA DE ARCHIVOS: Usa este comando para obtener el contenido actual EXACTO:
-[READ:nombre_del_archivo]
-
-2. MODIFICACIÓN DE ARCHIVOS (REPLACE): Para realizar cambios parciales, usa el siguiente formato EXACTO:
-[REPLACE:nombre_del_archivo]
+3. PARTIAL MODIFY (Exact match required):
+[REPLACE:filename]
 <<<<< SEARCH
-(el fragmento de código exacto que deseas cambiar, incluyendo cada espacio y tabulación)
+(exact code from file)
 =====
-(el nuevo código)
+(new code)
 >>>>>
 [/REPLACE]
 
-3. CREACIÓN/SOBREESCRITURA TOTAL (WRITE): Para crear archivos nuevos o reemplazar el contenido completo, usa:
-[WRITE:nombre_del_archivo]
-(contenido)
+3. CREATE/OVERWRITE FILE:
+[WRITE:filename]
+(full content)
 [/WRITE]
 
-REGLAS CRÍTICAS DE SUPERVIVENCIA:
-- PRIMERO LEER, LUEGO ESCRIBIR: Es IMPOSIBLE hacer un REPLACE correcto sin haber hecho un [READ] previo en el mismo turno. Hazlo siempre.
-- SEARCH IDENTICO: Debes copiar el bloque SEARCH exactamente como aparece en el [READ], sin omitir comentarios ni líneas vacías intermedias.
-- PERSISTENCIA: Si un cambio falla, lee el archivo de nuevo. No intentes corregir a ciegas.
-- AUTONOMÍA: No pidas permiso para leer. Si necesitas saber qué hay en un archivo para cumplir la orden, léelo.`;
+### EXAMPLES:
+User: "Where is the reset button logic?"
+Agent: I'll search for it. [SEARCH:main.js:reset-btn]
 
-    return prompt;
+User: "Change title to Hello"
+Agent: [SEARCH:index.html:<title>] (Wait for match)
+Agent: [REPLACE:index.html]
+<<<<< SEARCH
+<title>Old Title</title>
+=====
+<title>Hello</title>
+>>>>>
+[/REPLACE]
+
+
+### RULES:
+- NEVER assume file content. ALWAYS [READ] first.
+- SEARCH block must be IDENTICAL to the source (spaces, tabs, newlines).
+- If an action fails, READ the file again to get the updated source.
+- Do not apologize for using tags. Use them aggressively.`;
 }
 
 function getInternalAgentInstructions() {
@@ -1837,6 +2008,19 @@ async function processAgentActions(text, project, chat) {
     let actionsPerformed = 0;
     let match;
 
+    let taskState = await getTaskState();
+
+    // Helper to log actions to history (Fase 1)
+    const recordAction = async (action, result) => {
+        const payload = { 
+            objective: taskState.objective,
+            step: { action, result } 
+        };
+        await saveTaskState(payload);
+        // Refresh local taskState to reflect the server-side update (including ID and timestamp)
+        taskState = await getTaskState();
+    };
+
     // 0. Detect Broken Tags (Safety Check)
     if (text.includes('[/REPLACE]') && !text.includes('[REPLACE:')) {
         errors.push("⚠️ Detecté un cierre de etiqueta [/REPLACE] sin una apertura [REPLACE:archivo]. Asegúrate de abrir siempre con [REPLACE:nombre_archivo].");
@@ -1861,14 +2045,58 @@ async function processAgentActions(text, project, chat) {
             if (data.content !== undefined) {
                 reads.push({ fileName, content: data.content });
                 logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}** (${data.content.length} bytes)` });
+                await recordAction(`[READ:${fileName}]`, `Successfully read ${fileName} (${data.content.length} bytes).`);
             } else {
                 const errorDetail = `El archivo ${fileName} parece no existir o está vacío.`;
                 errors.push(`- ${errorDetail}`);
                 logs.push({ type: 'error', message: `No se pudo leer: **${fileName}**`, details: errorDetail });
+                await recordAction(`[READ:${fileName}]`, `Error: ${errorDetail}`);
             }
         } catch(e) {
             errors.push(`- Error al leer ${fileName}: ${e.message}`);
             logs.push({ type: 'error', message: `Fallo al leer **${fileName}**: ${e.message}` });
+            await recordAction(`[READ:${fileName}]`, `Error: ${e.message}`);
+        }
+    }
+    
+    // (Other handlers for READ and SEARCH remain here...)
+    const queryRegex = /\[SEARCH:(.*?):(.*?)\]/g;
+    // ... search logic ...
+
+    // 1.8 NEW: Handle Code-First Block Execution (Fase 2)
+    const codeBlockRegex = /```javascript\r?\n([\s\S]*?)```/g;
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
+        const code = match[1].trim();
+        logs.push({ type: 'info', message: `Ejecutando bloque de código dinámico...` });
+        updateThinking(chat, true, "Ejecutando JS", "Node.js está procesando el script...");
+        
+        try {
+            const res = await fetchWithLog(`${API_BASE}/execute/node`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, cwd: project.folder })
+            });
+            const data = await res.json();
+            
+            if (data.success) {
+                actionsPerformed++;
+                const output = `STDOUT:\n${data.stdout || '(Sin salida)'}\n\nSTDERR:\n${data.stderr || '(Sin errores)'}`;
+                chat.messages.push({ 
+                    role: 'system', 
+                    content: `✅ Script ejecutado correctamente.\n\nResultado:\n\`\`\`text\n${output}\n\`\`\`` 
+                });
+                logs.push({ type: 'success', message: `Ejecución exitosa del script.` });
+                await recordAction(`[EXECUTE_JS]`, `Code block executed. Output length: ${data.stdout.length} chars.`);
+            } else {
+                const errorDetail = `Error en ejecución: ${data.error}\n${data.stderr || ''}`;
+                errors.push(`- ${errorDetail}`);
+                logs.push({ type: 'error', message: `Fallo en el script JS`, details: errorDetail });
+                await recordAction(`[EXECUTE_JS]`, `Execution failed: ${data.error}`);
+            }
+        } catch (e) {
+            errors.push(`- Error de conexión al motor de código: ${e.message}`);
+            await recordAction(`[EXECUTE_JS]`, `Connection error: ${e.message}`);
         }
     }
 
@@ -1888,13 +2116,16 @@ async function processAgentActions(text, project, chat) {
                 const warn = `El archivo no cambió en WRITE (el contenido enviado es idéntico al actual).`;
                 errors.push(`- En ${fileName}: ${warn}`);
                 logs.push({ type: 'info', message: `Sin cambios en WRITE: **${fileName}**`, details: warn });
+                await recordAction(`[WRITE:${fileName}]`, `No changes performed (identical content).`);
             } else {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
+                await recordAction(`[WRITE:${fileName}]`, `Successfully wrote ${fileName}.`);
             }
         } else {
             const err = writeRes ? writeRes.error : 'Fallo desconocido';
             errors.push(`- Error al escribir ${fileName}: ${err}`);
             logs.push({ type: 'error', message: `Error en WRITE: **${fileName}**`, details: err });
+            await recordAction(`[WRITE:${fileName}]`, `Error: ${err}`);
         }
     }
 
@@ -1951,11 +2182,13 @@ async function processAgentActions(text, project, chat) {
                     const failDetail = `Bloque SEARCH ${blocksFound} no coincide exactamente por espacios o indentación. El sistema requiere coincidencia EXACTA.`;
                     errors.push(`- En ${fileName} (Bloque ${blocksFound}): Falla de coincidencia exacta (indentación/espacios). Copia el bloque EXACTO del READ.`);
                     logs.push({ type: 'error', message: `Error de indentación en bloque SEARCH de **${fileName}**`, details: failDetail });
+                    await recordAction(`[REPLACE:${fileName}]`, `Error: Indentation/Space mismatch in block ${blocksFound}.`);
                     failCount++;
                 } else {
                     const failDetail = `No se encontró el bloque SEARCH en el contenido actual del archivo.`;
                     errors.push(`- En ${fileName} (Bloque ${blocksFound}): Bloque SEARCH no encontrado. Revisa si el código existe exactamente así.`);
                     logs.push({ type: 'error', message: `Bloque SEARCH ${blocksFound} NO ENCONTRADO en **${fileName}**`, details: searchText });
+                    await recordAction(`[REPLACE:${fileName}]`, `Error: SEARCH block ${blocksFound} not found in ${fileName}.`);
                     failCount++;
                 }
             }
@@ -1965,6 +2198,7 @@ async function processAgentActions(text, project, chat) {
             const err = `Se usó [REPLACE] pero no se encontró un bloque <<<<< SEARCH / ===== / >>>>> válido.`;
             errors.push(`- En ${fileName}: ${err}`);
             logs.push({ type: 'error', message: `Formato incorrecto en REPLACE: **${fileName}**`, details: err });
+            await recordAction(`[REPLACE:${fileName}]`, `Error: Invalid fallback block format.`);
         } else if (successCount > 0) {
             const writeRes = await performWrite(fileName, updatedContent, project, chat);
             if (writeRes && writeRes.success) {
@@ -1973,13 +2207,16 @@ async function processAgentActions(text, project, chat) {
                     const warn = `Los bloques SEARCH coincidieron, pero el resultado final es idéntico al actual (sin cambios reales).`;
                     errors.push(`- En ${fileName}: ${warn}`);
                     logs.push({ type: 'info', message: `Sin cambios efectivos en REPLACE: **${fileName}**`, details: warn });
+                    await recordAction(`[REPLACE:${fileName}]`, `Applied ${successCount} blocks but no effective change.`);
                 } else {
                     logs.push({ type: 'success', message: `Cambios aplicados (${successCount}/${blocksFound} bloques) en **${fileName}**` });
+                    await recordAction(`[REPLACE:${fileName}]`, `Successfully updated ${successCount}/${blocksFound} blocks.`);
                 }
             } else {
                 const err = writeRes ? writeRes.error : 'Fallo de persistencia';
                 errors.push(`- Error al guardar REPLACE en ${fileName}: ${err}`);
                 logs.push({ type: 'error', message: `Error al persistir REPLACE: **${fileName}**`, details: err });
+                await recordAction(`[REPLACE:${fileName}]`, `Error persisting: ${err}`);
             }
         }
     }
@@ -1987,8 +2224,13 @@ async function processAgentActions(text, project, chat) {
     // 4. Intent Detection (If no actions found)
     if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
         const intentKeywords = ["modificar", "cambiar", "escribir", "actualizar", "reemplazar", "crear", "apply", "update", "write", "replace", "modify"];
+        const skipKeywords = ["hola", "saludos", "¿cómo", "puedo", "ayudar"];
         const lowText = text.toLowerCase();
-        if (intentKeywords.some(kw => lowText.includes(kw) && lowText.indexOf(kw) < 600)) {
+        
+        const hasIntent = intentKeywords.some(kw => lowText.includes(kw));
+        const isActuallyActing = lowText.includes("debo") || lowText.includes("voy a") || lowText.includes("aplicando");
+        
+        if (hasIntent && isActuallyActing && lowText.indexOf(lowText.match(new RegExp(intentKeywords.join('|')))[0]) < 400) {
              errors.push("🚫 Pareces indicar que vas a realizar cambios, pero NO has usado las etiquetas obligatorias ([READ], [WRITE] o [REPLACE]). Úsalas para actuar.");
         }
     }
@@ -2015,9 +2257,13 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     updateThinking(chat, true, "Auto-corrigiendo", "Corrigiendo formato y re-intentando...");
     renderMessages();
 
-    const systemMsg = { role: 'system', content: buildSystemPrompt() };
-    const history = chat.messages.map(m => ({
-        role: m.role === 'agent' ? 'assistant' : m.role,
+    // Sync Task State
+    let taskState = await getTaskState();
+    const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
+    
+    // RESTORE CONTEXT in retry: Enviar los últimos mensajes para mantener la coherencia
+    const history = chat.messages.slice(-5).map(m => ({
+        role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
         content: m.content
     }));
 
@@ -2034,22 +2280,56 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
             body: JSON.stringify({ 
                 model: modelSelect.value, 
                 messages: messages,
-                stream: false 
+                stream: true 
             })
         });
         
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
         
-        if (chat.isStopped) {
-            updateThinking(chat, false);
-            return;
-        }
-
-        const data = await response.json();
-        const assistantResponse = data.message.content;
+        // --- STREAMING PROCESSING for AutoRetry ---
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantResponse = '';
         
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const json = JSON.parse(line);
+                    if (json.done) break;
+                    if (json.message && json.message.content) {
+                        assistantResponse += json.message.content;
+                    }
+                } catch (e) {}
+            }
+
+            if (chat.isStopped) {
+                reader.cancel();
+                updateThinking(chat, false);
+                return;
+            }
+        }
+        // --- END STREAMING ---
+
+        
+        // Update taskState
+        taskState.currentState = "RETRYING ACTIONS";
+        await saveTaskState(taskState);
+
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
+
+        if (assistantResponse.includes("TASK COMPLETE")) {
+            taskState.currentState = "FINISHED";
+            taskState.objective = "";
+            await saveTaskState(taskState);
+        }
 
         if (actionResult.stopped) {
             updateThinking(chat, false);
@@ -2083,11 +2363,20 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
             chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones correspondientes.` });
             await autoRetry("Continuando tras lectura...", project, chat, retryCount + 1);
         } else if (actionResult.errors.length > 0) {
-            const retryHeader = retryCount === 0 ? "❌ El intento falló:" : `❌ Re-intento ${retryCount} falló:`;
-            const retryMsgText = `${retryHeader}\n${actionResult.errors.join('\n')}\n\nPor favor, inténtalo de nuevo corrigiendo el error.`;
-            chat.messages.push({ role: 'system', content: retryMsgText }); // Cambiado a role: system
+            const errorHeader = retryCount === 0 ? "❌ PROTOCOL ERROR:" : `❌ RETRY ${retryCount} FAILED:`;
+            const retryMsgText = `${errorHeader}
+${actionResult.errors.join('\n')}
+
+INSTRUCTIONS:
+1. You MUST use [READ:filename] to get the code.
+2. You MUST use [REPLACE:filename] with <<<<< SEARCH / ===== / >>>>> for edits.
+3. SEARCH block must be 100% IDENTICAL to what you read.
+
+Try again:`;
+            chat.messages.push({ role: 'system', content: retryMsgText });
             await autoRetry(retryMsgText, project, chat, retryCount + 1);
-        } else if (actionResult.actionsPerformed === 0) {
+        }
+ else if (actionResult.actionsPerformed === 0) {
              // NUDGE: Si estamos en un autoretry y el agente no hizo nada pero antes falló o leyó, 
              // puede que se haya "perdido". Le pedimos que actúe o termine.
              const nudgeMsg = `⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. 
@@ -2340,7 +2629,33 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     scanFolderBtn.onclick = nativePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value);
     newChatBtn.onclick = createNewProject;
-    modelSelect.onchange = checkVisionCapability;
+    modelSelect.onchange = (e) => {
+        checkVisionCapability();
+        // If we are in global settings, maybe we want to save this as a global fallback? 
+        // For now, it's just the global selector.
+    };
+
+    const projectModelSelect = document.getElementById('project-model-select');
+    if (projectModelSelect) {
+        projectModelSelect.onchange = (e) => {
+            const project = getActiveProject();
+            if (project) {
+                project.model = e.target.value;
+                saveData();
+            }
+        };
+    }
+
+    const chatModelSelect = document.getElementById('chat-model-select');
+    if (chatModelSelect) {
+        chatModelSelect.onchange = (e) => {
+            const chat = getActiveChat();
+            if (chat) {
+                chat.model = e.target.value;
+                saveData();
+            }
+        };
+    }
 
     // Image Attachment
     attachImgBtn.onclick = () => imageInput.click();
