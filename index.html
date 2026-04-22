@@ -141,11 +141,14 @@
           <div id="admin-tab-content" class="tab-content admin-view hidden">
             <div class="admin-header">
                 <h2>📊 Monitor de Agentes</h2>
-                <p>Estado global de todos los procesos activos</p>
+                <div class="admin-sub-nav">
+                    <button class="admin-sub-tab active" data-sub-tab="table">🤖 Lista de Agentes</button>
+                    <button class="admin-sub-tab" data-sub-tab="chat">💬 Chat Administrativo</button>
+                </div>
             </div>
             
-            <div class="monitor-grid">
-                <div class="monitor-table-container">
+            <div class="monitor-container">
+                <div id="admin-table-view" class="monitor-table-container">
                     <table class="monitor-table">
                         <thead>
                             <tr>
@@ -163,11 +166,11 @@
                     </table>
                 </div>
                 
-                <div class="admin-chat-section">
-                <div class="admin-chat-header">
-                    <h3>💬 Chat de Administración</h3>
-                    <button onclick="window.clearAdminChat()" class="btn-clear-admin" title="Limpiar chat de administración">🧹 Borrar Historial</button>
-                </div>
+                <div id="admin-chat-view" class="admin-chat-section hidden">
+                    <div class="admin-chat-header">
+                        <h3>💬 Chat de Administración</h3>
+                        <button onclick="window.clearAdminChat()" class="btn-clear-admin" title="Limpiar chat de administración">🧹 Borrar Historial</button>
+                    </div>
                     <div id="admin-chat-messages" class="chat-messages admin-log">
                         <!-- Administrative logs and messages -->
                         <div class="message system">Bienvenido al Centro de Control. Aquí verás el progreso de todos los agentes.</div>
@@ -175,6 +178,9 @@
                     <div class="admin-input-area">
                         <textarea id="admin-global-input" placeholder="Enviar comando global a todos los agentes..." rows="2"></textarea>
                         <button id="admin-send-btn" class="send-btn">🚀</button>
+                        <button id="stop-admin-btn" class="btn-stop hidden" onclick="window.stopAdminAgent()" title="Detener Orquestador">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                        </button>
                     </div>
                 </div>
             </div>

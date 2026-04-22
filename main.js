@@ -194,7 +194,8 @@ async function checkSystemHealth() {
 }
 
 // New State Structure: Projects -> Chats & Files
-const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO: Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
+const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO 1 (SANDBOX): TODO el código que escribas, crees o modifiques DEBE estar dentro de la carpeta 'tmp1' de tu directorio actual. No escribas fuera de 'tmp1'.
+REGLA DE ORO 2 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
@@ -225,6 +226,7 @@ let state = {
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
     adminMessages: [], 
     adminIsThinking: false,
+    adminIsStopped: false,
     taskState: {
         objective: '',
         steps: [],
@@ -267,6 +269,7 @@ const monitorTbody = document.getElementById('monitor-tbody');
 const adminChatMessages = document.getElementById('admin-chat-messages');
 const adminGlobalInput = document.getElementById('admin-global-input');
 const adminSendBtn = document.getElementById('admin-send-btn');
+const stopAdminBtn = document.getElementById('stop-admin-btn');
 
 // Vision Support
 const attachImgBtn = document.getElementById('attach-img');
@@ -1731,7 +1734,7 @@ window.stopAgent = (projectId, chatId) => {
 function adminLog(msg) {
     if (!adminChatMessages) return;
     const time = new Date().toLocaleTimeString();
-    state.adminMessages.push({ role: 'system', content: msg });
+    state.adminMessages.push({ role: 'system', content: msg, timestamp: Date.now() });
     renderAdminMessages();
 }
 
@@ -1808,6 +1811,14 @@ INSTRUCCIONES:
     return prompt;
 }
 
+window.stopAdminAgent = () => {
+    state.adminIsStopped = true;
+    state.adminIsThinking = false;
+    if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
+    adminLog(`🛑 Deteniendo Orquestador Administrativo`);
+    renderAdminMessages();
+};
+
 let adminTriggerTimeout = null;
 async function triggerAdminAgentLogic(retryCount = 0) {
     // If already thinking, we'll try again after it finishes if something new arrived
@@ -1817,7 +1828,9 @@ async function triggerAdminAgentLogic(retryCount = 0) {
     }
     
     state.adminIsThinking = true;
+    state.adminIsStopped = false;
     state.adminNeedsRecheck = false;
+    if (stopAdminBtn) stopAdminBtn.classList.remove('hidden');
     renderAdminMessages();
 
     const systemMsg = { role: 'system', content: buildAdminSystemPrompt() };
@@ -1834,13 +1847,43 @@ async function triggerAdminAgentLogic(retryCount = 0) {
             body: JSON.stringify({ 
                 model: modelSelect.value, 
                 messages: messages,
-                stream: false 
+                stream: true 
             })
         });
 
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
-        const data = await response.json();
-        const assistantResponse = data.message.content;
+        
+        // --- STREAMING PROCESSING for Admin ---
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantResponse = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const json = JSON.parse(line);
+                    if (json.done) break;
+                    if (json.message && json.message.content) {
+                        assistantResponse += json.message.content;
+                    }
+                } catch (e) {}
+            }
+
+            if (state.adminIsStopped) {
+                reader.cancel();
+                state.adminIsThinking = false;
+                if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
+                return;
+            }
+        }
+        // --- END STREAMING ---
 
         state.adminMessages.push({ role: 'agent', content: assistantResponse });
         renderAdminMessages();
@@ -1946,6 +1989,7 @@ REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
 
         renderAdminMessages();
         state.adminIsThinking = false;
+        if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
         
         // If an agent finished while we were thinking, trigger again to process the latest news
         if (state.adminNeedsRecheck) {
@@ -1957,6 +2001,7 @@ REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
 
     } catch (e) {
         state.adminIsThinking = false;
+        if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
         state.adminMessages.push({ role: 'system', content: '⚠️ Error de Orquestación: ' + e.message });
         renderAdminMessages();
     }
@@ -2587,6 +2632,32 @@ function setupEventListeners() {
             p.activeTabId = 'admin';
             renderTabs();
             updateViewVisibility();
+        }
+    };
+
+    // Sub-tab switching for Admin Monitor
+    document.querySelectorAll('.admin-sub-tab').forEach(btn => {
+        btn.onclick = (e) => {
+            const subTab = e.target.dataset.subTab;
+            window.switchAdminSubTab(subTab);
+        };
+    });
+
+    window.switchAdminSubTab = (subTab) => {
+        document.querySelectorAll('.admin-sub-tab').forEach(b => b.classList.remove('active'));
+        const activeBtn = document.querySelector(`.admin-sub-tab[data-sub-tab="${subTab}"]`);
+        if (activeBtn) activeBtn.classList.add('active');
+
+        const tableView = document.getElementById('admin-table-view');
+        const chatView = document.getElementById('admin-chat-view');
+
+        if (subTab === 'table') {
+            tableView.classList.remove('hidden');
+            chatView.classList.add('hidden');
+        } else {
+            tableView.classList.add('hidden');
+            chatView.classList.remove('hidden');
+            renderAdminMessages();
         }
     };
 

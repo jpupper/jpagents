@@ -1559,15 +1559,52 @@ pre code.hljs {
     -webkit-text-fill-color: transparent;
 }
 
-.admin-header p {
-    color: var(--text-secondary);
-    font-size: 0.9rem;
+.admin-sub-nav {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5rem;
 }
 
-.monitor-grid {
-    display: grid;
-    grid-template-columns: 1fr 350px;
-    gap: 1.5rem;
+.admin-sub-tab {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 8px;
+}
+
+.admin-sub-tab:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+}
+
+.admin-sub-tab.active {
+    background: var(--accent-color);
+    color: white;
+}
+
+.monitor-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    margin-top: 1rem;
+}
+
+.admin-chat-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    background: var(--sidebar-bg);
+    border-radius: 16px;
+    border: 1px solid var(--border-color);
+    padding: 1.5rem;
     flex: 1;
     min-height: 0;
 }
@@ -1645,7 +1682,7 @@ pre code.hljs {
     color: white;
 }
 
-.btn-stop:disabled {
+.monitor-table .btn-stop:disabled {
     opacity: 0.3;
     cursor: not-allowed;
     filter: grayscale(1);
@@ -1693,6 +1730,27 @@ pre code.hljs {
     background: var(--card-bg);
     padding: 0.75rem;
     border-radius: 12px;
+}
+
+#stop-admin-btn {
+    background: #f44336;
+    border: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    color: white;
+    cursor: pointer;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
+}
+
+#stop-admin-btn:hover {
+    background: #d32f2f;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(244, 67, 54, 0.4);
 }
 
 .direct-input-group input {

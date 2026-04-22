@@ -69,6 +69,11 @@
           "name": "run.bat",
           "isDirectory": false,
           "path": "D:\\Programacion\\generativeantsystem\\kodahash_template\\run.bat"
+        },
+        {
+          "name": "stats.json",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\generativeantsystem\\kodahash_template\\stats.json"
         }
       ],
       "projectPrompt": "",
@@ -92,7 +97,7 @@
         }
       ],
       "openFiles": [],
-      "activeTabId": "chat-mo8wr4aq1rkwbflb1uej",
+      "activeTabId": "admin",
       "currentFiles": [
         {
           "name": ".git",
@@ -222,9 +227,119 @@
       ],
       "projectPrompt": "",
       "isCorrupted": false
+    },
+    {
+      "id": "mo9hg6o6svyhxt7z18d",
+      "name": "sh1",
+      "folder": "D:\\Programacion\\jpagents\\proyects\\proyecto_3",
+      "model": "gemma4:e4b",
+      "chats": [
+        {
+          "id": "chat-mo9hg6o939pmut5l38x",
+          "name": "Agente 1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Crea un shader que sean como unas lianas que sea un efecto especial tipo una especie de fbm con un edge"
+            },
+            {
+              "role": "agent",
+              "content": ""
+            },
+            {
+              "role": "user",
+              "content": "Crea un shader que sean como unas lianas que sea un efecto especial tipo una especie de fbm con un edge"
+            },
+            {
+              "role": "agent",
+              "content": "<div class=\"file-action-link\" onclick=\"window.openFile('D:/Programacion/jpagents/proyects/proyecto_3/sketch.js')\">🔍 Leyendo <strong>sketch.js</strong>...</div>\n<details class=\"execution-log\"><summary>Pasos de ejecución del Agente</summary><div class=\"log-steps\"><div class=\"log-step info\"><span>ℹ️</span> <span>Solicitud de lectura: **sketch.js**</span></div><div class=\"log-step success\"><span>✅</span> <span>Lectura exitosa de **sketch.js** (5906 bytes)</span></div></div></details>"
+            },
+            {
+              "role": "system",
+              "content": "Resultado de la lectura:\n\n<details class=\"execution-log\">\n  <summary>🔍 Contenido de <strong>sketch.js</strong> (5906 caracteres)</summary>\n  <pre><code>// Global arrays to hold game objects\nlet player;\nlet bullets = [];\nlet enemies = [];\nlet gameFPS = 60;\n\n// --- Classes ---\n\nclass Player {\n  constructor(x, y, size) {\n    this.x = x;\n    this.y = y;\n    this.size = size;\n    this.speed = 5;\n    this.health = 100;\n  }\n\n  move() {\n    let dx = 0;\n    let dy = 0;\n    \n    // Handle keyboard input for movement\n    if (keyIsDown(LEFT_ARROW) || keyIsDown(65)) { // A or Left\n      dx = -this.speed;\n    }\n    if (keyIsDown(RIGHT_ARROW) || keyIsDown(68)) { // D or Right\n      dx = this.speed;\n    }\n    if (keyIsDown(UP_ARROW) || keyIsDown(87)) { // W or Up\n      dy = -this.speed;\n    }\n    if (keyIsDown(DOWN_ARROW) || keyIsDown(89)) { // S or Down\n      dy = this.speed;\n    }\n\n    this.x += dx;\n    this.y += dy;\n\n    // Keep player within bounds\n    this.x = constrain(this.x, this.size / 2, width - this.size / 2);\n    this.y = constrain(this.y, this.size / 2, height - this.size / 2);\n  }\n\n  shoot() {\n    // Create a bullet originating from the center-top of the player\n    bullets.push(new Bullet(this.x, this.y - this.size / 2, true));\n  }\n\n  display() {\n    // Draw the spaceship (a simple triangle representation)\n    fill(0, 200, 255); // Light blue color\n    stroke(255);\n    strokeWeight(2);\n    triangle(\n      this.x, this.y - this.size / 2, // Top point\n      this.x - this.size / 2, this.y + this.size / 2, // Bottom left\n      this.x + this.size / 2, this.y + this.size / 2  // Bottom right\n    );\n    \n    // Display health\n    fill(255, 0, 0);\n    textSize(16);\n    text(`Health: ${nf(this.health, '', 0)}%`, 10, 20);\n  }\n\n  takeDamage(amount) {\n    this.health -= amount;\n    if (this.health < 0) this.health = 0;\n  }\n}\n\nclass Bullet {\n  constructor(x, y, isPlayerBullet) {\n    this.x = x;\n    this.y = y;\n    this.radius = 4;\n    this.speed = 10;\n    this.isPlayerBullet = isPlayerBullet;\n  }\n\n  move() {\n    // Player bullets move up (negative y)\n    if (this.isPlayerBullet) {\n      this.y -= this.speed;\n    } else {\n      // Enemy bullets move down (positive y)\n      this.y += this.speed * 0.8;\n    }\n  }\n\n  display() {\n    fill(this.isPlayerBullet ? 255 : 255, 255, 0); // White or Yellow\n    ellipse(this.x, this.y, this.radius * 2);\n  }\n\n  // Check collision with another bullet (for enemy bullets hitting player)\n  isColliding(otherBullet) {\n      let d = dist(this.x, this.y, otherBullet.x, otherBullet.y);\n      return d < this.radius + otherBullet.radius;\n  }\n}\n\nclass Enemy {\n  constructor(x, y) {\n    this.x = x;\n    this.y = y;\n    this.size = random(20, 40);\n    this.speed = random(1, 3);\n    this.health = 30;\n  }\n\n  move() {\n    // Enemies drift slowly downwards, simulating an incoming threat\n    this.y += this.speed * 0.5;\n  }\n\n  display() {\n    fill(255, 100, 0); // Orange color for enemies\n    stroke(200, 50, 0);\n    strokeWeight(2);\n    ellipse(this.x, this.y, this.size * 2);\n  }\n\n  // Check collision with player\n  checkPlayerCollision(player) {\n    let distance = dist(this.x, this.y, player.x, player.y + player.size / 2);\n    if (distance < this.size + player.size / 2) {\n        return true;\n    }\n    return false;\n  }\n}\n\n// --- Game Functions ---\n\nfunction setup() {\n  createCanvas(800, 600);\n  // Initialize player at the bottom center\n  player = new Player(width / 2, height - 50, 40);\n  \n  // Set up event listener for shooting\n  setInterval(() => {\n    if (keyIsDown(SPACE)) {\n      player.shoot();\n    }\n  }, 150); // Fire rate limiter (approx every 150ms)\n}\n\nfunction draw() {\n  background(10, 10, 40); // Dark space background\n\n  // 1. Handle Player Logic\n  player.move();\n  player.display();\n\n  // 2. Handle Bullet Logic\n  // Move and draw bullets, and clean up off-screen ones\n  for (let i = bullets.length - 1; i >= 0; i--) {\n    let b = bullets[i];\n    b.move();\n    b.display();\n\n    // Check collision: Bullet vs Enemy\n    for (let j = enemies.length - 1; j >= 0; j--) {\n        let e = enemies[j];\n        if (b.isPlayerBullet) {\n            // Check if player bullet hits enemy\n            let d = dist(b.x, b.y, e.x, e.y);\n            if (d < e.size) {\n                enemies[j].health -= 10; // Damage enemy\n                // If enemy health drops to 0 or less, remove it\n                if (enemies[j].health <= 0) {\n                    enemies.splice(j, 1);\n                    j--; // Adjust index after removal\n                }\n                break; // Bullet only needs to hit one enemy per frame\n            }\n        }\n    }\n    \n    // Clean up bullets that leave the screen\n    if (b.y < 0 || b.y > height) {\n      bullets.splice(i, 1);\n    }\n  }\n  \n  // 3. Handle Enemy Logic\n  // Spawn new enemies periodically\n  if (frameCount % 60 === 0) { // Spawn one enemy every second (approx)\n      let x = random(50, width - 50);\n      enemies.push(new Enemy(x, random(-50, 50)));\n  }\n  \n  for (let i = enemies.length - 1; i >= 0; i--) {\n    let e = enemies[i];\n    e.move();\n    e.display();\n\n    // Check enemy collision with player\n    if (e.checkPlayerCollision(play\n... (truncado para visualización)</code></pre>\n</details>\n\nAhora que tienes el código real, procede con las modificaciones solicitadas usando [REPLACE] o [WRITE]."
+            },
+            {
+              "role": "system",
+              "content": "🛑 Solicitud de detención del agente enviada."
+            }
+          ],
+          "isThinking": false,
+          "mode": "auto",
+          "model": "gemma4:e4b",
+          "thinkingStatus": "",
+          "thinkingSubtext": "",
+          "lastProgress": 1776827932463,
+          "isStopped": false
+        }
+      ],
+      "openFiles": [],
+      "activeTabId": "chat-mo9hg6o939pmut5l38x",
+      "currentFiles": [
+        {
+          "name": "index.html",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_3\\index.html"
+        },
+        {
+          "name": "run.bat",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_3\\run.bat"
+        },
+        {
+          "name": "sketch.js",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_3\\sketch.js"
+        },
+        {
+          "name": "style.css",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_3\\style.css"
+        }
+      ],
+      "projectPrompt": "",
+      "isCorrupted": false
+    },
+    {
+      "id": "mo9hhstxub7ldxqr36",
+      "name": "Proyecto 4",
+      "folder": "D:\\Programacion\\jpagents\\proyects\\proyecto_4",
+      "model": "qwen3:32b",
+      "chats": [
+        {
+          "id": "chat-mo9hhsu02ck6yovopij",
+          "name": "Agente 1",
+          "messages": [],
+          "isThinking": false,
+          "mode": "auto",
+          "model": "qwen3:32b",
+          "lastProgress": 1776828007686,
+          "isStopped": false
+        }
+      ],
+      "openFiles": [],
+      "activeTabId": "admin",
+      "currentFiles": [
+        {
+          "name": "index.html",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_4\\index.html"
+        },
+        {
+          "name": "shader.frag",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_4\\shader.frag"
+        },
+        {
+          "name": "shader.vert",
+          "isDirectory": false,
+          "path": "D:\\Programacion\\jpagents\\proyects\\proyecto_4\\shader.vert"
+        }
+      ],
+      "projectPrompt": "",
+      "isCorrupted": false
     }
   ],
-  "globalPrompt": "Esto se guarda ",
+  "globalPrompt": "Esto se guarda Bueno quiero que siempre cuando le pedis que cree algo por detras haya una directiva donde se asegure que todos los proyectos tengan un run.bat \n\nSi no existe entonces que lo cree entendes?\n\nAsegurate que todos los proyectos tengan ese archivo para ejecutarse. Aparte todos los run.bat tendrian que tener una estructura donde cuando se ejecuta se abra en una nueva pestaña.",
   "orchestratorPrompt": "Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.\nTu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.\n\nINSTRUCCIONES DE COMANDO:\nPara delegar tareas, usa exactamente el formato:\n[@Nombre: \"Tu instrucción\"] o [@ID: \"Tu instrucción\"]\n\nREGLAS:\n1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.\n2. Si un agente te reporta que terminó, lee su resultado y decide si la tarea global está completa.\n3. Responde siempre al usuario informando qué estás haciendo.",
   "activeProjectId": "mo8c2n14rdjo6x65n1",
   "adminMessages": [
@@ -261,6 +376,15 @@
     {
       "role": "system",
       "content": "🎯 Tarea enviada a **Agente 1** en **JPAGENTS**"
+    },
+    {
+      "role": "user",
+      "content": "Crea el archivo run.bat para que haya un servidor y ejecute la app",
+      "timestamp": 1776827681719
+    },
+    {
+      "role": "agent",
+      "content": "Para crear un archivo `run.bat` funcional, necesito saber qué tipo de servidor o aplicación debo iniciar (por ejemplo, ¿es un script de Node.js, Python, Java, o es un comando específico?).\n\nSin embargo, te proporcionaré una estructura básica y robusta que puedes adaptar. Este archivo generalmente se usa para configurar el entorno, instalar dependencias y luego ejecutar el servidor principal.\n\n**Voy a crear el contenido del archivo `run.bat` que debes guardar en la raíz de tu proyecto.**\n\nAquí tienes el contenido recomendado (por favor, reemplaza los textos entre `< >` con tus comandos reales):\n\n```batch\n@echo off\nREM ====================================================================\nREM Archivo de ejecución principal: run.bat\nREM Descripción: Inicializa el entorno, instala dependencias y levanta el servidor.\nREM ====================================================================\n\necho.\necho -------------------------------------------------\necho Iniciando el entorno de desarrollo...\necho -------------------------------------------------\n\nREM Paso 1: Limpieza previa (Opcional, pero recomendado)\necho Limpiando carpetas temporales...\nrd /s /q node_modules\necho Carpetas limpias.\n\nREM Paso 2: Instalación de dependencias (Si usas NPM/Yarn)\necho Instalando dependencias del proyecto (npm install)...\nnpm install\n\nREM Paso 3: Ejecución del servidor (AJUSTA ESTO SEGÚN TU TECNOLOGÍA)\necho.\necho -------------------------------------------------\necho Iniciando el servidor de la aplicación...\necho -------------------------------------------------\n\nREM Ejemplo para un servidor de Node.js:\nnpm start\n\nREM Alternativa si es un script directo (Ej. Python):\nREM python main_server.py\n\nREM Alternativa si es un servidor de Docker:\nREM docker-compose up -d\n\necho.\necho -------------------------------------------------\necho Ejecución finalizada. Presiona cualquier tecla para salir.\npause\n```\n\n**Instrucciones para ti:**\n\n1.  Copia este código.\n2.  Pégalo en un nuevo archivo de texto.\n3.  Guárdalo con el nombre **`run.bat`** dentro de la carpeta principal de tu proyecto.\n4.  **MUY IMPORTANTE:** Edita las líneas que dicen `npm install` y el comando de inicio (ej. `npm start`) para que coincidan exactamente con los comandos que tu aplicación requiere para funcionar.\n\n¿Necesitas ayuda para ajustar algún paso específico dentro de este archivo (como usar un lenguaje de programación diferente a JavaScript/Node.js)?"
     }
   ]
 }

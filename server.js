@@ -157,11 +157,13 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
     const baseDir = "D:\\Programacion\\jpagents\\proyects";
     const folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
     const folderPath = path.join(baseDir, folderName);
+    const tmpPath = path.join(folderPath, 'tmp1');
 
     try {
         await fs.mkdir(baseDir, { recursive: true });
         await fs.mkdir(folderPath, { recursive: true });
-        console.log(`[SERVER] Carpeta de proyecto creada: ${folderPath}`);
+        await fs.mkdir(tmpPath, { recursive: true });
+        console.log(`[SERVER] Carpeta de proyecto y tmp1 creada: ${folderPath}`);
         res.json({ path: folderPath });
     } catch (e) {
         res.status(500).json({ error: e.message });
