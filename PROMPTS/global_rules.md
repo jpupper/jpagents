@@ -6,3 +6,4 @@ Reglas estrictas para la programación :
    - style.css
    - script.js 
 3) Siempre tenes que crear un archivo .bat que ejecuta un servidor (ej. run.bat), y ese servidor corre la pagina web en una nueva pestaña. Por defecto no tenes que ejecutarlo, solo tienes que crearlo.
+4) OBLIGATORIO: Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, colores aleatorios, IDs), DEBES utilizar la herramienta [CALL:RANDOM]. Queda terminantemente prohibido inventar números aleatorios por tu cuenta.

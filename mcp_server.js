@@ -61,6 +61,17 @@ function createMCPServer() {
           name: "execute_js",
           description: "Ejecuta un script de Node.js dinámicamente",
           inputSchema: { type: "object", properties: { code: { type: "string" }, cwd: { type: "string" } }, required: ["code"] },
+        },
+        {
+          name: "RANDOM",
+          description: "Genera un número aleatorio real (entero) entre un rango (mínimo y máximo inclusivos)",
+          inputSchema: {
+            type: "object",
+            properties: {
+              min: { type: "number", description: "Valor mínimo (defecto 0)" },
+              max: { type: "number", description: "Valor máximo (defecto 100)" }
+            }
+          },
         }
       ],
     };
@@ -96,8 +107,22 @@ function createMCPServer() {
           return { content: [{ type: "text", text: `Archivo escrito en: ${filePath}` }] };
         }
         case "execute_js": {
-            const { stdout, stderr } = await execAsync(`node -e "${args.code.replace(/"/g, '\\"')}"`, { cwd: args.cwd || process.cwd() });
+          const tempFileName = `mcp_temp_${Date.now()}.js`;
+          const tempFilePath = path.join(process.cwd(), tempFileName);
+          try {
+            await fs.writeFile(tempFilePath, args.code, "utf-8");
+            const { stdout, stderr } = await execAsync(`node "${tempFilePath}"`, { cwd: args.cwd || process.cwd() });
             return { content: [{ type: "text", text: `STDOUT:\n${stdout}\nSTDERR:\n${stderr}` }] };
+          } finally {
+            try { await fs.unlink(tempFilePath); } catch (e) {}
+          }
+        }
+        case "RANDOM": {
+          const min = args.min !== undefined ? args.min : 0;
+          const max = args.max !== undefined ? args.max : 100;
+          const result = Math.floor(Math.random() * (max - min + 1)) + min;
+          console.log(`\x1b[32m[MCP] <<< RANDOM:\x1b[0m ${result} (range: ${min}-${max})`);
+          return { content: [{ type: "text", text: result.toString() }] };
         }
         default:
           throw new Error(`Tool not found: ${name}`);
@@ -117,26 +142,27 @@ app.get("/health", (req, res) => res.send("OK"));
 const jsonParser = express.json();
 
 app.get("/sse", async (req, res) => {
+  console.log(`\x1b[35m[MCP] Incoming SSE request...\x1b[0m`);
   const sessionId = uuidv4();
-  console.log(`[MCP] New SSE connection request: ${sessionId}`);
-  
+  console.log(`[MCP] Creating session: ${sessionId}`);
+
   const server = createMCPServer();
   const transport = new SSEServerTransport(`/messages/${sessionId}`, res);
-  
+
   // Heartbeat to keep connection alive - start it AFTER connecting
   let heartbeat;
-  
+
   transports.set(sessionId, transport);
 
   try {
     console.log(`[MCP] Connecting server to transport for session ${sessionId}...`);
     await server.connect(transport);
     console.log(`[MCP] Server connected to transport for session ${sessionId}`);
-    
+
     heartbeat = setInterval(() => {
       res.write(': heartbeat\n\n');
     }, 15000);
-    
+
     req.on("close", async () => {
       console.log(`[MCP] Session ${sessionId} closed`);
       clearInterval(heartbeat);
@@ -153,7 +179,7 @@ app.post("/messages/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   console.log(`\x1b[35m[MCP] Message received for session:\x1b[0m ${sessionId}`);
   const transport = transports.get(sessionId);
-  
+
   if (transport) {
     try {
       await transport.handlePostMessage(req, res);

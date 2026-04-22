@@ -24,6 +24,12 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Request Logger
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
 const OLLAMA_URL = 'http://localhost:11434';
 const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
 const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
@@ -100,13 +106,21 @@ async function saveSessions(sessions) {
 
 // Routes
 app.get('/api/sessions', async (req, res) => {
-    const sessions = await loadSessions();
-    res.json(sessions);
+    try {
+        const sessions = await loadSessions();
+        res.json(sessions);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.post('/api/sessions/save', async (req, res) => {
-    await saveSessions(req.body);
-    res.json({ success: true });
+    try {
+        await saveSessions(req.body);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // Native Folder Picker using PowerShell (Improved for stability and syntax)
@@ -282,22 +296,35 @@ app.post('/api/files/read', async (req, res) => {
 });
 
 app.post('/api/files/write', async (req, res) => {
+    const { filePath, content } = req.body;
+    
+    if (!filePath) {
+        return res.status(400).json({ error: 'Falta filePath en el cuerpo de la solicitud' });
+    }
+
     try {
-        const dir = path.dirname(filePath);
-        await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(filePath, content, 'utf-8');
+        const resolvedPath = path.resolve(filePath);
+        const dir = path.dirname(resolvedPath);
         
-        const stats = await fs.stat(filePath);
-        console.log(`\x1b[32m[WRITE SUCCESS]\x1b[0m Archivo escrito: ${filePath} (${stats.size} bytes)`);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(resolvedPath, content || '', 'utf-8');
+        
+        const stats = await fs.stat(resolvedPath);
+        console.log(`\x1b[32m[WRITE SUCCESS]\x1b[0m Archivo escrito: ${resolvedPath} (${stats.size} bytes)`);
+        
         res.json({ 
             success: true, 
-            savedAt: filePath,
+            savedAt: resolvedPath,
             mtime: stats.mtime,
             size: stats.size
         });
     } catch (error) {
-        console.error(`\x1b[31m[WRITE ERROR]\x1b[0m Fallo al escribir en ${filePath}:`, error.message);
-        res.status(500).json({ error: error.message });
+        console.error(`\x1b[31m[WRITE ERROR]\x1b[0m Fallo al escribir en ${filePath}:`, error);
+        res.status(500).json({ 
+            error: error.message,
+            code: error.code,
+            path: filePath
+        });
     }
 });
 
@@ -677,6 +704,15 @@ function spawnNewProcess() {
     }
 }
 
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('[GLOBAL ERROR]', err);
+    res.status(err.status || 500).json({
+        error: err.message || 'Internal Server Error',
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+});
+
 serverInstance = app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 });
@@ -684,7 +720,6 @@ serverInstance = app.listen(port, () => {
 // Final safety net
 process.on('uncaughtException', (err) => {
     console.error('[CRITICAL] Uncaught Exception:', err);
-    // Optional: Log to file
 });
 
 process.on('unhandledRejection', (reason, promise) => {

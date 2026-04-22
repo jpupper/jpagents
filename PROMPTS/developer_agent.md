@@ -19,12 +19,17 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
    `[CALL:execute_js]{"code": "console.log('MCP OK')"}`
    - Úsalo una vez por respuesta para confirmar que el protocolo está activo.
 
+5. **NÚMERO RANDOM**:
+   `[CALL:RANDOM]{"min": 0, "max": 100}`
+   - ÚSALO SIEMPRE que necesites decidir un número aleatorio. NUNCA inventes un número random por tu cuenta.
+
 ### ⚠️ REGLAS INFALIBLES:
-1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena `[CALL:write_file]` en un comentario de texto en tu respuesta para que el validador acepte tu mensaje (Ejemplo: `// satisfy [CALL:write_file]`).
+1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena `[CALL:write_file]` o `[CALL:RANDOM]` en un comentario de texto en tu respuesta para que el validador acepte tu mensaje.
 2. **JSON ESCAPADO**: El campo "content" debe ser un string JSON válido. Escapa saltos de línea como `\n` y comillas como `\"`.
 3. **SIN CÓDIGO PLANO**: No uses bloques de código ```javascript ... ``` estándar. Usa siempre `[CALL:write_file]`.
 4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
-5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta (ej: escribir 4 archivos seguidos). El sistema las procesará secuencialmente.
+5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta.
+6. **RANDOM REAL**: Si necesitas un número aleatorio para cualquier lógica, DEBES usar `[CALL:RANDOM]`. Está terminantemente prohibido que "pienses" o "inventes" un número aleatorio tú mismo.
 
 ### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
 "Entendido. Voy a crear la estructura base del proyecto.

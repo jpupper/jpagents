@@ -2,7 +2,7 @@ import './style.css'
 import { marked } from 'marked'
 
 // --- Console Log Interceptor ---
-(function() {
+(function () {
     const API_BASE = 'http://localhost:3001/api';
     const originalConsole = {
         log: console.log,
@@ -10,7 +10,9 @@ import { marked } from 'marked'
         warn: console.warn
     };
 
+    let backendDown = false;
     async function sendToServer(type, args) {
+        if (backendDown) return;
         try {
             const messages = Array.from(args).map(arg => {
                 if (arg instanceof Error) {
@@ -24,7 +26,7 @@ import { marked } from 'marked'
                 return typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg);
             });
 
-            await fetch(`${API_BASE}/utils/client-logs`, {
+            const res = await fetch(`${API_BASE}/utils/client-logs`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -34,31 +36,33 @@ import { marked } from 'marked'
                     url: window.location.href
                 })
             });
+            if (!res.ok) backendDown = true;
         } catch (e) {
+            backendDown = true;
             // Quiet fail
         }
     }
 
-    console.log = function() {
+    console.log = function () {
         originalConsole.log.apply(console, arguments);
         sendToServer('log', arguments);
     };
 
-    console.error = function() {
+    console.error = function () {
         originalConsole.error.apply(console, arguments);
         sendToServer('error', arguments);
     };
 
-    console.warn = function() {
+    console.warn = function () {
         originalConsole.warn.apply(console, arguments);
         sendToServer('warn', arguments);
     };
 
-    window.onerror = function(message, source, lineno, colno, error) {
+    window.onerror = function (message, source, lineno, colno, error) {
         sendToServer('error', [`Uncaught Error: ${message} at ${source}:${lineno}:${colno}`]);
     };
 
-    window.onunhandledrejection = function(event) {
+    window.onunhandledrejection = function (event) {
         sendToServer('error', ['Unhandled Promise Rejection:', event.reason]);
     };
 })();
@@ -144,10 +148,10 @@ class MCPClient {
         };
         this.history.push(entry);
         if (this.history.length > 50) this.history.shift();
-        
+
         // Update UI if debugger is visible
         if (window.refreshMCPDebugger) window.refreshMCPDebugger();
-        
+
         // Also log to real console
         const color = direction === 'sent' ? 'color: #3b82f6' : 'color: #10b981';
         console.log(`%c[MCP] ${direction.toUpperCase()} ${type}:`, color, data);
@@ -155,11 +159,11 @@ class MCPClient {
 
     async connect() {
         if (this.eventSource) this.eventSource.close();
-        
+
         return new Promise((resolve, reject) => {
             console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
             this.eventSource = new EventSource(`${this.baseUrl}/sse`);
-            
+
             this.eventSource.onopen = () => {
                 this.log('connect', 'received', 'SSE connection opened');
             };
@@ -198,12 +202,12 @@ class MCPClient {
 
     handleSSEMessage(data, resolve) {
         this.log('message', 'received', data);
-        
+
         // Discover endpoint
         if (data.endpoint) {
             this.messageEndpoint = `${this.baseUrl}${data.endpoint}`;
             console.log("[MCP-CLIENT] Message endpoint discovered:", this.messageEndpoint);
-            
+
             const dot = document.getElementById('mcp-status-dot');
             if (dot) {
                 dot.classList.remove('dead');
@@ -219,7 +223,7 @@ class MCPClient {
         if (data.id !== undefined && this.pendingRequests.has(data.id)) {
             const { resolve, reject } = this.pendingRequests.get(data.id);
             this.pendingRequests.delete(data.id);
-            
+
             if (data.error) {
                 reject(new Error(data.error.message || "MCP Tool Error"));
             } else {
@@ -262,7 +266,7 @@ class MCPClient {
                     reject(new Error(`MCP Transport Error (${res.status}): ${errorText}`));
                     return;
                 }
-                
+
                 // We DON'T resolve here. We wait for the SSE message.
                 // But we set a timeout just in case
                 setTimeout(() => {
@@ -282,7 +286,7 @@ class MCPClient {
     }
 }
 
-const mcpClient = new MCPClient('http://localhost:2998');
+const mcpClient = new MCPClient('http://127.0.0.1:2998');
 mcpClient.connect().catch(e => console.error("MCP Connection failed:", e));
 
 // Helper for logging API errors with auto-retry for transient failures
@@ -305,7 +309,7 @@ window.refreshMCPDebugger = () => {
         const directionIcon = entry.direction === 'sent' ? '📤' : '📥';
         const typeClass = entry.type;
         const dataStr = typeof entry.data === 'object' ? JSON.stringify(entry.data, null, 2) : String(entry.data);
-        
+
         return `
             <div class="log-entry mcp-${typeClass}">
                 <span class="log-time">[${entry.timestamp}]</span>
@@ -317,7 +321,7 @@ window.refreshMCPDebugger = () => {
     }).join('');
 };
 
-async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) { 
+async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
     const isBackend = url.startsWith(API_BASE);
     const statusDot = isBackend ? document.getElementById('backend-status-dot') : document.getElementById('ollama-status-dot');
 
@@ -326,7 +330,7 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
     for (let i = 0; i < maxRetries; i++) {
         try {
             const res = await fetch(url, options);
-            
+
             // If we successfully get a response, marking it as live
             if (statusDot) {
                 statusDot.classList.remove('dead');
@@ -334,28 +338,28 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
             }
 
             if (res.ok) return res;
-            
+
             // Transient errors (5xx) or Rate limits (429) trigger a retry
             if (!noRetry && (res.status >= 500 || res.status === 429)) {
                 let errorDetails = '';
                 try {
                     const errorJson = await res.clone().json();
                     errorDetails = errorJson.error || '';
-                } catch (e) {}
+                } catch (e) { }
 
-                console.warn(`⚠️ API Transient Error [${res.status}]: ${url}. ${errorDetails ? 'Error: ' + errorDetails : ''} Reintentando (${i+1}/${retries})...`);
+                console.warn(`⚠️ API Transient Error [${res.status}]: ${url}. ${errorDetails ? 'Error: ' + errorDetails : ''} Reintentando (${i + 1}/${retries})...`);
                 await new Promise(r => setTimeout(r, 1000 * Math.min(i + 1, 5)));
                 continue;
             }
 
             if (noRetry && res.status >= 500) {
-                 console.error(`🔴 API Error: [${res.status}] ${url}. Retries disabled for this request.`);
+                console.error(`🔴 API Error: [${res.status}] ${url}. Retries disabled for this request.`);
             } else if (!noRetry) {
                 let errorDetails = '';
                 try {
                     const errorJson = await res.clone().json();
                     errorDetails = errorJson.error || '';
-                } catch (e) {}
+                } catch (e) { }
 
                 console.error(`🔴 API Error: [${res.status}] ${url} ${errorDetails ? '- ' + errorDetails : ''}`, {
                     status: res.status,
@@ -379,8 +383,8 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
             }
             // Log as warning during retries
             if (!noRetry) {
-                console.warn(`🔄 Connection lost, retrying (${i+1}/${retries}): ${url}`);
-                await new Promise(r => setTimeout(r, 1500)); 
+                console.warn(`🔄 Connection lost, retrying (${i + 1}/${retries}): ${url}`);
+                await new Promise(r => setTimeout(r, 1500));
             }
         }
     }
@@ -410,7 +414,7 @@ async function checkSystemHealth() {
 
     // 2. Check Ollama
     try {
-        const res = await fetch(`${OLLAMA_BASE}/tags`); 
+        const res = await fetch(`${OLLAMA_BASE}/tags`);
         const dot = document.getElementById('ollama-status-dot');
         if (dot) {
             if (res.ok) {
@@ -431,7 +435,7 @@ async function checkSystemHealth() {
 
     // 3. Check MCP (Port 2998)
     try {
-        const res = await fetch(`http://localhost:2998/health`, { method: 'GET' });
+        const res = await fetch(`http://127.0.0.1:2998/health`, { method: 'GET' });
         const dot = document.getElementById('mcp-status-dot');
         if (dot) {
             // Si responde (aunque sea con 404/405), el servidor está arriba
@@ -452,9 +456,11 @@ async function checkSystemHealth() {
     }
 }
 
-// New State Structure: Projects -> Chats & Files
+// New State Structure
 const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
-Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.`;
+Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.
+
+REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
 Tu objetivo es delegar tareas a los agentes adecuados.
@@ -482,7 +488,7 @@ let state = {
     mode: 'auto', // 'auto' or 'supervised'
     globalPrompt: DEFAULT_GLOBAL_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
-    adminMessages: [], 
+    adminMessages: [],
     adminIsThinking: false,
     adminIsStopped: false,
     taskState: {
@@ -515,7 +521,11 @@ const diffStats = document.getElementById('diff-stats');
 const pendingActions = document.getElementById('pending-actions');
 const acceptBtn = document.getElementById('accept-change');
 const rejectBtn = document.getElementById('reject-change');
+const saveFileBtn = document.getElementById('save-file-btn');
 const modeSwitchToggle = document.getElementById('mode-switch-toggle');
+
+// Make editor editable
+if (editorCode) editorCode.contentEditable = true;
 const dashboardTabContent = document.getElementById('dashboard-tab-content');
 const dashboardProjectName = document.getElementById('dashboard-project-name');
 const dashboardProjectPath = document.getElementById('dashboard-project-path');
@@ -552,7 +562,7 @@ async function init() {
     await fetchModels();
     await loadData();
     setupEventListeners();
-    
+
     // Periodically check health and external instructions
     setInterval(checkSystemHealth, 5000);
     setInterval(checkExternalInstructions, 10000); // Check for API commands every 10s
@@ -563,7 +573,7 @@ async function loadData() {
     try {
         const res = await fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
-        
+
         if (Array.isArray(data)) {
             state.projects = data.map(sanitizeProject);
         } else if (data && typeof data === 'object') {
@@ -581,7 +591,7 @@ async function loadData() {
         } else {
             createNewProject();
         }
-        
+
         // Initial health check for all projects
         checkAllProjectsHealth();
 
@@ -599,7 +609,7 @@ async function checkExternalInstructions() {
     try {
         const res = await fetch(`${API_BASE}/sessions`);
         const data = await res.json();
-        
+
         if (!data) return;
 
         let changed = false;
@@ -619,12 +629,12 @@ async function checkExternalInstructions() {
                             cLocal.messages = cServer.messages;
                             delete cServer.pendingExternalInstruction;
                             changed = true;
-                            
+
                             // Si es el proyecto activo, refrescar UI
                             if (state.activeProjectId === pLocal.id) {
                                 renderMessages();
                             }
-                            
+
                             triggerAgentLogic(pLocal, cLocal, 'external');
                         }
                     }
@@ -638,11 +648,11 @@ async function checkExternalInstructions() {
             state.adminMessages = data.adminMessages;
             delete data.pendingAdminInstruction;
             changed = true;
-            
+
             if (getActiveProject()?.activeTabId === 'admin') {
                 renderAdminMessages();
             }
-            
+
             triggerAdminAgentLogic();
         }
 
@@ -694,13 +704,13 @@ async function saveData() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-    } catch (e) {}
+    } catch (e) { }
 }
 
 async function clearClientLogs() {
     try {
         await fetch(`${API_BASE}/utils/client-logs/clear`, { method: 'POST' });
-    } catch (e) {}
+    } catch (e) { }
 }
 
 async function getTaskState() {
@@ -720,7 +730,7 @@ async function saveTaskState(taskState) {
             body: JSON.stringify(taskState)
         });
         state.taskState = taskState;
-    } catch (e) {}
+    } catch (e) { }
 }
 
 
@@ -741,7 +751,7 @@ async function refreshConsoleUI() {
     try {
         const res = await fetch(`${API_BASE}/utils/client-logs`);
         const logs = await res.json();
-        
+
         if (!logs || logs.length === 0) {
             consoleOutput.innerHTML = '<div class="log-empty">No hay logs registrados.</div>';
             return;
@@ -757,7 +767,7 @@ async function refreshConsoleUI() {
                 </div>
             `;
         }).join('');
-        
+
     } catch (e) {
         consoleOutput.innerHTML = 'Error al cargar logs.';
     }
@@ -771,7 +781,7 @@ window.clearConsoleUI = async () => {
 async function createNewProject() {
     const id = generateId();
     const projectName = `Proyecto ${state.projects.length + 1}`;
-    
+
     // Call server to create default folder
     let folderPath = '';
     try {
@@ -792,11 +802,11 @@ async function createNewProject() {
         folder: folderPath,
         model: modelSelect.value, // Save current global model as default for this project
         chats: [
-            { 
-                id: 'chat-' + generateId(), 
-                name: 'Agente 1', 
-                messages: [], 
-                isThinking: false, 
+            {
+                id: 'chat-' + generateId(),
+                name: 'Agente 1',
+                messages: [],
+                isThinking: false,
                 mode: 'auto',
                 model: modelSelect.value // Agent also gets the model
             }
@@ -809,26 +819,26 @@ async function createNewProject() {
     newProject.activeTabId = newProject.chats[0].id;
     state.projects.push(newProject);
     state.activeProjectId = id;
-    
+
     renderProjectList();
     renderTabs();
-    
+
     if (folderPath) {
         window.scanFolder(folderPath);
     } else {
-        renderFileList(); 
+        renderFileList();
     }
-    
+
     saveData();
 }
 
 async function checkProjectHealth(project) {
     if (!project.folder) return;
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/list`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ folderPath: project.folder }) 
+        const res = await fetchWithLog(`${API_BASE}/files/list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder })
         }, 1, true); // No retries for health check
         const data = await res.json();
         project.isCorrupted = !!data.error;
@@ -868,7 +878,7 @@ async function fetchModels() {
     try {
         const res = await fetchWithLog(`${API_BASE}/models`);
         const data = await res.json();
-        
+
         state.models = data.models || [];
         const modelOptions = state.models.map(m => {
             const isVision = m.details && m.details.families && m.details.families.includes('clip');
@@ -876,7 +886,7 @@ async function fetchModels() {
         }).join('');
 
         modelSelect.innerHTML = modelOptions;
-        
+
         const projectModelSelect = document.getElementById('project-model-select');
         if (projectModelSelect) {
             projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + modelOptions;
@@ -886,10 +896,10 @@ async function fetchModels() {
         if (chatModelSelect) {
             chatModelSelect.innerHTML = '<option value="">Usar Proyecto</option>' + modelOptions;
         }
-        
+
         // Initial vision check
         checkVisionCapability();
-    } catch (e) {}
+    } catch (e) { }
 }
 
 function checkVisionCapability() {
@@ -910,7 +920,7 @@ function renderProjectList() {
         const corruptedClass = p.isCorrupted ? 'corrupted' : '';
         const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
         const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
-        
+
         return `
             <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass}" 
                  data-id="${p.id}" 
@@ -959,7 +969,7 @@ function renderTabs() {
     if (!project) return;
 
     let tabsHtml = '';
-    
+
     // 1. New Chat Button first (A la izquierda total)
     tabsHtml += `<div class="tab add-tab" title="Nuevo Agente" onclick="window.addChat()">+</div>`;
 
@@ -1002,9 +1012,9 @@ window.viewActiveProjectPrompt = () => {
 window.viewProjectPrompt = (projectId) => {
     const project = state.projects.find(p => p.id === projectId);
     if (!project) return;
-    
+
     const prompt = project.projectPrompt || "No hay instrucciones específicas para este proyecto.";
-    
+
     // Create a simple overlay to show the prompt
     const overlay = document.createElement('div');
     overlay.className = 'modal'; // Reuse modal styles
@@ -1035,7 +1045,7 @@ window.stopActiveAgent = () => {
         const stopBtn = document.getElementById('stop-btn');
         if (sendBtn) sendBtn.classList.remove('hidden');
         if (stopBtn) stopBtn.classList.add('hidden');
-        
+
         chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
         renderMessages();
     }
@@ -1079,25 +1089,26 @@ function updateViewVisibility() {
     editorTabContent.classList.add('hidden');
     dashboardTabContent.classList.add('hidden');
     adminTabContent.classList.add('hidden');
-    
+
     if (isChat) {
+        saveFileBtn.classList.add('hidden');
         chatTabContent.classList.remove('hidden');
         renderMessages(false); // Pass false to avoid recursive renderTabs
-        
+
         // Sync mode toggles with current chat mode
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
             syncModeUI(chat.mode);
-            
+
             // Sync chat header
             const agentNameSpan = document.getElementById('chat-agent-name');
             if (agentNameSpan) agentNameSpan.textContent = `🤖 ${chat.name}`;
-            
+
             // Update STOP button and thinking indicator based on current state
             const stopBtn = document.getElementById('stop-btn');
             const thinkingInd = document.getElementById('chat-thinking-indicator');
             const statusSpan = document.getElementById('chat-thinking-status');
-            
+
             if (stopBtn) stopBtn.classList.toggle('hidden', !chat.isThinking);
             if (thinkingInd) thinkingInd.classList.toggle('hidden', !chat.isThinking);
             if (statusSpan && chat.thinkingStatus) statusSpan.textContent = chat.thinkingStatus;
@@ -1109,16 +1120,18 @@ function updateViewVisibility() {
             }
         }
     } else if (project.activeTabId === 'admin') {
+        saveFileBtn.classList.add('hidden');
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
     } else if (isOpenFile) {
+        saveFileBtn.classList.remove('hidden');
         editorTabContent.classList.remove('hidden');
         const file = project.openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
         if (file) {
             currentFilename.textContent = file.name;
             pendingActions.classList.toggle('hidden', !file.pendingContent);
-            
+
             if (file.pendingContent) {
                 renderDiff(file, true);
             } else if (file.diff) {
@@ -1128,10 +1141,11 @@ function updateViewVisibility() {
             }
         }
     } else {
+        saveFileBtn.classList.add('hidden');
         dashboardTabContent.classList.remove('hidden');
         dashboardProjectName.textContent = project.name;
         dashboardProjectPath.textContent = project.folder || "Sin carpeta seleccionada";
-        
+
         // Stats
         if (statChats) statChats.textContent = project.chats.length;
         if (statFiles) statFiles.textContent = project.openFiles.length;
@@ -1160,13 +1174,13 @@ function updateViewVisibility() {
 function renderCode(file) {
     const extension = file.name.split('.').pop().toLowerCase();
     const lang = getLanguage(extension) || 'plaintext';
-    
+
     // Clear previous state
-    editorCode.className = 'hljs'; 
+    editorCode.className = 'hljs';
     if (lang !== 'plaintext') {
         editorCode.classList.add(`language-${lang}`);
     }
-    
+
     // Stats and Info
     diffStats.classList.add('hidden');
     document.getElementById('editor-lang').textContent = lang;
@@ -1176,7 +1190,7 @@ function renderCode(file) {
             // Check if language is supported by the current hljs instance
             const supportedLangs = hljs.listLanguages();
             const actualLang = supportedLangs.includes(lang) ? lang : 'plaintext';
-            
+
             const highlighted = hljs.highlight(file.content, { language: actualLang }).value;
             editorCode.innerHTML = highlighted;
         } else {
@@ -1209,11 +1223,11 @@ function renderDiff(file, isPending = false) {
     });
 
     editorCode.innerHTML = html;
-    editorCode.className = ''; 
-    
+    editorCode.className = '';
+
     const extension = file.name.split('.').pop().toLowerCase();
     document.getElementById('editor-lang').textContent = (getLanguage(extension) || 'plaintext') + (isPending ? ' (PENDING)' : ' (DIFF)');
-    
+
     diffStats.querySelector('.diff-added').textContent = `+ ${addedCount} agregadas`;
     diffStats.querySelector('.diff-removed').textContent = `- ${removedCount} eliminadas`;
     diffStats.classList.remove('hidden');
@@ -1221,8 +1235,8 @@ function renderDiff(file, isPending = false) {
 
 function getLanguage(ext) {
     const map = {
-        'js': 'javascript', 'ts': 'typescript', 'py': 'python', 
-        'html': 'xml', 'css': 'css', 'json': 'json', 
+        'js': 'javascript', 'ts': 'typescript', 'py': 'python',
+        'html': 'xml', 'css': 'css', 'json': 'json',
         'md': 'markdown', 'txt': 'plaintext', 'bat': 'dos',
         'sql': 'sql', 'sh': 'bash'
     };
@@ -1247,7 +1261,7 @@ window.switchTab = (id) => {
 window.addChat = () => {
     const p = getActiveProject();
     if (!p) return;
-    
+
     // Find next agent number to avoid naming duplicates
     const agentNumbers = p.chats
         .map(c => {
@@ -1257,10 +1271,10 @@ window.addChat = () => {
         .filter(n => !isNaN(n));
     const nextNum = agentNumbers.length > 0 ? Math.max(...agentNumbers) + 1 : 1;
 
-    const newChat = { 
-        id: 'chat-' + generateId(), 
-        name: 'Agente ' + nextNum, 
-        messages: [], 
+    const newChat = {
+        id: 'chat-' + generateId(),
+        name: 'Agente ' + nextNum,
+        messages: [],
         isThinking: false,
         mode: 'auto',
         lastProgress: Date.now(),
@@ -1323,11 +1337,11 @@ window.switchProject = (id, event = null) => {
         console.error("❌ Project not found:", id);
         return;
     }
-    
+
     folderPathInput.value = project.folder || '';
     renderProjectList();
     renderTabs();
-    
+
     if (project.folder) {
         console.log(`📂 Project has folder, scanning: ${project.folder}`);
         window.scanFolder(project.folder);
@@ -1365,7 +1379,7 @@ window.deleteAllProjects = () => {
 function renderMessages(shouldRenderLayout = true) {
     const chat = getActiveChat();
     if (!chat) return;
-    
+
     let thinkingHtml = '';
     if (chat.isThinking) {
         const status = chat.thinkingStatus || "El agente está pensando...";
@@ -1382,7 +1396,7 @@ function renderMessages(shouldRenderLayout = true) {
             </div>
         `;
     }
-    
+
     if (shouldRenderLayout) {
         renderProjectList();
         renderTabs();
@@ -1408,7 +1422,7 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
     chat.isThinking = isThinking;
     chat.thinkingStatus = status;
     chat.thinkingSubtext = subtext;
-    
+
     if (!isThinking) {
         chat.isStopped = false; // Reset stop state when finished
     }
@@ -1419,7 +1433,7 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
         const stopBtn = document.getElementById('stop-btn');
         const thinkingInd = document.getElementById('chat-thinking-indicator');
         const statusSpan = document.getElementById('chat-thinking-status');
-        
+
         if (isThinking) {
             if (stopBtn) stopBtn.classList.remove('hidden');
             if (thinkingInd) thinkingInd.classList.remove('hidden');
@@ -1463,20 +1477,20 @@ async function sendMessage() {
         userMsg.images = [...currentAttachedImages];
     }
     chat.messages.push(userMsg);
-    
+
     chatInput.value = '';
     clearImages();
     renderMessages();
-    
+
     await triggerAgentLogic(project, chat);
 }
 
 function buildRefactoredSystemPrompt(taskState) {
     const p = getActiveProject();
     const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE' : 'OFFLINE';
-    
+
     // Resumir los últimos pasos para el contexto del modelo
-    const recentStepsText = (taskState.steps || []).slice(-5).map(s => 
+    const recentStepsText = (taskState.steps || []).slice(-5).map(s =>
         `[Step ${s.id}] Action: ${s.action} -> Result: ${s.result.substring(0, 500)}${s.result.length > 500 ? '...' : ''}`
     ).join('\n');
 
@@ -1506,18 +1520,18 @@ Solve the task using the tools above.`;
 }
 
 async function triggerAgentLogic(project, chat, origin = 'user') {
-    if (chat.isThinking) return; 
+    if (chat.isThinking) return;
 
     await setAgentActive(true);
     await clearClientLogs();
 
     updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
-    chat.isStopped = false; 
+    chat.isStopped = false;
     renderMessages();
 
     // 1. Sync Task State
     let taskState = await getTaskState();
-    
+
     // If user just sent a message, determine if it's a technical task
     const lastMsg = chat.messages[chat.messages.length - 1];
     if (lastMsg && lastMsg.role === 'user') {
@@ -1540,7 +1554,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
     // 2. Build Refactored Prompt
     const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
-    
+
     // RESTORE CONTEXT: Enviar los últimos 5 mensajes para que el modelo sepa qué está pasando
     const history = chat.messages.slice(-5).map(m => ({
         role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
@@ -1553,27 +1567,27 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
         const response = await fetch(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
-            body: JSON.stringify({ 
-                model: chat.model || project.model || modelSelect.value, 
+            body: JSON.stringify({
+                model: chat.model || project.model || modelSelect.value,
                 messages: messages,
                 stream: true // Habilitado para Fase 2: Visibilidad de progreso
             })
         });
 
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
-        
+
         // --- STREAMING PROCESSING ---
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let assistantResponse = '';
-        
+
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
@@ -1583,7 +1597,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                         assistantResponse += json.message.content;
                         // Opcional: Actualizar UI en tiempo real aquí si se desea
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
 
             if (chat.isStopped) {
@@ -1601,7 +1615,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
         // Process actions
         const actionResult = await processAgentActions(assistantResponse, project, chat);
-        
+
         if (assistantResponse.includes("TASK COMPLETE")) {
             taskState.currentState = "FINISHED";
             taskState.objective = ""; // Clear objective for next task
@@ -1614,7 +1628,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             renderMessages();
             return;
         }
-        
+
         // Clean display text: replace code blocks with clickable links
         let displayContent = assistantResponse
             .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
@@ -1634,7 +1648,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
 
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
-        
+
         if (actionResult.reads && actionResult.reads.length > 0) {
             // Add read content to history and auto-continue. 
             // We wrap it in <details> for the UI to avoid cluttering, but the text is still in history.
@@ -1653,9 +1667,12 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             console.warn(`❌ Errores detectados en acciones. Iniciando auto-corrección.`);
             await autoRetry(errorMsg, project, chat);
             renderMessages();
+        } else if (actionResult.toolOutputs && actionResult.toolOutputs.some(to => to.toolName === 'RANDOM')) {
+            console.log("🎲 Herramienta RANDOM detectada. Iniciando auto-reintento para que el agente use el número.");
+            await autoRetry("Continuando con el número aleatorio generado...", project, chat);
         } else if (actionResult.actionsPerformed === 0) {
-             // Just finished without actions or reads.
-             console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
+            // Just finished without actions or reads.
+            console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
         }
 
         updateThinking(chat, false);
@@ -1670,9 +1687,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (origin === 'admin') {
             const lastMsg = chat.messages[chat.messages.length - 1];
             if (lastMsg && lastMsg.role === 'agent') {
-                state.adminMessages.push({ 
-                    role: 'system', 
-                    content: `📢 El agente **${chat.name}** ha terminado su tarea.\nResultado: ${lastMsg.content.substring(0, 500)}${lastMsg.content.length > 500 ? '...' : ''}` 
+                state.adminMessages.push({
+                    role: 'system',
+                    content: `📢 El agente **${chat.name}** ha terminado su tarea.\nResultado: ${lastMsg.content.substring(0, 500)}${lastMsg.content.length > 500 ? '...' : ''}`
                 });
                 renderAdminMessages();
                 // Debounced trigger to allow multiple agents to finish before re-thinking
@@ -1691,25 +1708,25 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 }
 
 
-window.scanFolder = async function(pathInput = null) {
+window.scanFolder = async function (pathInput = null) {
     const p = getActiveProject();
     if (!p) return;
 
     let folderPath = (typeof pathInput === 'string') ? pathInput : (pathInput || p.folder || folderPathInput.value);
-    
+
     if (!folderPath) {
         renderFileList();
         return;
     }
 
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/list`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ folderPath }) 
+        const res = await fetchWithLog(`${API_BASE}/files/list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath })
         });
         const data = await res.json();
-        
+
         if (data.error) {
             console.error("Scan error:", data.error);
             const project = getActiveProject();
@@ -1726,24 +1743,24 @@ window.scanFolder = async function(pathInput = null) {
             project.currentFiles = data.files || [];
             project.folder = data.currentPath;
             folderPathInput.value = data.currentPath;
-            
+
             // Auto-detect run.bat
             const hasRunBat = project.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
             projectRunContainer.classList.toggle('hidden', !hasRunBat);
-            
+
             // Show Git controls if folder is selected
             gitControlsContainer.classList.toggle('hidden', !project.folder);
 
             // Auto-detect skill.md
             const skillFile = project.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
             const skillIndicator = document.getElementById('skill-source-indicator');
-            
+
             if (skillFile && !project.projectPrompt) {
                 try {
-                    const res = await fetchWithLog(`${API_BASE}/files/read`, { 
-                        method: 'POST', 
-                        headers: { 'Content-Type': 'application/json' }, 
-                        body: JSON.stringify({ filePath: skillFile.path.replace(/\\/g, '/') }) 
+                    const res = await fetchWithLog(`${API_BASE}/files/read`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filePath: skillFile.path.replace(/\\/g, '/') })
                     });
                     const skillData = await res.json();
                     if (skillData.content) {
@@ -1760,7 +1777,7 @@ window.scanFolder = async function(pathInput = null) {
             } else {
                 if (skillIndicator) skillIndicator.classList.add('hidden');
             }
-            
+
             renderFileList();
             saveData();
             renderFileList();
@@ -1790,14 +1807,14 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
         if (!searchTerm) return true;
         return f.name.toLowerCase().includes(searchTerm);
     });
-    
+
     if (currentFilesFiltered.length === 0 && !p.folder && !parentPath) {
         container.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
         return;
     }
 
     let html = '';
-    
+
     // Solo mostramos el "atrás" en el nivel raíz y si no estamos usando vista de árbol expandida todavía
     if (!parentPath && p.folder && !searchTerm) {
         html += `<div class="file-item directory back-nav" onclick="window.goUp()">
@@ -1811,7 +1828,7 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
         const icon = isDir ? '📁' : getFileIcon(f.name);
         const path = f.path.replace(/\\/g, '/');
         const id = `file-${btoa(path).replace(/=/g, '')}`;
-        
+
         if (isDir) {
             return `
                 <div class="tree-item-wrapper" id="wrapper-${id}">
@@ -1845,7 +1862,7 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
 function getFileIcon(filename) {
     const ext = filename.split('.').pop().toLowerCase();
     const icons = {
-        'js': 'js', 'ts': 'ts', 'html': '🌐', 'css': '🎨', 
+        'js': 'js', 'ts': 'ts', 'html': '🌐', 'css': '🎨',
         'json': '⚙️', 'md': '📝', 'txt': '📄', 'py': '🐍',
         'png': '🖼️', 'jpg': '🖼️', 'svg': '🖼️', 'bat': '🐚'
     };
@@ -1856,7 +1873,7 @@ window.toggleFolder = async (path, id) => {
     const wrapper = document.getElementById(`wrapper-${id}`);
     const content = document.getElementById(`content-${id}`);
     const caret = wrapper.querySelector('.folder-caret');
-    
+
     if (!content.classList.contains('hidden')) {
         content.classList.add('hidden');
         caret.classList.remove('open');
@@ -1867,10 +1884,10 @@ window.toggleFolder = async (path, id) => {
     if (content.innerHTML === "") {
         content.innerHTML = '<div class="loading-small">Cargando...</div>';
         try {
-            const res = await fetchWithLog(`${API_BASE}/files/list`, { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ folderPath: path }) 
+            const res = await fetchWithLog(`${API_BASE}/files/list`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folderPath: path })
             });
             const data = await res.json();
             if (data.files) {
@@ -1888,7 +1905,7 @@ window.toggleFolder = async (path, id) => {
 function buildSystemPrompt() {
     const p = getActiveProject();
     const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE' : 'OFFLINE';
-    
+
     return `### ROLE: EXPERT DEVELOPER AGENT
 ### ENVIRONMENT:
 - Backend: ${backendStatus}
@@ -1962,12 +1979,17 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
    [CALL:execute_js]{"code": "console.log('MCP OK')"}
    - Úsalo una vez por respuesta para confirmar que el protocolo está activo.
 
+5. **NÚMERO RANDOM**:
+   [CALL:RANDOM]{"min": 0, "max": 100}
+   - ÚSALO SIEMPRE que necesites decidir un número aleatorio. NUNCA inventes un número random por tu cuenta.
+
 ### ⚠️ REGLAS INFALIBLES:
-1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena [CALL:write_file] en un comentario de texto en tu respuesta para que el validador acepte tu mensaje (Ejemplo: // satisfy [CALL:write_file]).
+1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena [CALL:write_file] o [CALL:RANDOM] en un comentario de texto en tu respuesta para que el validador acepte tu mensaje.
 2. **JSON ESCAPADO**: El campo "content" debe ser un string JSON válido. Escapa saltos de línea como \\n y comillas como \\\".
 3. **SIN CÓDIGO PLANO**: No uses bloques de código standard. Usa siempre [CALL:write_file].
 4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
-5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta (ej: escribir 4 archivos seguidos). El sistema las procesará secuencialmente.
+5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta.
+6. **RANDOM REAL**: Si necesitas un número aleatorio para cualquier lógica (puertos, IDs, valores de prueba), DEBES usar [CALL:RANDOM]. Está terminantemente prohibido que "pienses" o "inventes" un número aleatorio tú mismo.
 
 ### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
 "Entendido. Voy a crear la estructura base del proyecto.
@@ -1987,11 +2009,11 @@ window.stopAgent = (projectId, chatId) => {
     if (!project) return;
     const chat = project.chats.find(c => c.id === chatId);
     if (!chat) return;
-    
+
     chat.isStopped = true;
     chat.isThinking = false;
     adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
-    
+
     if (state.activeProjectId === projectId && project.activeTabId === chatId) {
         renderMessages();
     }
@@ -2007,7 +2029,7 @@ function adminLog(msg) {
 
 function renderAdminMessages() {
     if (!adminChatMessages) return;
-    
+
     if (state.adminMessages.length === 0) {
         adminChatMessages.innerHTML = `<div class="message system">Bienvenido al Centro de Control. Aquí verás el progreso de todos los agentes.</div>`;
         return;
@@ -2030,10 +2052,10 @@ function renderAdminMessages() {
     adminChatMessages.innerHTML = state.adminMessages.map(m => {
         const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
         const timeSpan = time ? `<span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ` : '';
-        
+
         let roleClass = m.role;
         if (m.role === 'system') roleClass = 'system';
-        
+
         // Hide dispatch tags from display
         let displayContent = m.content.replace(/\[@([^:]+):[ \t]*"(.*?)"\]/g, (match, name) => {
             return `<div class="admin-dispatch-pill">📡 Ordenando a <strong>${name}</strong>...</div>`;
@@ -2041,7 +2063,7 @@ function renderAdminMessages() {
 
         return `<div class="message ${roleClass}">${timeSpan}${formatMarkdown(displayContent)}</div>`;
     }).join('') + thinkingHtml;
-    
+
     setTimeout(() => {
         adminChatMessages.scrollTop = adminChatMessages.scrollHeight;
     }, 50);
@@ -2093,7 +2115,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         state.adminNeedsRecheck = true;
         return;
     }
-    
+
     state.adminIsThinking = true;
     state.adminIsStopped = false;
     state.adminNeedsRecheck = false;
@@ -2111,27 +2133,27 @@ async function triggerAdminAgentLogic(retryCount = 0) {
     try {
         const response = await fetch(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
-            body: JSON.stringify({ 
-                model: modelSelect.value, 
+            body: JSON.stringify({
+                model: modelSelect.value,
                 messages: messages,
-                stream: true 
+                stream: true
             })
         });
 
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
-        
+
         // --- STREAMING PROCESSING for Admin ---
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let assistantResponse = '';
-        
+
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
@@ -2140,7 +2162,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
                     if (json.message && json.message.content) {
                         assistantResponse += json.message.content;
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
 
             if (state.adminIsStopped) {
@@ -2159,7 +2181,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         // Parse Dispatches: [DELEGATE:target]...[/DELEGATE] OR [@target: "..."]
         const robustRegex = /\[DELEGATE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/DELEGATE\]/gi;
         const quickRegex = /\[@\s*([^:]+?)\s*:\s*"(.*?)"\s*\]/gi;
-        
+
         const dispatches = [];
         let m;
         while ((m = robustRegex.exec(assistantResponse)) !== null) {
@@ -2185,7 +2207,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
                 .replace(/^(el agente|el proyecto|agente|proyecto)\s+/i, '')
                 .split('[')[0]         // Quitar posibles [ID: ...] finales si copió la línea entera
                 .trim();
-            
+
             let found = false;
             // Primero buscar por ID exacto (prioridad)
             for (const p of state.projects) {
@@ -2210,8 +2232,8 @@ async function triggerAdminAgentLogic(retryCount = 0) {
                         const compositeName = `${agentNameLower} (${projectNameLower})`.toLowerCase();
 
                         // Coincidencias ultra-flexibles
-                        const isMatch = 
-                            agentNameLower === targetName || 
+                        const isMatch =
+                            agentNameLower === targetName ||
                             projectNameLower === targetName ||
                             compositeName === targetName ||
                             targetName === agentNameLower.replace(/\s+/g, '') ||
@@ -2244,10 +2266,10 @@ Por favor, asegúrate de usar EXACTAMENTE el "Nombre" o el "ID" (sin prefijos) d
 ${agentList}
 
 REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
-            
+
             state.adminMessages.push({ role: 'system', content: retryFeedback });
             state.adminIsThinking = false;
-            
+
             // Re-trigger con feedback para que corrija
             console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/3) por error en destinatarios.`);
             setTimeout(() => triggerAdminAgentLogic(retryCount + 1), 1500);
@@ -2257,7 +2279,7 @@ REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
         renderAdminMessages();
         state.adminIsThinking = false;
         if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
-        
+
         // If an agent finished while we were thinking, trigger again to process the latest news
         if (state.adminNeedsRecheck) {
             triggerAdminAgentLogic();
@@ -2276,7 +2298,7 @@ REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
 
 function renderAdminMonitor() {
     if (!monitorTbody) return;
-    
+
     let html = '';
     state.projects.forEach(p => {
         p.chats.forEach(c => {
@@ -2284,7 +2306,7 @@ function renderAdminMonitor() {
             const statusClass = c.isThinking ? 'busy' : 'idle';
             const statusText = c.isThinking ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
             const stopBtnDisabled = !c.isThinking ? 'disabled' : '';
-            
+
             html += `
                 <tr>
                     <td><span class="agent-name">🤖 ${c.name}</span></td>
@@ -2309,14 +2331,47 @@ function renderAdminMonitor() {
             `;
         });
     });
-    
+
     monitorTbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
 }
+
+// Función auxiliar para reparar JSON mal formado enviado por modelos de IA
+const repairJSONField = (jsonStr, fieldName) => {
+    const fieldMarker = `"${fieldName}":`;
+    const startIdx = jsonStr.indexOf(fieldMarker);
+    if (startIdx === -1) return jsonStr;
+
+    const firstQuote = jsonStr.indexOf('"', startIdx + fieldMarker.length);
+    if (firstQuote === -1) return jsonStr;
+
+    // Buscar la comilla de cierre real: la que precede a una coma o al cierre del objeto
+    let lastQuote = -1;
+    for (let i = jsonStr.length - 1; i > firstQuote; i--) {
+        if (jsonStr[i] === '"') {
+            const trailing = jsonStr.substring(i + 1).trim();
+            if (trailing.startsWith(',') || trailing.startsWith('}')) {
+                lastQuote = i;
+                break;
+            }
+        }
+    }
+
+    if (lastQuote !== -1) {
+        const before = jsonStr.substring(0, firstQuote + 1);
+        const after = jsonStr.substring(lastQuote);
+        const middle = jsonStr.substring(firstQuote + 1, lastQuote);
+        // Escapar comillas internas que no estén escapadas (ahora captura también al inicio con ^)
+        const fixedMiddle = middle.replace(/(^|[^\\])"/g, '$1\\"');
+        return before + fixedMiddle + after;
+    }
+    return jsonStr;
+};
 
 async function processAgentActions(text, project, chat) {
     const errors = [];
     const reads = [];
     const logs = [];
+    const toolOutputs = [];
     let actionsPerformed = 0;
     let match;
 
@@ -2324,9 +2379,9 @@ async function processAgentActions(text, project, chat) {
 
     // Helper to log actions to history (Fase 1)
     const recordAction = async (action, result) => {
-        const payload = { 
+        const payload = {
             objective: taskState.objective,
-            step: { action, result } 
+            step: { action, result }
         };
         await saveTaskState(payload);
         // Refresh local taskState to reflect the server-side update (including ID and timestamp)
@@ -2355,7 +2410,7 @@ async function processAgentActions(text, project, chat) {
         }
 
         const toolName = text.substring(startIndex + callMarker.length, endBracketIndex).trim();
-        
+
         // Find the start of the JSON block '{'
         const jsonStart = text.indexOf("{", endBracketIndex);
         if (jsonStart === -1) {
@@ -2405,54 +2460,22 @@ async function processAgentActions(text, project, chat) {
 
         logs.push({ type: 'info', message: `Llamando a herramienta MCP: **${toolName}**...` });
         updateThinking(chat, true, "Usando herramienta MCP", `Llamando a ${toolName}...`);
-        
+
         try {
             let toolArgs;
             try {
                 toolArgs = JSON.parse(argsText);
             } catch (jsonErr) {
                 console.warn("[MCP] Initial JSON parse failed, trying robust cleanup...", jsonErr);
-                
+
                 try {
-                    // Limpieza 2: Intentar reparar comillas no escapadas en campos de texto largo
-                    const repairField = (jsonStr, fieldName) => {
-                        const fieldMarker = `"${fieldName}":`;
-                        const startIdx = jsonStr.indexOf(fieldMarker);
-                        if (startIdx === -1) return jsonStr;
-
-                        const firstQuote = jsonStr.indexOf('"', startIdx + fieldMarker.length);
-                        if (firstQuote === -1) return jsonStr;
-
-                        // Buscar la comilla de cierre real: la que precede a una coma o al cierre del objeto
-                        let lastQuote = -1;
-                        for (let i = jsonStr.length - 1; i > firstQuote; i--) {
-                            if (jsonStr[i] === '"') {
-                                const trailing = jsonStr.substring(i + 1).trim();
-                                if (trailing.startsWith(',') || trailing.startsWith('}')) {
-                                    lastQuote = i;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (lastQuote !== -1) {
-                            const before = jsonStr.substring(0, firstQuote + 1);
-                            const after = jsonStr.substring(lastQuote);
-                            const middle = jsonStr.substring(firstQuote + 1, lastQuote);
-                            // Escapar comillas internas que no estén escapadas (evitando lookbehind para compatibilidad)
-                            const fixedMiddle = middle.replace(/([^\\])"/g, '$1\\"');
-                            return before + fixedMiddle + after;
-                        }
-                        return jsonStr;
-                    };
-
                     let sanitized = argsText
                         .replace(/\n/g, "\\n")
                         .replace(/\r/g, "\\r");
-                    
-                    sanitized = repairField(sanitized, "content");
-                    sanitized = repairField(sanitized, "code");
-                    
+
+                    sanitized = repairJSONField(sanitized, "content");
+                    sanitized = repairJSONField(sanitized, "code");
+
                     toolArgs = JSON.parse(sanitized);
                 } catch (e2) {
                     console.error("[MCP] Robust cleanup failed, using regex fallback.", e2);
@@ -2460,7 +2483,7 @@ async function processAgentActions(text, project, chat) {
                     const pathM = argsText.match(/"path":\s*"([^"]+)"/);
                     const codeM = argsText.match(/"code":\s*"([\s\S]*?)"\s*}/) || argsText.match(/"code":\s*"([\s\S]*?)"\s*,/);
                     const contentM = argsText.match(/"content":\s*"([\s\S]*?)"\s*}/) || argsText.match(/"content":\s*"([\s\S]*?)"\s*,/);
-                    
+
                     if (pathM || contentM || codeM) {
                         toolArgs = {};
                         if (pathM) toolArgs.path = pathM[1];
@@ -2497,28 +2520,63 @@ async function processAgentActions(text, project, chat) {
                 mcpClient.callTool(toolName, toolArgs),
                 stopPromise
             ]);
-            
+
             actionsPerformed++;
 
             const resultText = result.content.map(c => c.text).join('\n');
-            
+
             if (toolName === 'read_file') {
                 const fileName = toolArgs.path.split('/').pop();
+                const sanPath = toolArgs.path.replace(/\\/g, '/');
                 reads.push({ fileName, content: resultText });
                 logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
                 await recordAction(`[MCP:read_file]`, `Read ${fileName}`);
-            } else if (toolName === 'write_file' || toolName === 'execute_js') {
+
+                // Sync local state if file is open
+                const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
+                if (openFile) {
+                    openFile.content = resultText;
+                    if (project.activeTabId === sanPath) updateViewVisibility();
+                }
+            } else if (toolName === 'write_file') {
+                const fileName = toolArgs.path.split('/').pop();
+                const sanPath = toolArgs.path.replace(/\\/g, '/');
+                const content = toolArgs.content || "";
+
+                logs.push({ type: 'success', message: `Escritura MCP exitosa: **${fileName}**` });
+                const outputMsg = `✅ MCP write_file ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
+                chat.messages.push({ role: 'system', content: outputMsg });
+                toolOutputs.push({ toolName, result: resultText });
+                await recordAction(`[MCP:write_file]`, `Success`);
+
+                // Sync local state
+                const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
+                if (openFile) {
+                    openFile.content = content;
+                    openFile.pendingContent = null;
+                    // Update diff if we have the old content
+                    if (typeof Diff !== 'undefined') {
+                        // This might be tricky if we don't have the old content here, 
+                        // but we can at least update the text.
+                    }
+                    if (project.activeTabId === sanPath) updateViewVisibility();
+                }
+            } else if (toolName === 'execute_js') {
                 logs.push({ type: 'success', message: `Ejecución MCP exitosa: **${toolName}**` });
-                chat.messages.push({ 
-                    role: 'system', 
-                    content: `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\`` 
+                const outputMsg = `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
+                chat.messages.push({
+                    role: 'system',
+                    content: outputMsg
                 });
+                toolOutputs.push({ toolName, result: resultText });
                 await recordAction(`[MCP:${toolName}]`, `Success`);
             } else {
-                chat.messages.push({ 
-                    role: 'system', 
-                    content: `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 500)}${resultText.length > 500 ? '...' : ''}\n\`\`\`` 
+                const outputMsg = `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 500)}${resultText.length > 500 ? '...' : ''}\n\`\`\``;
+                chat.messages.push({
+                    role: 'system',
+                    content: outputMsg
                 });
+                toolOutputs.push({ toolName, result: resultText });
                 await recordAction(`[MCP:${toolName}]`, `Success`);
             }
 
@@ -2537,7 +2595,7 @@ async function processAgentActions(text, project, chat) {
     // 1. Handle Reads
     const readRegex = /\[READ:(.*?)\]/g;
     while ((match = readRegex.exec(text)) !== null) {
-        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, toolOutputs, stopped: true };
         const fileName = match[1].trim();
         logs.push({ type: 'info', message: `Solicitud de lectura: **${fileName}**` });
         updateThinking(chat, true, "Leyendo archivo", fileName);
@@ -2557,13 +2615,13 @@ async function processAgentActions(text, project, chat) {
                 logs.push({ type: 'error', message: `No se pudo leer: **${fileName}**`, details: errorDetail });
                 await recordAction(`[READ:${fileName}]`, `Error: ${errorDetail}`);
             }
-        } catch(e) {
+        } catch (e) {
             errors.push(`- Error al leer ${fileName}: ${e.message}`);
             logs.push({ type: 'error', message: `Fallo al leer **${fileName}**: ${e.message}` });
             await recordAction(`[READ:${fileName}]`, `Error: ${e.message}`);
         }
     }
-    
+
     // (Other handlers for READ and SEARCH remain here...)
     const queryRegex = /\[SEARCH:(.*?):(.*?)\]/g;
     // ... search logic ...
@@ -2575,7 +2633,7 @@ async function processAgentActions(text, project, chat) {
         const code = match[1].trim();
         logs.push({ type: 'info', message: `Ejecutando bloque de código dinámico...` });
         updateThinking(chat, true, "Ejecutando JS", "Node.js está procesando el script...");
-        
+
         try {
             const res = await fetchWithLog(`${API_BASE}/execute/node`, {
                 method: 'POST',
@@ -2583,13 +2641,13 @@ async function processAgentActions(text, project, chat) {
                 body: JSON.stringify({ code, cwd: project.folder })
             });
             const data = await res.json();
-            
+
             if (data.success) {
                 actionsPerformed++;
                 const output = `STDOUT:\n${data.stdout || '(Sin salida)'}\n\nSTDERR:\n${data.stderr || '(Sin errores)'}`;
-                chat.messages.push({ 
-                    role: 'system', 
-                    content: `✅ Script ejecutado correctamente.\n\nResultado:\n\`\`\`text\n${output}\n\`\`\`` 
+                chat.messages.push({
+                    role: 'system',
+                    content: `✅ Script ejecutado correctamente.\n\nResultado:\n\`\`\`text\n${output}\n\`\`\``
                 });
                 logs.push({ type: 'success', message: `Ejecución exitosa del script.` });
                 await recordAction(`[EXECUTE_JS]`, `Code block executed. Output length: ${data.stdout.length} chars.`);
@@ -2614,7 +2672,7 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: `Escritura completa (WRITE): **${fileName}**` });
         updateThinking(chat, true, "Escribiendo archivo", fileName);
         const writeRes = await performWrite(fileName, content, project, chat);
-        
+
         if (writeRes && writeRes.success) {
             actionsPerformed++;
             if (!writeRes.hasChanged) {
@@ -2642,16 +2700,16 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: `Modificación parcial (REPLACE): **${fileName}**` });
         updateThinking(chat, true, "Modificando archivo", fileName);
         const blockContent = match[2];
-        
+
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
-        
+
         let currentFileContent = "";
         try {
             const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: sanPath }) });
             const data = await res.json();
             currentFileContent = data.content !== undefined ? data.content : "";
-        } catch(e) {
+        } catch (e) {
             errors.push(`- No se pudo leer el archivo ${fileName} para aplicar el reemplazo.`);
             logs.push({ type: 'error', message: `No se pudo leer para reemplazo: **${fileName}**` });
             continue;
@@ -2667,7 +2725,7 @@ async function processAgentActions(text, project, chat) {
 
         while ((srMatch = searchReplaceRegex.exec(blockContent)) !== null) {
             blocksFound++;
-            let searchText = srMatch[1]; 
+            let searchText = srMatch[1];
             const replaceText = srMatch[2];
 
             const normalize = (t) => t.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
@@ -2682,7 +2740,7 @@ async function processAgentActions(text, project, chat) {
                 const looseNormalize = (t) => t.replace(/\r\n/g, '\n').split('\n').map(l => l.trim()).filter(l => l.length > 0).join('\n');
                 const looseContent = looseNormalize(normContent);
                 const looseSearch = looseNormalize(normSearch);
-                
+
                 if (looseSearch && looseContent.includes(looseSearch)) {
                     const failDetail = `Bloque SEARCH ${blocksFound} no coincide exactamente por espacios o indentación. El sistema requiere coincidencia EXACTA.`;
                     errors.push(`- En ${fileName} (Bloque ${blocksFound}): Falla de coincidencia exacta (indentación/espacios). Copia el bloque EXACTO del READ.`);
@@ -2731,15 +2789,15 @@ async function processAgentActions(text, project, chat) {
         const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo", "proyects/", "proyecto_"];
         const codeKeywords = ["<!DOCTYPE", "function ", "class ", "let ", "const ", "var ", "import "];
         const lowText = text.toLowerCase();
-        
+
         const hasIntent = intentKeywords.some(kw => lowText.includes(kw));
         const hasPotentialCode = codeKeywords.some(kw => text.includes(kw)) && text.length > 300;
-        
+
         if (hasIntent || hasPotentialCode) {
-             const errorMsg = "🚫 PROTOCOL VIOLATION: Has enviado código o has dicho que has realizado cambios, pero NO has usado las etiquetas obligatorias [CALL:write_file]. El sistema NO ha guardado nada. Debes repetir tu respuesta envolviendo CADA archivo en un bloque [CALL:write_file]{\"path\": \"...\", \"content\": \"...\"}.";
-             errors.push(errorMsg);
-             logs.push({ type: 'error', message: "Violación de Protocolo detectada", details: "El modelo envió texto/código sin etiquetas MCP." });
-             await recordAction(`[PROTOCOL_ERROR]`, `Model hallucinated tool usage without tags.`);
+            const errorMsg = "🚫 PROTOCOL VIOLATION: Has enviado código o has dicho que has realizado cambios, pero NO has usado las etiquetas obligatorias [CALL:write_file]. El sistema NO ha guardado nada. Debes repetir tu respuesta envolviendo CADA archivo en un bloque [CALL:write_file]{\"path\": \"...\", \"content\": \"...\"}.";
+            errors.push(errorMsg);
+            logs.push({ type: 'error', message: "Violación de Protocolo detectada", details: "El modelo envió texto/código sin etiquetas MCP." });
+            await recordAction(`[PROTOCOL_ERROR]`, `Model hallucinated tool usage without tags.`);
         }
     }
 
@@ -2747,7 +2805,7 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: "No se detectaron acciones de herramientas en esta respuesta." });
     }
 
-    return { errors, reads, logs, actionsPerformed };
+    return { errors, reads, logs, actionsPerformed, toolOutputs };
 }
 
 
@@ -2757,14 +2815,14 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         updateThinking(chat, false);
         return;
     }
-    
+
     // Feedback directo en el chat como pidió el usuario
-    const retryMsg = { 
+    const retryMsg = {
         role: 'system', // Cambiado a role: system
-        content: `🔄 **Auto-reintento/Corrección: Intento ${retryCount + 1}**...\nError previo: ${errorContext.substring(0, 200)}...` 
+        content: `🔄 **Auto-reintento/Corrección: Intento ${retryCount + 1}**...\nError previo: ${errorContext.substring(0, 200)}...`
     };
     // chat.messages.push(retryMsg); // No saturar el chat visual con esto, o ponerlo pequeño
-    console.log(`🔄 AutoRetry ${retryCount+1}/20: ${errorContext.substring(0, 100)}`);
+    console.log(`🔄 AutoRetry ${retryCount + 1}/20: ${errorContext.substring(0, 100)}`);
 
     updateThinking(chat, true, "Auto-corrigiendo", "Corrigiendo formato y re-intentando...");
     renderMessages();
@@ -2772,7 +2830,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     // Sync Task State
     let taskState = await getTaskState();
     const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
-    
+
     // RESTORE CONTEXT in retry: Enviar los últimos mensajes para mantener la coherencia
     const history = chat.messages.slice(-5).map(m => ({
         role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
@@ -2789,27 +2847,27 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     try {
         const response = await fetchWithLog(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
-            body: JSON.stringify({ 
-                model: chat.model || project.model || modelSelect.value, 
+            body: JSON.stringify({
+                model: chat.model || project.model || modelSelect.value,
                 messages: messages,
-                stream: true 
+                stream: true
             })
         });
-        
+
         if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
-        
+
         // --- STREAMING PROCESSING for AutoRetry ---
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let assistantResponse = '';
-        
+
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
@@ -2818,7 +2876,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                     if (json.message && json.message.content) {
                         assistantResponse += json.message.content;
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
 
             if (chat.isStopped) {
@@ -2829,7 +2887,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
         }
         // --- END STREAMING ---
 
-        
+
         // Update taskState
         taskState.currentState = "RETRYING ACTIONS";
         await saveTaskState(taskState);
@@ -2869,7 +2927,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
 
 
         chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
-        
+
         if (actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
             chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora procede con las acciones correspondientes.` });
@@ -2888,20 +2946,20 @@ Try again:`;
             chat.messages.push({ role: 'system', content: retryMsgText });
             await autoRetry(retryMsgText, project, chat, retryCount + 1);
         }
- else if (actionResult.actionsPerformed === 0) {
-             // NUDGE: Si estamos en un autoretry y el agente no hizo nada pero antes falló o leyó, 
-             // puede que se haya "perdido". Le pedimos que actúe o termine.
-             const nudgeMsg = `⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. 
+        else if (actionResult.actionsPerformed === 0) {
+            // NUDGE: Si estamos en un autoretry y el agente no hizo nada pero antes falló o leyó, 
+            // puede que se haya "perdido". Le pedimos que actúe o termine.
+            const nudgeMsg = `⚠️ No detecté ninguna etiqueta de acción ([READ], [WRITE], [REPLACE]) en tu respuesta. 
 Si ya has terminado todas las tareas, indica que has finalizado. 
 Si aún faltan cambios, DEBES usar las etiquetas ahora.`;
-             chat.messages.push({ role: 'system', content: nudgeMsg });
-             console.log("🤔 Agente ocioso durante auto-retry. Enviando recordatorio.");
-             // Solo reintentamos una vez con el nudge para evitar bucles si de verdad terminó
-             if (retryCount < 5) {
+            chat.messages.push({ role: 'system', content: nudgeMsg });
+            console.log("🤔 Agente ocioso durante auto-retry. Enviando recordatorio.");
+            // Solo reintentamos una vez con el nudge para evitar bucles si de verdad terminó
+            if (retryCount < 5) {
                 await autoRetry(nudgeMsg, project, chat, retryCount + 1);
-             }
+            }
         }
-        
+
         updateThinking(chat, false);
         renderMessages();
         saveData();
@@ -2914,25 +2972,25 @@ Si aún faltan cambios, DEBES usar las etiquetas ahora.`;
 async function performWrite(fileName, content, project, chat) {
     const filePath = pathJoin(project.folder, fileName);
     const sanPath = filePath.replace(/\\/g, '/');
-    
+
     // Read old stats for verification
     let oldStats = { mtime: null, size: 0 };
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/read`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ filePath: sanPath }) 
+        const res = await fetchWithLog(`${API_BASE}/files/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath: sanPath })
         });
         const data = await res.json();
         oldStats = { mtime: data.mtime, size: data.size, content: data.content || "" };
-    } catch(e) {}
+    } catch (e) { }
 
     const oldContent = oldStats.content || "";
-    
+
     // Use passed chat or fallback
     const targetChat = chat || getActiveChat();
     const mode = targetChat ? targetChat.mode : state.mode;
-    
+
     const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
 
     if (mode === 'supervised') {
@@ -2951,27 +3009,27 @@ async function performWrite(fileName, content, project, chat) {
     }
 
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/write`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ filePath, content }) 
+        const res = await fetchWithLog(`${API_BASE}/files/write`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath, content })
         });
         const writeResult = await res.json();
-        
+
         let hasChanged = false;
         if (writeResult.success) {
             // Check mtime OR size OR direct content comparison if available
             hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
-            
+
             // If stats didn't change, double check with content (sometimes mtime doesn't update on identical writes)
             if (!hasChanged && oldContent !== content) {
-                hasChanged = true; 
+                hasChanged = true;
             }
         }
 
         if (targetChat) {
             updateThinking(targetChat, true, "Verificando cambios", fileName);
-            
+
             if (writeResult.success) {
                 if (hasChanged) {
                     targetChat.messages.push({ role: 'agent', content: `✅ **${fileName}** actualizado y verificado (mtime: ${new Date(writeResult.mtime).toLocaleTimeString()}).` });
@@ -2982,15 +3040,15 @@ async function performWrite(fileName, content, project, chat) {
                 targetChat.messages.push({ role: 'agent', content: `❌ **ERROR DE SISTEMA:** Fallo al escribir **${fileName}**: ${writeResult.error}` });
             }
         }
-        
+
         // ... rest of logic for tabs ...
         const diff = Diff.diffLines(oldContent, content);
-        
-        if (openFile) { 
-            openFile.content = content; 
+
+        if (openFile) {
+            openFile.content = content;
             openFile.diff = diff;
             openFile.pendingContent = null;
-            if (project.activeTabId === sanPath) updateViewVisibility(); 
+            if (project.activeTabId === sanPath) updateViewVisibility();
         } else {
             project.openFiles.push({ path: sanPath, name: fileName, content, diff });
             project.activeTabId = sanPath;
@@ -2999,7 +3057,7 @@ async function performWrite(fileName, content, project, chat) {
         }
         window.scanFolder(project.folder);
         saveData();
-        
+
         return { success: writeResult.success, hasChanged, error: writeResult.error };
 
     } catch (e) {
@@ -3016,7 +3074,7 @@ window.acceptChange = async () => {
     if (file && file.pendingContent) {
         const content = file.pendingContent;
         file.pendingContent = null;
-        
+
         // Temporarily force auto mode for the write operation
         const oldMode = chat ? chat.mode : 'supervised';
         if (chat) chat.mode = 'auto';
@@ -3050,6 +3108,57 @@ window.goUp = () => {
     }
 };
 
+window.saveActiveFile = async () => {
+    const p = getActiveProject();
+    if (!p || !p.activeTabId) return;
+
+    const sanPath = p.activeTabId;
+    const file = p.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
+    if (!file) return;
+
+    const content = editorCode.innerText;
+
+    saveFileBtn.textContent = '⏳...';
+    saveFileBtn.disabled = true;
+
+    try {
+        const res = await fetchWithLog(`${API_BASE}/files/write`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath: sanPath, content })
+        });
+        
+        if (!res.ok) {
+             throw new Error(`HTTP ${res.status}`);
+        }
+
+        const result = await res.json();
+
+        if (result.success) {
+            file.content = content;
+            file.diff = null; // Clear diff if it was showing
+            saveFileBtn.textContent = 'Guardado ✓';
+            setTimeout(() => {
+                saveFileBtn.textContent = 'Guardar 💾';
+                saveFileBtn.disabled = false;
+            }, 2000);
+
+            // If the file is open in multiple places or needs refresh
+            if (p.folder) window.scanFolder(p.folder);
+            saveData();
+        } else {
+            alert("Error al guardar: " + result.error);
+            saveFileBtn.textContent = 'Error ❌';
+            saveFileBtn.disabled = false;
+        }
+    } catch (e) {
+        console.error("Save error:", e);
+        alert("Error de conexión al guardar o tiempo de espera agotado.");
+        saveFileBtn.textContent = 'Error ❌';
+        saveFileBtn.disabled = false;
+    }
+};
+
 window.openFile = async (path) => {
     const p = getActiveProject();
     const san = path.replace(/\\/g, '/');
@@ -3078,9 +3187,9 @@ async function nativePickFolder() {
         const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`, {}, 1, true);
         if (res && res.ok) {
             const data = await res.json();
-            if (data.path) { 
-                folderPathInput.value = data.path; 
-                window.scanFolder(data.path); 
+            if (data.path) {
+                folderPathInput.value = data.path;
+                window.scanFolder(data.path);
             }
         } else if (res) {
             const errorData = await res.json().catch(() => ({}));
@@ -3131,11 +3240,11 @@ function setupEventListeners() {
     adminSendBtn.onclick = async () => {
         const cmd = adminGlobalInput.value.trim();
         if (!cmd) return;
-        
+
         state.adminMessages.push({ role: 'user', content: cmd, timestamp: Date.now() });
         adminGlobalInput.value = '';
         renderAdminMessages();
-        
+
         await triggerAdminAgentLogic();
     };
 
@@ -3146,22 +3255,23 @@ function setupEventListeners() {
         }
     };
 
-window.sendDirectAgentCommand = async (projectId, chatId) => {
-    const input = document.getElementById(`direct-input-${projectId}-${chatId}`);
-    const cmd = input.value.trim();
-    if (!cmd) return;
-    
-    const project = state.projects.find(p => p.id === projectId);
-    const chat = project.chats.find(c => c.id === chatId);
-    
-    if (chat) {
-        chat.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DIRECTA DESDE MONITOR: ${cmd}` });
-        adminLog(`🎯 Monitor enviada instrucción a <strong>${chat.name}</strong>: <em>"${cmd}"</em>`);
-        input.value = '';
-        if (!chat.isThinking) triggerAgentLogic(project, chat);
-    }
-};
+    window.sendDirectAgentCommand = async (projectId, chatId) => {
+        const input = document.getElementById(`direct-input-${projectId}-${chatId}`);
+        const cmd = input.value.trim();
+        if (!cmd) return;
 
+        const project = state.projects.find(p => p.id === projectId);
+        const chat = project.chats.find(c => c.id === chatId);
+
+        if (chat) {
+            chat.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DIRECTA DESDE MONITOR: ${cmd}` });
+            adminLog(`🎯 Monitor enviada instrucción a <strong>${chat.name}</strong>: <em>"${cmd}"</em>`);
+            input.value = '';
+            if (!chat.isThinking) triggerAgentLogic(project, chat);
+        }
+    };
+
+    saveFileBtn.onclick = () => window.saveActiveFile();
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
@@ -3211,11 +3321,11 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     // We need to use event delegation or re-bind because buttons moved
     // Actually, since they are global constants but moved in HTML, it works
     // but the IDs mode-auto and mode-supervised are still unique.
-    
+
     modeSwitchToggle.onclick = () => {
         const chat = getActiveChat();
         if (!chat) return;
-        
+
         chat.mode = chat.mode === 'auto' ? 'supervised' : 'auto';
         syncModeUI(chat.mode);
         saveData();
@@ -3228,7 +3338,7 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
     runProjectBtn.onclick = async () => {
         const p = getActiveProject();
         if (!p || !p.folder) return;
-        
+
         const runBat = p.currentFiles.find(f => f.name.toLowerCase() === 'run.bat');
         if (!runBat) return;
 
@@ -3236,9 +3346,9 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
             const res = await fetchWithLog(`${API_BASE}/utils/run-script`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     scriptPath: runBat.path,
-                    cwd: p.folder 
+                    cwd: p.folder
                 })
             });
             const data = await res.json();
@@ -3283,7 +3393,7 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
             modalSideTabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             const target = tab.dataset.modalTab;
-            
+
             document.querySelectorAll('.modal-tab-content').forEach(pane => pane.classList.add('hidden'));
             const targetPane = document.getElementById(`modal-tab-${target}`);
             if (targetPane) targetPane.classList.remove('hidden');
@@ -3295,7 +3405,7 @@ window.sendDirectAgentCommand = async (projectId, chatId) => {
             modalSubTabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             const target = tab.dataset.modalSubTab;
-            
+
             document.querySelectorAll('.sub-tab-pane').forEach(pane => pane.classList.add('hidden'));
             const targetPane = document.getElementById(`sub-tab-${target}`);
             if (targetPane) targetPane.classList.remove('hidden');
@@ -3383,7 +3493,7 @@ function clearImages() {
 
 function syncModeUI(mode) {
     if (!modeSwitchToggle) return;
-    
+
     if (mode === 'auto') {
         modeSwitchToggle.classList.add('auto');
         modeSwitchToggle.classList.remove('supervised');
@@ -3397,20 +3507,20 @@ function syncModeUI(mode) {
 
 function formatLogs(logs) {
     if (!logs || logs.length === 0) return '';
-    
+
     let html = '<details class="execution-log"><summary>Pasos de ejecución del Agente</summary><div class="log-steps">';
-    
+
     logs.forEach(log => {
         let icon = 'ℹ️';
         if (log.type === 'success') icon = '✅';
         if (log.type === 'error') icon = '❌';
-        
+
         html += `<div class="log-step ${log.type}"><span>${icon}</span> <span>${log.message}</span></div>`;
         if (log.details) {
             html += `<div class="failed-search">Intento de búsqueda fallido:\n${escapeHtml(log.details)}</div>`;
         }
     });
-    
+
     html += '</div></details>';
     return html;
 }
@@ -3419,7 +3529,7 @@ window.handleGitPush = async () => {
     const p = getActiveProject();
     const chat = getActiveChat();
     const message = gitCommitMessageInput.value.trim();
-    
+
     if (!message) {
         alert("Por favor ingresa un mensaje para el commit.");
         return;
@@ -3436,24 +3546,24 @@ window.handleGitPush = async () => {
         const res = await fetchWithLog(`${API_BASE}/utils/git-commit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 folderPath: p.folder,
                 message: message
             })
         });
         const data = await res.json();
-        
+
         if (data.success) {
-            chat.messages.push({ 
-                role: 'agent', 
-                content: `🚀 **Git Push Exitoso**\nLos cambios han sido subidos correctamente.\n\n\`\`\`\n${data.stdout || 'Sin salida'}\n\`\`\`` 
+            chat.messages.push({
+                role: 'agent',
+                content: `🚀 **Git Push Exitoso**\nLos cambios han sido subidos correctamente.\n\n\`\`\`\n${data.stdout || 'Sin salida'}\n\`\`\``
             });
             gitCommitContainer.classList.add('hidden');
             gitCommitMessageInput.value = '';
         } else {
-            chat.messages.push({ 
-                role: 'agent', 
-                content: `❌ **Error en Git**\nHubo un problema al realizar la operación:\n\n\`\`\`\n${data.error}\n${data.stderr || ''}\n\`\`\`` 
+            chat.messages.push({
+                role: 'agent',
+                content: `❌ **Error en Git**\nHubo un problema al realizar la operación:\n\n\`\`\`\n${data.error}\n${data.stderr || ''}\n\`\`\``
             });
         }
     } catch (e) {
