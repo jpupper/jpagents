@@ -199,7 +199,12 @@ app.get('/api/models', async (req, res) => {
 
 app.post('/api/files/list', async (req, res) => {
     let { folderPath } = req.body;
-    if (!folderPath) folderPath = process.cwd();
+    
+    // Explicitly handle cases where folderPath might not be a string
+    if (typeof folderPath !== 'string' || !folderPath.trim()) {
+        folderPath = process.cwd();
+    }
+    
     folderPath = path.resolve(folderPath);
     
     try {
@@ -211,7 +216,12 @@ app.post('/api/files/list', async (req, res) => {
         }));
         res.json({ files: result, currentPath: folderPath });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error(`[SERVER] Error en /api/files/list [${folderPath}]:`, error);
+        res.status(500).json({ 
+            error: error.message, 
+            code: error.code,
+            path: folderPath
+        });
     }
 });
 

@@ -8,10 +8,10 @@ Este documento detalla el análisis de situación actual y el plan estratégico 
 
 | Paso | Sistema | Estado | Diagnóstico |
 | :--- | :--- | :--- | :--- |
-| **1** | **Estado Centrado en Archivos** | **✅ Completada** | Implementado sistema de historial por pasos (checkpoints) integrado en frontend y backend. |
-| **2** | **Bucle "Code-First" / ReAct** | **🧪 En Ejecución** | Migrando de etiquetas [REPLACE] a ejecución de scripts Node.js para manipulación de archivos dinámica. |
-| **3** | **Integración de MCP** | **No Implementado** | Las herramientas están hardcodeadas en la API. No hay descubrimiento dinámico ni estandarización de interfaces. |
-| **4** | **Aislamiento y Seguridad** | **No Implementado** | Acceso total al sistema operativo vía `child_process`. No hay restricción de directorio (Jail) ni entorno controlado. |
+| **1** | **Estado Centrado en Archivos** | **✅ Completada** | Sistema de checkpoints y persistencia de `state.json` operativo. |
+| **2** | **Bucle "Code-First" / ReAct** | **✅ Completada** | El agente ya ejecuta scripts Node.js mediante `/api/execute/node` para manipular archivos. |
+| **3** | **Integración de MCP** | **🛠️ Por Iniciar** | Pendiente estandarizar herramientas bajo el protocolo MCP. |
+| **4** | **Aislamiento y Seguridad** | **⏳ Pendiente** | Falta implementar el "Workspace Jail" y ejecución en sandbox. |
 
 ---
 

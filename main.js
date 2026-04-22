@@ -12,9 +12,17 @@ import { marked } from 'marked'
 
     async function sendToServer(type, args) {
         try {
-            const messages = Array.from(args).map(arg => 
-                typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-            );
+            const messages = Array.from(args).map(arg => {
+                if (arg instanceof Error) {
+                    return JSON.stringify({
+                        name: arg.name,
+                        message: arg.message,
+                        stack: arg.stack,
+                        code: arg.code
+                    }, null, 2);
+                }
+                return typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg);
+            });
 
             await fetch(`${API_BASE}/utils/client-logs`, {
                 method: 'POST',
@@ -113,7 +121,13 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
             
             // Transient errors (5xx) or Rate limits (429) trigger a retry
             if (!noRetry && (res.status >= 500 || res.status === 429)) {
-                console.warn(`⚠️ API Transient Error [${res.status}]: ${url}. Reintentando (${i+1}/${retries})...`);
+                let errorDetails = '';
+                try {
+                    const errorJson = await res.clone().json();
+                    errorDetails = errorJson.error || '';
+                } catch (e) {}
+
+                console.warn(`⚠️ API Transient Error [${res.status}]: ${url}. ${errorDetails ? 'Error: ' + errorDetails : ''} Reintentando (${i+1}/${retries})...`);
                 await new Promise(r => setTimeout(r, 1000 * Math.min(i + 1, 5)));
                 continue;
             }
@@ -121,10 +135,17 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
             if (noRetry && res.status >= 500) {
                  console.error(`🔴 API Error: [${res.status}] ${url}. Retries disabled for this request.`);
             } else if (!noRetry) {
-                console.error(`🔴 API Error: [${res.status}] ${url}`, {
+                let errorDetails = '';
+                try {
+                    const errorJson = await res.clone().json();
+                    errorDetails = errorJson.error || '';
+                } catch (e) {}
+
+                console.error(`🔴 API Error: [${res.status}] ${url} ${errorDetails ? '- ' + errorDetails : ''}`, {
                     status: res.status,
                     statusText: res.statusText,
-                    url: url
+                    url: url,
+                    details: errorDetails
                 });
             }
             return res;
@@ -565,11 +586,11 @@ async function createNewProject() {
 async function checkProjectHealth(project) {
     if (!project.folder) return;
     try {
-        const res = await fetch(`${API_BASE}/files/list`, { 
+        const res = await fetchWithLog(`${API_BASE}/files/list`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ folderPath: project.folder }) 
-        });
+        }, 1, true); // No retries for health check
         const data = await res.json();
         project.isCorrupted = !!data.error;
     } catch (e) {

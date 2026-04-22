@@ -1,0 +1,8 @@
+
+/* Estilos para asegurar que el canvas cubra toda la pantalla */
+body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden; /* Evita barras de scroll */
+    background-color: #000000; /* Fondo oscuro para mejor contraste */
+}
