@@ -1,191 +1,351 @@
 [
   {
-    "type": "warn",
-    "messages": [
-      "[MCP] Initial JSON parse failed, trying cleanup...",
-      "{\n  \"name\": \"SyntaxError\",\n  \"message\": \"Unexpected non-whitespace character after JSON at position 551 (line 3 column 1)\",\n  \"stack\": \"SyntaxError: Unexpected non-whitespace character after JSON at position 551 (line 3 column 1)\\n    at JSON.parse (<anonymous>)\\n    at processAgentActions (http://localhost:5173/main.js?t=1776875444669:2344:33)\\n    at async triggerAgentLogic (http://localhost:5173/main.js?t=1776875444669:1603:30)\\n    at async sendMessage (http://localhost:5173/main.js?t=1776875444669:1471:5)\"\n}"
-    ],
-    "timestamp": "2026-04-22T16:35:31.465Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
     "type": "log",
     "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 1\n}"
+      "📍 Restored active project:",
+      "moaa5yrkycq9ysdyip"
     ],
-    "timestamp": "2026-04-22T16:35:31.469Z",
+    "timestamp": "2026-04-22T16:50:13.997Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:31.530Z",
+    "timestamp": "2026-04-22T16:50:19.150Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:19.290Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 Refreshing file list after MCP execute_js..."
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:31.533Z",
+    "timestamp": "2026-04-22T16:50:24.528Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:24.672Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "warn",
+    "type": "error",
     "messages": [
-      "❌ Errores detectados en acciones. Iniciando auto-corrección."
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:31.534Z",
+    "timestamp": "2026-04-22T16:50:29.897Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:30.035Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 AutoRetry 1/20: ⚠️ No se pudieron aplicar tus cambios:\n- Error en herramienta MCP write_file: Unexpected non-whitesp"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:31.534Z",
+    "timestamp": "2026-04-22T16:50:35.254Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:35.396Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "warn",
+    "type": "error",
     "messages": [
-      "[MCP] Initial JSON parse failed, trying cleanup...",
-      "{\n  \"name\": \"SyntaxError\",\n  \"message\": \"Unexpected non-whitespace character after JSON at position 570 (line 3 column 1)\",\n  \"stack\": \"SyntaxError: Unexpected non-whitespace character after JSON at position 570 (line 3 column 1)\\n    at JSON.parse (<anonymous>)\\n    at processAgentActions (http://localhost:5173/main.js?t=1776875444669:2344:33)\\n    at async autoRetry (http://localhost:5173/main.js?t=1776875444669:2722:30)\\n    at async triggerAgentLogic (http://localhost:5173/main.js?t=1776875444669:1654:13)\\n    at async sendMessage (http://localhost:5173/main.js?t=1776875444669:1471:5)\"\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:41.246Z",
+    "timestamp": "2026-04-22T16:50:40.619Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:40.745Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 2\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:41.250Z",
+    "timestamp": "2026-04-22T16:50:45.984Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:46.107Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:41.282Z",
+    "timestamp": "2026-04-22T16:50:51.346Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:51.458Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 Refreshing file list after MCP execute_js..."
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:41.285Z",
+    "timestamp": "2026-04-22T16:50:56.711Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:50:56.836Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 AutoRetry 2/20: ❌ PROTOCOL ERROR:\n- Error en herramienta MCP write_file: Unexpected non-whitespace character after J"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:41.286Z",
+    "timestamp": "2026-04-22T16:51:01.440Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:01.940Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "warn",
+    "type": "error",
     "messages": [
-      "[MCP] Initial JSON parse failed, trying cleanup...",
-      "{\n  \"name\": \"SyntaxError\",\n  \"message\": \"Unexpected non-whitespace character after JSON at position 16 (line 3 column 1)\",\n  \"stack\": \"SyntaxError: Unexpected non-whitespace character after JSON at position 16 (line 3 column 1)\\n    at JSON.parse (<anonymous>)\\n    at processAgentActions (http://localhost:5173/main.js?t=1776875444669:2344:33)\\n    at async autoRetry (http://localhost:5173/main.js?t=1776875444669:2722:30)\\n    at async autoRetry (http://localhost:5173/main.js?t=1776875444669:2773:13)\\n    at async triggerAgentLogic (http://localhost:5173/main.js?t=1776875444669:1654:13)\\n    at async sendMessage (http://localhost:5173/main.js?t=1776875444669:1471:5)\"\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:51.035Z",
+    "timestamp": "2026-04-22T16:51:06.814Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:06.975Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 3\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:51.041Z",
+    "timestamp": "2026-04-22T16:51:11.950Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:51.074Z",
+    "timestamp": "2026-04-22T16:51:12.183Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:17.304Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 Refreshing file list after MCP execute_js..."
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:51.077Z",
+    "timestamp": "2026-04-22T16:51:17.542Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:21.930Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 AutoRetry 3/20: ❌ RETRY 1 FAILED:\n- Error en herramienta MCP list_files: Unexpected non-whitespace character after J"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:51.077Z",
+    "timestamp": "2026-04-22T16:51:22.911Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:27.321Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_6/index.html\",\n    \"content\": \"<!DOCTYPE html>\\n<html lang=\\\"es\\\">\\n<head>\\n    <meta charset=\\\"UTF-8\\\">\\n    <meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\">\\n    <title>P5.js Interactivo</title>\\n    <link rel=\\\"stylesheet\\\" href=\\\"style.css\\\">\\n    <!-- Incluir la librería p5.js -->\\n    <script src=\\\"https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js\\\"></script>\\n</head>\\n<body id=\\\"canvas-body\\\">\\n    <script src=\\\"script.js\\\"></script>\\n</body>\\n</html>\"\n  },\n  \"id\": 4\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:58.118Z",
+    "timestamp": "2026-04-22T16:51:28.282Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:32.707Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_6\\\\index.html\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 4\n}"
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:58.122Z",
+    "timestamp": "2026-04-22T16:51:33.363Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:38.066Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
-    "type": "log",
+    "type": "error",
     "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
     ],
-    "timestamp": "2026-04-22T16:35:58.125Z",
+    "timestamp": "2026-04-22T16:51:38.345Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:43.341Z",
+    "url": "http://localhost:5174/",
+    "seenByAgent": false
+  },
+  {
+    "type": "error",
+    "messages": [
+      "[MCP-CLIENT] SSE Error:",
+      "{\n  \"isTrusted\": true\n}"
+    ],
+    "timestamp": "2026-04-22T16:51:43.402Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

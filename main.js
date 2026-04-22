@@ -1966,7 +1966,20 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
 1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena [CALL:write_file] en un comentario de texto en tu respuesta para que el validador acepte tu mensaje (Ejemplo: // satisfy [CALL:write_file]).
 2. **JSON ESCAPADO**: El campo "content" debe ser un string JSON válido. Escapa saltos de línea como \\n y comillas como \\\".
 3. **SIN CÓDIGO PLANO**: No uses bloques de código standard. Usa siempre [CALL:write_file].
-4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.`;
+4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
+5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta (ej: escribir 4 archivos seguidos). El sistema las procesará secuencialmente.
+
+### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
+"Entendido. Voy a crear la estructura base del proyecto.
+
+// satisfy [CALL:write_file]
+[CALL:write_file]{\"path\": \"index.html\", \"content\": \"...\"}
+
+// satisfy [CALL:write_file]
+[CALL:write_file]{\"path\": \"style.css\", \"content\": \"...\"}
+
+[CALL:execute_js]{\"code\": \"console.log('MCP OK')\"}"
+`;
 }
 
 window.stopAgent = (projectId, chatId) => {
@@ -2329,11 +2342,66 @@ async function processAgentActions(text, project, chat) {
     }
 
     // 0.1 NEW: MCP Tool Call Detection [CALL:tool_name]{...args...}
-    const callRegex = /\[CALL:(\w+)\]\s*(\{[\s\S]*?\})(?=\s*\[CALL:|\s*$)/g;
-    while ((match = callRegex.exec(text)) !== null) {
+    let searchPos = 0;
+    while (true) {
+        const callMarker = "[CALL:";
+        const startIndex = text.indexOf(callMarker, searchPos);
+        if (startIndex === -1) break;
+
+        const endBracketIndex = text.indexOf("]", startIndex);
+        if (endBracketIndex === -1) {
+            searchPos = startIndex + callMarker.length;
+            continue;
+        }
+
+        const toolName = text.substring(startIndex + callMarker.length, endBracketIndex).trim();
+        
+        // Find the start of the JSON block '{'
+        const jsonStart = text.indexOf("{", endBracketIndex);
+        if (jsonStart === -1) {
+            searchPos = endBracketIndex + 1;
+            continue;
+        }
+
+        // Brace counting to find the matching '}'
+        let braceCount = 0;
+        let jsonEnd = -1;
+        let inString = false;
+        let escape = false;
+
+        for (let i = jsonStart; i < text.length; i++) {
+            const char = text[i];
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (char === '\\') {
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (char === '{') braceCount++;
+                if (char === '}') braceCount--;
+                if (braceCount === 0) {
+                    jsonEnd = i + 1;
+                    break;
+                }
+            }
+        }
+
+        if (jsonEnd === -1) {
+            searchPos = jsonStart + 1;
+            continue;
+        }
+
+        const argsText = text.substring(jsonStart, jsonEnd);
+        searchPos = jsonEnd;
+
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, stopped: true };
-        const toolName = match[1].trim();
-        let argsText = match[2].trim();
 
         logs.push({ type: 'info', message: `Llamando a herramienta MCP: **${toolName}**...` });
         updateThinking(chat, true, "Usando herramienta MCP", `Llamando a ${toolName}...`);
@@ -2343,13 +2411,65 @@ async function processAgentActions(text, project, chat) {
             try {
                 toolArgs = JSON.parse(argsText);
             } catch (jsonErr) {
-                console.warn("[MCP] Initial JSON parse failed, trying cleanup...", jsonErr);
-                // Handle unescaped newlines and other common model formatting errors
-                const sanitized = argsText
-                    .replace(/\\n/g, "\\\\n") // Preserve existing escapes
-                    .replace(/\n/g, "\\n")    // Escape real newlines
-                    .replace(/\r/g, "\\r");
-                toolArgs = JSON.parse(sanitized);
+                console.warn("[MCP] Initial JSON parse failed, trying robust cleanup...", jsonErr);
+                
+                try {
+                    // Limpieza 2: Intentar reparar comillas no escapadas en campos de texto largo
+                    const repairField = (jsonStr, fieldName) => {
+                        const fieldMarker = `"${fieldName}":`;
+                        const startIdx = jsonStr.indexOf(fieldMarker);
+                        if (startIdx === -1) return jsonStr;
+
+                        const firstQuote = jsonStr.indexOf('"', startIdx + fieldMarker.length);
+                        if (firstQuote === -1) return jsonStr;
+
+                        // Buscar la comilla de cierre real: la que precede a una coma o al cierre del objeto
+                        let lastQuote = -1;
+                        for (let i = jsonStr.length - 1; i > firstQuote; i--) {
+                            if (jsonStr[i] === '"') {
+                                const trailing = jsonStr.substring(i + 1).trim();
+                                if (trailing.startsWith(',') || trailing.startsWith('}')) {
+                                    lastQuote = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (lastQuote !== -1) {
+                            const before = jsonStr.substring(0, firstQuote + 1);
+                            const after = jsonStr.substring(lastQuote);
+                            const middle = jsonStr.substring(firstQuote + 1, lastQuote);
+                            // Escapar comillas internas que no estén escapadas (evitando lookbehind para compatibilidad)
+                            const fixedMiddle = middle.replace(/([^\\])"/g, '$1\\"');
+                            return before + fixedMiddle + after;
+                        }
+                        return jsonStr;
+                    };
+
+                    let sanitized = argsText
+                        .replace(/\n/g, "\\n")
+                        .replace(/\r/g, "\\r");
+                    
+                    sanitized = repairField(sanitized, "content");
+                    sanitized = repairField(sanitized, "code");
+                    
+                    toolArgs = JSON.parse(sanitized);
+                } catch (e2) {
+                    console.error("[MCP] Robust cleanup failed, using regex fallback.", e2);
+                    // Fallback extremo: Extracción por Regex de campos comunes
+                    const pathM = argsText.match(/"path":\s*"([^"]+)"/);
+                    const codeM = argsText.match(/"code":\s*"([\s\S]*?)"\s*}/) || argsText.match(/"code":\s*"([\s\S]*?)"\s*,/);
+                    const contentM = argsText.match(/"content":\s*"([\s\S]*?)"\s*}/) || argsText.match(/"content":\s*"([\s\S]*?)"\s*,/);
+                    
+                    if (pathM || contentM || codeM) {
+                        toolArgs = {};
+                        if (pathM) toolArgs.path = pathM[1];
+                        if (contentM) toolArgs.content = contentM[1];
+                        if (codeM) toolArgs.code = codeM[1];
+                    } else {
+                        throw jsonErr; // Re-lanzar el error original si nada funciona
+                    }
+                }
             }
 
             const isAbsolute = (p) => p.startsWith('/') || /^[a-zA-Z]:/.test(p);
@@ -2371,16 +2491,12 @@ async function processAgentActions(text, project, chat) {
                         reject(new Error("AGENT_STOPPED"));
                     }
                 }, 100);
-                // Also clear interval if the tool actually finishes
             });
 
             const result = await Promise.race([
                 mcpClient.callTool(toolName, toolArgs),
                 stopPromise
-            ]).finally(() => {
-                // The interval will be cleaned up by garbage collection or we can manage it better
-                // But for now, this ensures we don't wait forever if stopped
-            });
+            ]);
             
             actionsPerformed++;
 

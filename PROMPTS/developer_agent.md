@@ -24,9 +24,15 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
 2. **JSON ESCAPADO**: El campo "content" debe ser un string JSON válido. Escapa saltos de línea como `\n` y comillas como `\"`.
 3. **SIN CÓDIGO PLANO**: No uses bloques de código ```javascript ... ``` estándar. Usa siempre `[CALL:write_file]`.
 4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
+5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta (ej: escribir 4 archivos seguidos). El sistema las procesará secuencialmente.
 
-### 📖 EJEMPLO DE RESPUESTA:
-"Entendido. Voy a crear el archivo index.html.
+### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
+"Entendido. Voy a crear la estructura base del proyecto.
+
 // satisfy [CALL:write_file]
-[CALL:write_file]{"path": "index.html", "content": "<!DOCTYPE html>\n<html>\n<head>\n<title>Hola</title>\n</head>\n<body>\n<h1>Hola Mundo</h1>\n</body>\n</html>"}
+[CALL:write_file]{"path": "index.html", "content": "..."}
+
+// satisfy [CALL:write_file]
+[CALL:write_file]{"path": "style.css", "content": "..."}
+
 [CALL:execute_js]{"code": "console.log('MCP OK')"}"
