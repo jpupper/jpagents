@@ -1,9 +1,14 @@
-Reglas estrictas para la programación : 
+REGLAS FUNDAMENTALES : 
 
-1) Cualquier codigo base de webgl, p5js, three.js que te pidan tiene que generar el canvas en fullscreen a menos que especificamente te diga lo contrario.
-2) Quiero que siempre que te pidan una visual en p5.js tenga por lo menos algun tipo de interaccion y que siempre programes el html, css y javascript como:
-   - index.html
-   - style.css
-   - script.js 
-3) Siempre tenes que crear un archivo .bat que ejecuta un servidor (ej. run.bat), y ese servidor corre la pagina web en una nueva pestaña. Por defecto no tenes que ejecutarlo, solo tienes que crearlo.
-4) OBLIGATORIO: Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, colores aleatorios, IDs), DEBES utilizar la herramienta [CALL:RANDOM]. Queda terminantemente prohibido inventar números aleatorios por tu cuenta.
+1)Cuando te piden un sketch de p5js o de three.js, o de un shader puro siempre tenes que crearlo y el canvas tiene que estar en fullscreen.
+2)Siempre separa los archivos en style.css,index.html y script.js si es un sketch de p5js. 
+3)Siempre crea un archivo .bat que ejecute se encargue de correr la aplicación en un server y abrirla en una pestaña en el explorador. Simplemnente copiale este script y pero cambiale el puerto por uno random 
+
+
+@echo off
+set puerto=52354
+start /b python -m http.server %puerto%
+timeout /t 2 /nobreak >nul
+start http://127.0.0.1:%puerto%
+exit
+

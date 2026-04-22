@@ -129,22 +129,19 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     
     // Ensure statements are separated by semicolons
     const psCommand = `
-        Add-Type -AssemblyName System.Windows.Forms;
-        $f = New-Object System.Windows.Forms.Form;
-        $f.TopMost = $true;
-        $f.Opacity = 0;
-        $f.Show();
-        $f.Activate();
+        Add-Type -AssemblyName System.Windows.Forms | Out-Null;
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog;
         $dialog.Description = "Selecciona la carpeta raíz de tu proyecto";
-        $defaultPath = "D:\Programacion\jpagents\proyects";
+        $defaultPath = "D:/Programacion/jpagents/proyects";
         if (Test-Path $defaultPath) { $dialog.SelectedPath = $defaultPath };
         $dialog.ShowNewFolderButton = $true;
-        $result = $dialog.ShowDialog($f);
-        if ($result -eq "OK") {
+        $form = New-Object System.Windows.Forms.Form;
+        $form.TopMost = $true;
+        $result = $dialog.ShowDialog($form);
+        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
             $dialog.SelectedPath
         }
-        $f.Close();
+        $form.Dispose();
     `.trim(); 
 
     const args = [

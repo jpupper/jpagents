@@ -160,17 +160,25 @@ app.get("/sse", async (req, res) => {
     console.log(`[MCP] Server connected to transport for session ${sessionId}`);
 
     heartbeat = setInterval(() => {
-      res.write(': heartbeat\n\n');
+      try {
+        res.write(': heartbeat\n\n');
+      } catch (err) {
+        console.error(`[MCP] Heartbeat failed for session ${sessionId}:`, err.message);
+        clearInterval(heartbeat);
+      }
     }, 15000);
 
     req.on("close", async () => {
-      console.log(`[MCP] Session ${sessionId} closed`);
+      console.log(`\x1b[31m[MCP] Session ${sessionId} closed by client\x1b[0m`);
       clearInterval(heartbeat);
-      transports.delete(sessionId);
-      await server.close();
+      if (transports.has(sessionId)) {
+        transports.delete(sessionId);
+        await server.close();
+      }
     });
   } catch (error) {
-    console.error(`[MCP] Session ${sessionId} error:`, error);
+    console.error(`\x1b[31m[MCP] Session ${sessionId} startup error:\x1b[0m`, error);
+    clearInterval(heartbeat);
     transports.delete(sessionId);
   }
 });

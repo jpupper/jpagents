@@ -286,6 +286,27 @@ select:hover, input[type="text"]:focus {
   border-color: var(--accent-color);
 }
 
+.btn-icon-sidebar {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.btn-icon-sidebar:hover {
+  background: var(--border-color);
+  border-color: var(--accent-color);
+  transform: translateY(-2px);
+}
+
 .btn-run {
   background: var(--card-bg);
   border: 1px solid var(--border-color);

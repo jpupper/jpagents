@@ -158,7 +158,11 @@ class MCPClient {
     }
 
     async connect() {
-        if (this.eventSource) this.eventSource.close();
+        if (this.eventSource) {
+            this.eventSource.close();
+            this.eventSource = null;
+        }
+        this.messageEndpoint = null; // Clear old endpoint
 
         return new Promise((resolve, reject) => {
             console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
@@ -168,11 +172,10 @@ class MCPClient {
                 this.log('connect', 'received', 'SSE connection opened');
             };
 
-            // Some versions of MCP SDK might send the endpoint as a named event
             this.eventSource.addEventListener('endpoint', (event) => {
                 this.log('endpoint-event', 'received', event.data);
                 try {
-                    const data = { endpoint: event.data }; // Wrap it to match our handler logic
+                    const data = { endpoint: event.data };
                     this.handleSSEMessage(data, resolve);
                 } catch (e) {
                     console.error("Error handling endpoint event:", e);
@@ -203,7 +206,6 @@ class MCPClient {
     handleSSEMessage(data, resolve) {
         this.log('message', 'received', data);
 
-        // Discover endpoint
         if (data.endpoint) {
             this.messageEndpoint = `${this.baseUrl}${data.endpoint}`;
             console.log("[MCP-CLIENT] Message endpoint discovered:", this.messageEndpoint);
@@ -219,7 +221,6 @@ class MCPClient {
             return;
         }
 
-        // Handle JSON-RPC responses
         if (data.id !== undefined && this.pendingRequests.has(data.id)) {
             const { resolve, reject } = this.pendingRequests.get(data.id);
             this.pendingRequests.delete(data.id);
@@ -232,7 +233,7 @@ class MCPClient {
         }
     }
 
-    async callTool(name, args) {
+    async callTool(name, args, isRetry = false) {
         if (!this.messageEndpoint) {
             await this.connect();
         }
@@ -261,14 +262,29 @@ class MCPClient {
 
                 if (!res.ok) {
                     this.pendingRequests.delete(id);
+                    
+                    if (res.status === 404 && !isRetry) {
+                        console.warn(`[MCP-CLIENT] Session expired (404). Attempting to reconnect and retry...`);
+                        this.log('warn', 'received', 'Session expired (404), reconnecting...');
+                        try {
+                            await this.connect();
+                            // Retry the tool call once
+                            const retryResult = await this.callTool(name, args, true);
+                            resolve(retryResult);
+                            return;
+                        } catch (reconnectErr) {
+                            reject(new Error(`MCP Reconnection failed: ${reconnectErr.message}`));
+                            return;
+                        }
+                    }
+
                     const errorText = await res.text();
                     this.log('error', 'received', `Transport Error: ${res.status} ${errorText}`);
                     reject(new Error(`MCP Transport Error (${res.status}): ${errorText}`));
                     return;
                 }
 
-                // We DON'T resolve here. We wait for the SSE message.
-                // But we set a timeout just in case
+                // Wait for the SSE response
                 setTimeout(() => {
                     if (this.pendingRequests.has(id)) {
                         this.pendingRequests.delete(id);
@@ -284,6 +300,7 @@ class MCPClient {
             }
         });
     }
+
 }
 
 const mcpClient = new MCPClient('http://127.0.0.1:2998');
@@ -509,6 +526,7 @@ const sendBtn = document.getElementById('send-btn');
 const modelSelect = document.getElementById('model-select');
 const folderPathInput = document.getElementById('folder-path');
 const scanFolderBtn = document.getElementById('scan-folder');
+const scanFolderSidebarBtn = document.getElementById('scan-folder-sidebar');
 const fileList = document.getElementById('file-list');
 const newChatBtn = document.getElementById('new-chat');
 
@@ -3181,7 +3199,8 @@ window.openFile = async (path) => {
 };
 
 async function nativePickFolder() {
-    scanFolderBtn.innerHTML = '⏳';
+    const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
+    btns.forEach(b => b.innerHTML = '⏳');
     try {
         // No retries for folder picking, if it fails, it fails (user can click again)
         const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`, {}, 1, true);
@@ -3198,7 +3217,9 @@ async function nativePickFolder() {
     } catch (e) {
         console.error("Exception in nativePickFolder:", e);
     }
-    finally { scanFolderBtn.innerHTML = '📁'; }
+    finally { 
+        btns.forEach(b => b.innerHTML = '📁');
+    }
 }
 
 function setupEventListeners() {
@@ -3275,6 +3296,7 @@ function setupEventListeners() {
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
+    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value);
     newChatBtn.onclick = createNewProject;
     modelSelect.onchange = (e) => {

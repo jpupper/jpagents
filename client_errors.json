@@ -4,9 +4,9 @@
     "messages": [
       "%c[MCP] SENT tool:",
       "color: #3b82f6",
-      "{\n  \"name\": \"read_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_3_3/script.js\"\n  },\n  \"id\": 6\n}"
+      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_4_8/script.js\",\n    \"content\": \"// Estructura de un sistema simple de partículas que reacciona al mouse (MULTICOLOR Y GRANDE)\\nlet particles = [];\\n\\n// Clase Particle\\nclass Particle {\\n    constructor(x, y) {\\n        this.position = createVector(x, y);\\n        this.velocity = createVector(random(-1, 1), random(-1, 1));\\n        this.acceleration = createVector(0, 0);\\n        this.lifespan = 255;\\n    }\\n\\n    applyForce(force) {\\n        this.acceleration.add(force); // Añadir la fuerza al aceleración\\n    }\\n\\n    update() {\\n        this.velocity.add(this.acceleration);\\n        this.position.add(this.velocity);\\n        this.acceleration.mult(0); // Resetear aceleración\\n        this.lifespan -= 3; // Decrementar vida\\n    }\\n\\n    display() {\\n        // MODIFICACIÓN: Multicolor y más grande\\n        // Usar un color RGB aleatorio con transparencia basada en la vida.\\n        stroke(random(255), random(255), random(255), this.lifespan);\\n        // Aumentar grosor dinámicamente (entre 3 y 5)\\n        strokeWeight(3 + random(2)); \\n        point(this.position.x, this.position.y);\\n    }\\n}\\n\\nfunction setup() {\\n    // p5.js se inicializa automáticamente con el canvas en el body\\n    createCanvas(windowWidth, windowHeight);\\n    background(26, 26, 46); // Fondo oscuro inicial\\n    \\n    // Inicializar partículas en el centro\\n    for(let i = 0; i < 10; i++) {\\n        particles.push(new Particle(random(width), random(height)));\\n    }\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para efecto de estela\\n    background(26, 26, 46, 50); \\n    \\n    // 1. Actualizar y dibujar partículas existentes\\n    for (let i = particles.length - 1; i >= 0; i--) {\\n        let p = particles[i];\\n        p.update();\\n        p.display();\\n        \\n        // Eliminar si la vida es menor a cero\\n        if (p.lifespan < 0) {\\n            particles.splice(i, 1);\\n        }\\n    }\\n    \\n    // 2. Interacción con el ratón: Añadir nuevas partículas en la posición del ratón\\n    // Se mantiene la lógica de creación basada en el ratón.\\n    if (frameCount % 2 === 0) {\\n        particles.push(new Particle(mouseX, mouseY));\\n    }\\n}\\n\\n// Función de interacción para redimensionar el lienzo\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    background(26, 26, 46);\\n}\\n\\n/*\\nIMPORTANTE: Para que este sketch funcione, debes ejecutar el .bat generado \\nque servirá como servidor web y abrirá el navegador en la dirección correcta.\\n*/\"\n  },\n  \"id\": 47\n}"
     ],
-    "timestamp": "2026-04-22T17:37:29.541Z",
+    "timestamp": "2026-04-22T19:05:34.227Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -15,40 +15,9 @@
     "messages": [
       "%c[MCP] RECEIVED message:",
       "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"// Sketch de p5.js interactivo\\n\\nlet lastX = 0;\\nlet lastY = 0;\\n\\nfunction setup() {\\n    // Configura el canvas para que ocupe toda la ventana (fullscreen)\\n    createCanvas(windowWidth, windowHeight);\\n    background(10, 10, 30);\\n    // Inicializa las posiciones anteriores con las actuales\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para crear un efecto de estela\\n    background(10, 10, 30, 40); \\n\\n    // Calcular la distancia recorrida desde el último frame\\n    let dx = mouseX - lastX;\\n    let dy = mouseY - lastY;\\n    let distance = dist(lastX, lastY, mouseX, mouseY);\\n\\n    // 1. Dibujar un círculo que sigue al ratón\\n    // El tamaño y el color dependen de la velocidad de movimiento\\n    let circleSize = map(distance, 0, 50, 5, 50); // Tamaño entre 5px y 50px\\n    let alphaValue = map(distance, 0, 50, 200, 255); // Opacidad\\n    \\n    // Color que cambia ligeramente con el tiempo (usando la función sin para un cambio suave)\\n    let r = (sin(frameCount * 0.05) * 127 + 127) % 255;\\n    let g = (cos(frameCount * 0.05) * 127 + 127) % 255;\\n    let b = (frameCount * 0.5) % 255;\\n    \\n    noStroke();\\n    fill(r, g, b, alphaValue);\\n    ellipse(mouseX, mouseY, circleSize, circleSize);\\n    \\n    // 2. Dejar un rastro más tenue donde estuvo el ratón en el frame anterior\\n    fill(0, 100, 200, 50); // Color azul oscuro y transparente\\n    ellipse(lastX, lastY, 10, 10);\\n\\n    // Actualizar las posiciones anteriores para el próximo frame\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\n// Asegurar que el canvas se redimensiona al cambiar el tamaño de la ventana\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    background(10, 10, 30);\\n}\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 6\n}"
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_4_8\\\\script.js\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 47\n}"
     ],
-    "timestamp": "2026-04-22T17:37:29.544Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 AutoRetry 1/20: Continuando tras lectura..."
-    ],
-    "timestamp": "2026-04-22T17:37:29.549Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_3_3/script.js\",\n    \"content\": \"// Sketch de p5.js interactivo\\n\\nlet lastX = 0;\\nlet lastY = 0;\\n// Variable global para el color de fondo (R, G, B)\\nconst GLOBAL_BG_COLOR = [10, 10, 30];\\n\\nfunction setup() {\\n    // Configura el canvas para que ocupe toda la ventana (fullscreen)\\n    createCanvas(windowWidth, windowHeight);\\n    // Uso de la variable global\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2]);\\n    // Inicializa las posiciones anteriores con las actuales\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para crear un efecto de estela\\n    // Usamos los componentes globales y mantenemos el alpha de 40\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2], 40); \\n\\n    // Calcular la distancia recorrida desde el último frame\\n    let dx = mouseX - lastX;\\n    let dy = mouseY - lastY;\\n    let distance = dist(lastX, lastY, mouseX, mouseY);\\n\\n    // 1. Dibujar un círculo que sigue al ratón\\n    // El tamaño y el color dependen de la velocidad de movimiento\\n    let circleSize = map(distance, 0, 50, 5, 50); // Tamaño entre 5px y 50px\\n    let alphaValue = map(distance, 0, 50, 200, 255); // Opacidad\\n    \\n    // Color que cambia ligeramente con el tiempo (usando la función sin para un cambio suave)\\n    let r = (sin(frameCount * 0.05) * 127 + 127) % 255;\\n    let g = (cos(frameCount * 0.05) * 127 + 127) % 255;\\n    let b = (frameCount * 0.5) % 255;\\n    \\n    noStroke();\\n    fill(r, g, b, alphaValue);\\n    ellipse(mouseX, mouseY, circleSize, circleSize);\\n    \\n    // 2. Dejar un rastro más tenue donde estuvo el ratón en el frame anterior\\n    fill(0, 100, 200, 50); // Color azul oscuro y transparente\\n    ellipse(lastX, lastY, 10, 10);\\n\\n    // Actualizar las posiciones anteriores para el próximo frame\\n    lastX = mouseX;\\n    lastY = mouseY;\\n}\\n\\n// Asegurar que el canvas se redimensiona al cambiar el tamaño de la ventana\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    // Uso de la variable global\\n    background(GLOBAL_BG_COLOR[0], GLOBAL_BG_COLOR[1], GLOBAL_BG_COLOR[2]);\\n}\\n\"\n  },\n  \"id\": 7\n}"
-    ],
-    "timestamp": "2026-04-22T17:37:41.145Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_3_3\\\\script.js\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7\n}"
-    ],
-    "timestamp": "2026-04-22T17:37:41.150Z",
+    "timestamp": "2026-04-22T19:05:34.231Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -57,56 +26,7 @@
     "messages": [
       "🔄 Refreshing file list after MCP write_file..."
     ],
-    "timestamp": "2026-04-22T17:37:41.153Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 8\n}"
-    ],
-    "timestamp": "2026-04-22T17:37:41.156Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 8\n}"
-    ],
-    "timestamp": "2026-04-22T17:37:41.196Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP execute_js..."
-    ],
-    "timestamp": "2026-04-22T17:37:41.201Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🚀 Switching to project: mo8c2n14rdjo6x65n1"
-    ],
-    "timestamp": "2026-04-22T17:38:17.008Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "📂 Project has folder, scanning: D:\\Programacion\\jpagents"
-    ],
-    "timestamp": "2026-04-22T17:38:17.010Z",
+    "timestamp": "2026-04-22T19:05:34.237Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }
