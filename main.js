@@ -1296,8 +1296,31 @@ function renderCode(file) {
     }
 }
 
+function getDiffEngine() {
+    return window.JsDiff || window.Diff || (typeof JsDiff !== 'undefined' ? JsDiff : null) || (typeof Diff !== 'undefined' ? Diff : null);
+}
+
+function countLines(str) {
+    if (!str || str.length === 0) return 0;
+    const lines = str.split(/\r?\n/);
+    if (lines.length > 1 && lines[lines.length - 1] === '') return lines.length - 1;
+    return (lines.length === 1 && lines[0] === '') ? 0 : lines.length;
+}
+
 function renderDiff(file, isPending = false) {
-    const changes = isPending ? Diff.diffLines(file.content, file.pendingContent) : file.diff;
+    const engine = getDiffEngine();
+    let changes = null;
+    
+    if (isPending && engine) {
+        changes = engine.diffLines(file.content || "", file.pendingContent || "");
+    } else {
+        changes = file.diff;
+    }
+
+    if (!changes || !Array.isArray(changes)) {
+        renderCode(file);
+        return;
+    }
     let html = '';
     let gutterHtml = '';
     let addedCount = 0;
@@ -1802,7 +1825,6 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                     <span class="stats">
                         <span class="added" title="Agregadas">+${s.added}</span>
                         <span class="removed" title="Eliminadas">-${s.removed}</span>
-                        <span class="unchanged" title="Sin cambios">=${s.unchanged || 0}</span>
                     </span>
                 </div>
             `).join('');
@@ -1821,7 +1843,6 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 if (existing) {
                     existing.added += s.added;
                     existing.removed += s.removed;
-                    existing.unchanged = s.unchanged;
                 } else {
                     chat.sessionChanges.push({...s});
                 }
@@ -2819,21 +2840,40 @@ async function processAgentActions(text, project, chat) {
                 }, 100);
             });
 
-            const result = await Promise.race([
-                mcpClient.callTool(toolName, toolArgs),
-                stopPromise
-            ]);
+            let result;
+            if (toolName === 'write_file' || toolName === 'WRITE') {
+                const fileName = toolArgs.path || toolArgs.fileName;
+                const content = toolArgs.content || toolArgs.code || "";
+                
+                if (!fileName) throw new Error("Falta el parámetro 'path' o 'fileName' para write_file");
+                
+                const writeRes = await performWrite(fileName, content, project, chat);
+                result = { 
+                    content: [{ type: "text", text: writeRes.success ? `Archivo escrito con éxito: ${fileName}` : `Error al escribir: ${writeRes.error}` }]
+                };
+                
+                if (writeRes.success && writeRes.hasChanged) {
+                    if (writeRes.isNew) filesCreated.push(fileName);
+                    else filesModified.push(fileName);
+                    changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
+                }
+            } else {
+                result = await Promise.race([
+                    mcpClient.callTool(toolName, toolArgs),
+                    stopPromise
+                ]);
+            }
 
             actionsPerformed++;
 
             const resultText = result.content.map(c => c.text).join('\n');
 
-            if (toolName === 'read_file') {
-                const fileName = toolArgs.path.split('/').pop();
-                const sanPath = toolArgs.path.replace(/\\/g, '/');
+            if (toolName === 'read_file' || toolName === 'READ') {
+                const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
+                const sanPath = (toolArgs.path || toolArgs.fileName || "").replace(/\\/g, '/');
                 reads.push({ fileName, content: resultText });
                 logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
-                await recordAction(`[MCP:read_file]`, `Read ${fileName}`);
+                await recordAction(`[MCP:${toolName}]`, `Read ${fileName}`);
 
                 // Sync local state if file is open
                 const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
@@ -2841,30 +2881,15 @@ async function processAgentActions(text, project, chat) {
                     openFile.content = resultText;
                     if (project.activeTabId === sanPath) updateViewVisibility();
                 }
-            } else if (toolName === 'write_file') {
-                const fileName = toolArgs.path.split('/').pop();
-                const sanPath = toolArgs.path.replace(/\\/g, '/');
-                const content = toolArgs.content || "";
-
+            } else if (toolName === 'write_file' || toolName === 'WRITE') {
+                const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
                 logs.push({ type: 'success', message: `Escritura MCP exitosa: **${fileName}**` });
-                filesCreated.push(fileName); // Assume new for write_file in MCP context for now, or check exists
-                const outputMsg = `✅ MCP write_file ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
+                
+                const outputMsg = `✅ MCP ${toolName} ejecutado correctamente.`;
                 chat.messages.push({ role: 'system', content: outputMsg });
                 toolOutputs.push({ toolName, result: resultText });
-                await recordAction(`[MCP:write_file]`, `Success`);
-
-                // Sync local state
-                const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
-                if (openFile) {
-                    openFile.content = content;
-                    openFile.pendingContent = null;
-                    // Update diff if we have the old content
-                    if (typeof Diff !== 'undefined') {
-                        // This might be tricky if we don't have the old content here, 
-                        // but we can at least update the text.
-                    }
-                    if (project.activeTabId === sanPath) updateViewVisibility();
-                }
+                await recordAction(`[MCP:${toolName}]`, `Success`);
+                // performWrite already handled the local state sync and diffs
             } else if (toolName === 'execute_js') {
                 logs.push({ type: 'success', message: `Ejecución MCP exitosa: **${toolName}**` });
                 const outputMsg = `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
@@ -2896,84 +2921,8 @@ async function processAgentActions(text, project, chat) {
         }
     }
 
-    // 1.0 Handle [CALL:tool_name]{"args"} format (STRICT MCP)
-    // We use a more robust extraction for JSON blocks that might contain braces
-    const callRegexHead = /\[CALL:(.+?)\]\s*\{/g;
-    while ((match = callRegexHead.exec(text)) !== null) {
-        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, toolOutputs, stopped: true };
-        const toolName = match[1].trim();
-        const startIndex = match.index + match[0].length - 1; // Position of the opening '{'
-        
-        // Find the matching closing brace
-        let braceCount = 0;
-        let foundEnd = false;
-        let argsStr = "";
-        
-        for (let i = startIndex; i < text.length; i++) {
-            if (text[i] === '{') braceCount++;
-            if (text[i] === '}') braceCount--;
-            if (braceCount === 0) {
-                argsStr = text.substring(startIndex, i + 1);
-                foundEnd = true;
-                callRegexHead.lastIndex = i + 1; // Advance regex pointer
-                break;
-            }
-        }
+    // 1.1 Legacy READ/WRITE tags and other handlers below...
 
-        if (!foundEnd) {
-            errors.push(`- Error: No se encontró el cierre de JSON para [CALL:${toolName}]`);
-            continue;
-        }
-        
-        let args;
-        try {
-            args = JSON.parse(argsStr);
-        } catch (e) {
-            errors.push(`- Error de formato JSON en [CALL:${toolName}]: ${e.message}`);
-            continue;
-        }
-
-        if (toolName === 'write_file' || toolName === 'WRITE') {
-            const fileName = args.path || args.fileName;
-            const content = args.content;
-            if (fileName && content !== undefined) {
-                logs.push({ type: 'info', message: `Escritura MCP: **${fileName}**` });
-                const writeRes = await performWrite(fileName, content, project, chat);
-                if (writeRes && writeRes.success) {
-                    actionsPerformed++;
-                    if (writeRes.hasChanged) {
-                        if (writeRes.isNew) filesCreated.push(fileName);
-                        else filesModified.push(fileName);
-                        changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
-                    }
-                }
-            }
-        } else if (toolName === 'read_file' || toolName === 'READ') {
-            const fileName = args.path || args.fileName;
-            if (fileName) {
-                try {
-                    const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: pathJoin(project.folder, fileName).replace(/\\/g, '/') }) });
-                    const data = await res.json();
-                    if (data.content !== undefined) {
-                        reads.push({ fileName, content: data.content });
-                        logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
-                    }
-                } catch (e) { }
-            }
-        } else if (toolName === 'execute_js') {
-            const code = args.code;
-            if (code) {
-                try {
-                    const res = await fetchWithLog(`${API_BASE}/execute/node`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, cwd: project.folder }) });
-                    const data = await res.json();
-                    if (data.success) {
-                        actionsPerformed++;
-                        chat.messages.push({ role: 'system', content: `✅ JS Output:\n\`\`\`\n${data.stdout}\n\`\`\`` });
-                    }
-                } catch (e) { }
-            }
-        }
-    }
 
     // 1. Handle Reads (Legacy)
     const readRegex = /\[READ:(.*?)\]/g;
@@ -3067,7 +3016,7 @@ async function processAgentActions(text, project, chat) {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
                 if (writeRes.isNew) filesCreated.push(fileName);
                 else filesModified.push(fileName);
-                changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount, unchanged: writeRes.unchangedCount });
+                changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
                 await recordAction(`[WRITE:${fileName}]`, `Successfully wrote ${fileName}.`);
             }
         } else {
@@ -3161,7 +3110,7 @@ async function processAgentActions(text, project, chat) {
                     logs.push({ type: 'success', message: `Cambios aplicados (${successCount}/${blocksFound} bloques) en **${fileName}**` });
                     if (writeRes.isNew) filesCreated.push(fileName);
                     else filesModified.push(fileName);
-                    changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount, unchanged: writeRes.unchangedCount });
+                    changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
                     await recordAction(`[REPLACE:${fileName}]`, `Successfully updated ${successCount}/${blocksFound} blocks.`);
                 }
             } else {
@@ -3194,7 +3143,19 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: "No se detectaron acciones de herramientas en esta respuesta." });
     }
 
-    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified, changeStats };
+    // Deduplicate changeStats by fileName (summing added/removed if same file appears multiple times)
+    const uniqueStats = [];
+    changeStats.forEach(s => {
+        const existing = uniqueStats.find(u => u.fileName === s.fileName);
+        if (existing) {
+            existing.added += s.added;
+            existing.removed += s.removed;
+        } else {
+            uniqueStats.push({ ...s });
+        }
+    });
+
+    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified, changeStats: uniqueStats };
 }
 
 
@@ -3219,7 +3180,6 @@ function renderSessionSummary(changeStats, project) {
                 <div class="stats">
                     <span class="added" title="Líneas agregadas">+${s.added}</span>
                     <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
-                    <span class="unchanged" title="Líneas sin cambios">=${s.unchanged || 0}</span>
                 </div>
                 <span class="file-name">${s.fileName}</span>
                 <span class="file-path">${fullPath}</span>
@@ -3378,7 +3338,6 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                     <span class="stats">
                         <span class="added" title="Agregadas">+${s.added}</span>
                         <span class="removed" title="Eliminadas">-${s.removed}</span>
-                        <span class="unchanged" title="Sin cambios">=${s.unchanged || 0}</span>
                     </span>
                 </div>
             `).join('');
@@ -3396,7 +3355,6 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                 if (existing) {
                     existing.added += s.added;
                     existing.removed += s.removed;
-                    existing.unchanged = s.unchanged;
                 } else {
                     chat.sessionChanges.push({...s});
                 }
@@ -3453,28 +3411,31 @@ async function performWrite(fileName, content, project, chat) {
     const filePath = pathJoin(project.folder, fileName);
     const sanPath = filePath.replace(/\\/g, '/');
 
-    // Read old stats for verification
-    let oldStats = { mtime: null, size: 0 };
+    let oldContent = "";
     let isNew = true;
+    let oldStats = { mtime: null, size: 0 };
+
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/read`, {
+        const res = await fetch(`${API_BASE}/files/read`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath: sanPath })
         });
-        const data = await res.json();
-        if (data.content !== undefined) {
-            oldStats = { mtime: data.mtime, size: data.size, content: data.content || "" };
-            isNew = false;
+        
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.mtime !== null && data.mtime !== undefined) {
+                oldContent = data.content || "";
+                oldStats = { mtime: data.mtime, size: data.size, content: oldContent };
+                isNew = false;
+            }
         }
-    } catch (e) { }
+    } catch (e) {
+        console.warn("Read before write failed:", e);
+    }
 
-    const oldContent = oldStats.content || "";
-
-    // Use passed chat or fallback
     const targetChat = chat || getActiveChat();
     const mode = targetChat ? targetChat.mode : state.mode;
-
     const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
 
     if (mode === 'supervised') {
@@ -3483,65 +3444,85 @@ async function performWrite(fileName, content, project, chat) {
         }
         if (openFile) {
             openFile.pendingContent = content;
+            openFile.oldContent = oldContent;
         } else {
-            project.openFiles.push({ path: sanPath, name: fileName, content: oldContent, pendingContent: content });
+            project.openFiles.push({ path: sanPath, name: fileName, content: oldContent, oldContent: oldContent, pendingContent: content });
         }
         project.activeTabId = sanPath;
         renderTabs();
         updateViewVisibility();
-        return;
+        return { success: true, pending: true };
     }
 
     try {
-        const res = await fetchWithLog(`${API_BASE}/files/write`, {
+        const res = await fetch(`${API_BASE}/files/write`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath, content })
         });
         const writeResult = await res.json();
 
-        let hasChanged = false;
-        if (writeResult.success) {
-            hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
-            if (!hasChanged && oldContent !== content) {
-                hasChanged = true;
-            }
-        }
+        if (!writeResult.success) throw new Error(writeResult.error || "Unknown write error");
 
-        const diff = Diff.diffLines(oldContent, content);
+        // --- RELIABLE LINE COUNTING ---
         let addedCount = 0;
         let removedCount = 0;
-        let unchangedCount = 0;
-        diff.forEach(part => {
-            const lines = part.value.split(/\r?\n/);
-            const count = (lines[lines.length - 1] === '' ? lines.length - 1 : lines.length);
-            if (part.added) {
-                addedCount += count;
-            } else if (part.removed) {
-                removedCount += count;
-            } else {
-                unchangedCount += count;
-            }
-        });
+        let diff = null;
 
-        if (targetChat) {
-            updateThinking(targetChat, true, "Verificando cambios", fileName);
-            // No longer pushing individual messages per file if we're going to use a summary
-            // But we keep it for now or move it to the summary
+        const cleanOld = oldContent.replace(/\r\n/g, '\n');
+        const cleanNew = content.replace(/\r\n/g, '\n');
+
+        if (isNew) {
+            addedCount = countLines(content);
+            removedCount = 0;
+            diff = [{ value: content, added: true }];
+        } else if (cleanOld !== cleanNew) {
+            // Internal simple diff for statistics
+            const engine = getDiffEngine();
+            if (engine) {
+                try {
+                    diff = engine.diffLines(oldContent, content);
+                    diff.forEach(part => {
+                        const c = countLines(part.value);
+                        if (part.added) addedCount += c;
+                        else if (part.removed) removedCount += c;
+                    });
+                } catch (e) { console.error("Engine diff error:", e); }
+            }
+
+            // Reliable Fallback for Stats
+            if (addedCount === 0 && removedCount === 0) {
+                const oldLines = countLines(oldContent);
+                const newLines = countLines(content);
+                if (newLines > oldLines) addedCount = newLines - oldLines;
+                else if (oldLines > newLines) removedCount = oldLines - newLines;
+                else { addedCount = 1; removedCount = 1; }
+
+                // Force a manual diff if the engine failed to detect changes
+                diff = [
+                    { value: oldContent, removed: true },
+                    { value: content, added: true }
+                ];
+            }
+        } else {
+            // Identical content
+            diff = [{ value: content }];
         }
 
+        const hasChanged = isNew || cleanOld !== cleanNew;
+
         if (openFile) {
+            openFile.oldContent = oldContent;
             openFile.content = content;
             openFile.diff = diff;
             openFile.pendingContent = null;
         } else {
-            project.openFiles.push({ path: sanPath, name: fileName, content, diff });
+            project.openFiles.push({ path: sanPath, name: fileName, content, oldContent, diff });
         }
         
         project.activeTabId = sanPath;
         renderTabs();
         updateViewVisibility();
-        
         window.scanFolder(project.folder);
         saveData();
 
@@ -3551,13 +3532,11 @@ async function performWrite(fileName, content, project, chat) {
             isNew, 
             error: writeResult.error,
             addedCount,
-            removedCount,
-            unchangedCount
+            removedCount
         };
-
     } catch (e) {
         console.error("Write error:", e);
-        return { success: false, hasChanged: false, error: e.message };
+        return { success: false, hasChanged: false, error: e.message, addedCount: 0, removedCount: 0 };
     }
 }
 
@@ -3573,7 +3552,7 @@ window.acceptChange = async () => {
         // Temporarily force auto mode for the write operation
         const oldMode = chat ? chat.mode : 'supervised';
         if (chat) chat.mode = 'auto';
-        await performWrite(file.name, content, project, chat);
+        await performWrite(file.path, content, project, chat);
         if (chat) chat.mode = oldMode;
     }
 };
@@ -3634,7 +3613,13 @@ window.renameFile = async (oldPath, newName) => {
 
 
 function pathJoin(dir, file) {
-    return dir.endsWith('/') || dir.endsWith('\\') ? dir + file : dir + '/' + file;
+    if (!dir) return file;
+    if (!file) return dir;
+    const fSan = file.replace(/\\/g, '/');
+    if (fSan.includes(':') || fSan.startsWith('/')) return fSan;
+    const d = dir.replace(/\\/g, '/').replace(/\/$/, '');
+    const f = fSan.replace(/^\//, '');
+    return d + '/' + f;
 }
 
 window.goUp = () => {

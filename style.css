@@ -2401,7 +2401,6 @@ pre code.hljs {
 
 .session-summary-item .added { color: #3fb950; }
 .session-summary-item .removed { color: #f85149; }
-.session-summary-item .unchanged { color: var(--text-secondary); opacity: 0.7; }
 
 .session-summary-item .file-name {
     color: var(--text-primary);
