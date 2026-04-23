@@ -2169,3 +2169,294 @@ pre code.hljs {
     from { opacity: 0; transform: translateX(-20px); }
     to { opacity: 1; transform: translateX(0); }
 }
+
+/* Line Numbers & Gutter */
+.editor-container {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+}
+
+.editor-gutter {
+    background: #161b22;
+    border-right: 1px solid var(--border-color);
+    padding: 1.5rem 0.5rem 1.5rem 0.8rem;
+    text-align: right;
+    user-select: none;
+    color: #484f58;
+    font-family: 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    min-width: 45px;
+}
+
+.gutter-num {
+    display: block;
+}
+
+.gutter-num.added {
+    color: #3fb950;
+    background: rgba(63, 185, 80, 0.1);
+}
+
+.gutter-num.removed {
+    color: #f85149;
+    background: rgba(248, 81, 73, 0.1);
+}
+
+#editor-code {
+    flex: 1;
+    overflow-x: auto;
+}
+
+/* Rename Button & Input */
+.file-item-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    margin-left: auto;
+}
+
+.file-item:hover .file-item-actions {
+    opacity: 1;
+}
+
+.btn-file-action {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+}
+
+.btn-file-action:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+/* Modal for Rename */
+.rename-modal-input {
+    width: 100%;
+    margin-top: 10px;
+    font-size: 1rem;
+}
+
+/* Improved Diff Lines */
+.diff-line {
+    padding-left: 0.5rem;
+    transition: background 0.2s;
+}
+
+.diff-line:hover {
+    filter: brightness(1.2);
+}
+
+.diff-line.added {
+    background-color: rgba(63, 185, 80, 0.1);
+    border-left: 4px solid #3fb950;
+    color: #7ee787;
+}
+
+.diff-line.removed {
+    background-color: rgba(248, 81, 73, 0.1);
+    border-left: 4px solid #f85149;
+    color: #ffa198;
+    text-decoration: none;
+    opacity: 0.9;
+}
+
+.diff-marker {
+    display: inline-block;
+    width: 25px;
+    font-family: monospace;
+    font-weight: bold;
+    opacity: 0.8;
+}
+
+/* Agent Change Summary */
+.agent-change-summary {
+    background: rgba(124, 77, 255, 0.05);
+    border: 1px solid var(--accent-color);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1rem 0;
+}
+
+.agent-change-summary h4 {
+    font-size: 0.85rem;
+    color: var(--accent-color);
+    margin-bottom: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.change-stat-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.8rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 0.4rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.change-stat-item:hover {
+    border-color: var(--accent-color);
+    background: rgba(124, 77, 255, 0.1);
+    transform: translateX(4px);
+}
+
+.change-stat-item .file-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.change-stat-item .stats {
+    display: flex;
+    gap: 8px;
+    font-size: 0.8rem;
+    font-weight: 800;
+}
+
+.change-stat-item .added { color: #3fb950; }
+.change-stat-item .removed { color: #f85149; }
+
+/* Session Summary Bar (Antigravity Style) */
+.session-summary-container {
+    background: #161b22;
+    border-top: 1px solid var(--border-color);
+    padding: 0.8rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+    from { transform: translateY(100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.session-summary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.session-summary-header h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--accent-color);
+}
+
+.session-summary-header .file-count {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.05);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.session-summary-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.session-summary-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.session-summary-item:hover {
+    border-color: var(--accent-color);
+    background: rgba(124, 77, 255, 0.1);
+}
+
+.session-summary-item .stats {
+    display: flex;
+    gap: 8px;
+    font-weight: bold;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+}
+
+.session-summary-item .added { color: #3fb950; }
+.session-summary-item .removed { color: #f85149; }
+.session-summary-item .unchanged { color: var(--text-secondary); opacity: 0.7; }
+
+.session-summary-item .file-name {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.session-summary-item .file-path {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    opacity: 0.5;
+}
+
+.session-summary-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.summary-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.summary-actions {
+    display: flex;
+    gap: 16px;
+}
+
+.summary-actions button {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: color 0.2s;
+}
+
+.summary-actions button:hover {
+    color: var(--text-primary);
+}
+
+.summary-actions .btn-accept {
+    background: #238636;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 6px;
+}
+
+.summary-actions .btn-accept:hover {
+    background: #2ea043;
+}
+

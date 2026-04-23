@@ -349,6 +349,25 @@ app.post('/api/files/write', async (req, res) => {
     }
 });
 
+app.post('/api/files/rename', async (req, res) => {
+    const { oldPath, newPath } = req.body;
+    if (!oldPath || !newPath) {
+        return res.status(400).json({ error: 'Missing oldPath or newPath' });
+    }
+
+    try {
+        const resolvedOld = path.resolve(oldPath);
+        const resolvedNew = path.resolve(newPath);
+        
+        await fs.rename(resolvedOld, resolvedNew);
+        console.log(`[FILE] Renombrado: ${resolvedOld} -> ${resolvedNew}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error(`[FILE] Error al renombrar ${oldPath}:`, error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/utils/run-script', async (req, res) => {
     const { scriptPath, cwd } = req.body;
     if (!scriptPath) return res.status(400).json({ error: 'Missing scriptPath' });

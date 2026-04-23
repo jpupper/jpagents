@@ -570,6 +570,7 @@ const tabsNav = document.getElementById('tabs-nav');
 const chatTabContent = document.getElementById('chat-tab-content');
 const editorTabContent = document.getElementById('editor-tab-content');
 const editorCode = document.getElementById('editor-code');
+const editorGutter = document.getElementById('editor-gutter');
 const currentFilename = document.getElementById('current-filename');
 const diffStats = document.getElementById('diff-stats');
 const pendingActions = document.getElementById('pending-actions');
@@ -677,6 +678,7 @@ function sanitizeProject(p) {
             { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, model: p.model || '' }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
+        sessionChanges: p.sessionChanges || [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
         currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
         projectPrompt: p.projectPrompt || '',
@@ -1193,6 +1195,14 @@ function updateViewVisibility() {
             if (chatModelSelect) {
                 chatModelSelect.value = chat.model || '';
             }
+
+            // Sync Session Summary bar
+            if (chat.sessionChanges && chat.sessionChanges.length > 0) {
+                renderSessionSummary(chat.sessionChanges, project);
+            } else {
+                const summaryContainer = document.getElementById('session-summary-container');
+                if (summaryContainer) summaryContainer.classList.add('hidden');
+            }
         }
     } else if (project.activeTabId === 'admin') {
         saveFileBtn.classList.add('hidden');
@@ -1261,27 +1271,38 @@ function renderCode(file) {
     document.getElementById('editor-lang').textContent = lang;
 
     try {
+        let content = file.content;
         if (typeof hljs !== 'undefined') {
-            // Check if language is supported by the current hljs instance
             const supportedLangs = hljs.listLanguages();
             const actualLang = supportedLangs.includes(lang) ? lang : 'plaintext';
-
-            const highlighted = hljs.highlight(file.content, { language: actualLang }).value;
-            editorCode.innerHTML = highlighted;
+            content = hljs.highlight(file.content, { language: actualLang }).value;
         } else {
-            editorCode.textContent = file.content;
+            content = escapeHtml(file.content);
         }
+        
+        // Render line numbers
+        const lines = file.content.split(/\r?\n/);
+        let gutterHtml = '';
+        lines.forEach((_, i) => {
+            gutterHtml += `<div class="gutter-num">${i + 1}</div>`;
+        });
+        editorGutter.innerHTML = gutterHtml;
+        editorCode.innerHTML = content;
+        
     } catch (e) {
         console.error("Highlight error:", e);
         editorCode.textContent = file.content;
+        editorGutter.innerHTML = '';
     }
 }
 
 function renderDiff(file, isPending = false) {
     const changes = isPending ? Diff.diffLines(file.content, file.pendingContent) : file.diff;
     let html = '';
+    let gutterHtml = '';
     let addedCount = 0;
     let removedCount = 0;
+    let lineNum = 1;
 
     changes.forEach(part => {
         const lines = part.value.split(/\r?\n/);
@@ -1294,9 +1315,19 @@ function renderDiff(file, isPending = false) {
             if (part.removed) removedCount++;
 
             html += `<span class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</span>`;
+            
+            // For the gutter, we only increment line number for non-removed lines
+            // or we show something else for removed lines.
+            // Traditional editors usually show the line number for both or skip for removed.
+            if (!part.removed) {
+                gutterHtml += `<div class="gutter-num ${type}">${lineNum++}</div>`;
+            } else {
+                gutterHtml += `<div class="gutter-num ${type}">-</div>`;
+            }
         });
     });
 
+    editorGutter.innerHTML = gutterHtml;
     editorCode.innerHTML = html;
     editorCode.className = '';
 
@@ -1537,7 +1568,10 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
 
 function formatMarkdown(text) {
     try {
-        return marked.parse(text);
+        if (marked && marked.parse) {
+            return marked.parse(text, { gfm: true, breaks: true });
+        }
+        return text.replace(/\n/g, '<br>');
     } catch (e) {
         console.error("Markdown error:", e);
         return text.replace(/\n/g, '<br>');
@@ -1556,6 +1590,14 @@ async function sendMessage() {
         userMsg.images = [...currentAttachedImages];
     }
     chat.messages.push(userMsg);
+    
+    // Clear session summary and accumulated changes when user sends new message
+    chat.sessionChanges = [];
+    const summaryContainer = document.getElementById('session-summary-container');
+    if (summaryContainer) {
+        summaryContainer.innerHTML = '';
+        summaryContainer.classList.add('hidden');
+    }
 
     chatInput.value = '';
     clearImages();
@@ -1750,10 +1792,46 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             });
 
         let logsHtml = formatLogs(actionResult.logs);
+        
+        // Ensure summaryHtml doesn't have internal newlines that get converted to <br> by simple replace
+        let summaryHtml = '';
+        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+            const items = actionResult.changeStats.map(s => `
+                <div class="change-stat-item" onclick="window.openFile('${pathJoin(project.folder, s.fileName).replace(/\\/g, '/')}')">
+                    <span class="file-name">${s.fileName}</span>
+                    <span class="stats">
+                        <span class="added" title="Agregadas">+${s.added}</span>
+                        <span class="removed" title="Eliminadas">-${s.removed}</span>
+                        <span class="unchanged" title="Sin cambios">=${s.unchanged || 0}</span>
+                    </span>
+                </div>
+            `).join('');
+            
+            summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
+        }
 
+        // Push combined content. We put summary and logs outside of displayContent to avoid markdown interference if possible
+        chat.messages.push({ role: 'agent', content: displayContent + "\n\n" + summaryHtml + "\n\n" + logsHtml });
 
-
-        chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
+        // --- NEW: Accumulate and Update Session Summary Bar ---
+        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+            if (!chat.sessionChanges) chat.sessionChanges = [];
+            actionResult.changeStats.forEach(s => {
+                const existing = chat.sessionChanges.find(c => c.fileName === s.fileName);
+                if (existing) {
+                    existing.added += s.added;
+                    existing.removed += s.removed;
+                    existing.unchanged = s.unchanged;
+                } else {
+                    chat.sessionChanges.push({...s});
+                }
+            });
+        }
+        
+        // Always render if there are accumulated changes in this session
+        if (chat.sessionChanges && chat.sessionChanges.length > 0) {
+            renderSessionSummary(chat.sessionChanges, project);
+        }
 
         if (actionResult.reads && actionResult.reads.length > 0) {
             // Add read content to history and auto-continue. 
@@ -1793,17 +1871,8 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             }
         }
 
-        // --- NEW: Post-Creation Analysis Phase ---
-        if (actionResult.filesCreated.length > 0 || actionResult.filesModified.length > 0) {
-            const allFiles = [...actionResult.filesCreated, ...actionResult.filesModified].join(', ');
-            const analysisMsg = `🔍 FASE DE ANÁLISIS: Has creado o modificado los siguientes archivos: ${allFiles}. 
-            Por favor, realiza un análisis breve de lo que hiciste y confirma si cumplen con las REGLAS FUNDAMENTALES (separación de archivos index/style/script y canvas fullscreen). 
-            Si falta algo, corrígelo ahora.`;
-            
-            chat.messages.push({ role: 'system', content: analysisMsg });
-            console.log(`🧐 Iniciando fase de análisis para: ${allFiles}`);
-            await autoRetry(analysisMsg, project, chat);
-        }
+        // --- Removed Post-Creation Analysis Phase ---
+        // This phase was causing redundant agent loops and hiding the summary bar.
 
         if (assistantResponse.includes("TASK COMPLETE")) {
              adminLog(`✅ Agente <strong>${chat.name}</strong> ha reportado FINALIZACIÓN de su tarea.`);
@@ -1973,6 +2042,9 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
                         <span class="folder-caret">▶</span>
                         <span class="file-icon">${icon}</span>
                         <span class="file-name">${f.name}</span>
+                        <div class="file-item-actions">
+                            <button class="btn-file-action" onclick="event.stopPropagation(); window.renameFileUI('${path}', '${f.name}')" title="Renombrar">✏️</button>
+                        </div>
                     </div>
                     <div class="folder-content hidden" id="content-${id}"></div>
                 </div>
@@ -1983,6 +2055,9 @@ function renderFileList(container = fileList, files = null, parentPath = "") {
                     <span class="folder-caret invisible">▶</span>
                     <span class="file-icon">${icon}</span>
                     <span class="file-name">${f.name}</span>
+                    <div class="file-item-actions">
+                        <button class="btn-file-action" onclick="event.stopPropagation(); window.renameFileUI('${path}', '${f.name}')" title="Renombrar">✏️</button>
+                    </div>
                 </div>
             `;
         }
@@ -2600,6 +2675,7 @@ async function processAgentActions(text, project, chat) {
     let actionsPerformed = 0;
     const filesCreated = [];
     const filesModified = [];
+    const changeStats = []; // Array to store { fileName, added, removed }
     let match;
 
     let taskState = await getTaskState();
@@ -2820,7 +2896,86 @@ async function processAgentActions(text, project, chat) {
         }
     }
 
-    // 1. Handle Reads
+    // 1.0 Handle [CALL:tool_name]{"args"} format (STRICT MCP)
+    // We use a more robust extraction for JSON blocks that might contain braces
+    const callRegexHead = /\[CALL:(.+?)\]\s*\{/g;
+    while ((match = callRegexHead.exec(text)) !== null) {
+        if (chat.isStopped) return { errors, reads, logs, actionsPerformed, toolOutputs, stopped: true };
+        const toolName = match[1].trim();
+        const startIndex = match.index + match[0].length - 1; // Position of the opening '{'
+        
+        // Find the matching closing brace
+        let braceCount = 0;
+        let foundEnd = false;
+        let argsStr = "";
+        
+        for (let i = startIndex; i < text.length; i++) {
+            if (text[i] === '{') braceCount++;
+            if (text[i] === '}') braceCount--;
+            if (braceCount === 0) {
+                argsStr = text.substring(startIndex, i + 1);
+                foundEnd = true;
+                callRegexHead.lastIndex = i + 1; // Advance regex pointer
+                break;
+            }
+        }
+
+        if (!foundEnd) {
+            errors.push(`- Error: No se encontró el cierre de JSON para [CALL:${toolName}]`);
+            continue;
+        }
+        
+        let args;
+        try {
+            args = JSON.parse(argsStr);
+        } catch (e) {
+            errors.push(`- Error de formato JSON en [CALL:${toolName}]: ${e.message}`);
+            continue;
+        }
+
+        if (toolName === 'write_file' || toolName === 'WRITE') {
+            const fileName = args.path || args.fileName;
+            const content = args.content;
+            if (fileName && content !== undefined) {
+                logs.push({ type: 'info', message: `Escritura MCP: **${fileName}**` });
+                const writeRes = await performWrite(fileName, content, project, chat);
+                if (writeRes && writeRes.success) {
+                    actionsPerformed++;
+                    if (writeRes.hasChanged) {
+                        if (writeRes.isNew) filesCreated.push(fileName);
+                        else filesModified.push(fileName);
+                        changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
+                    }
+                }
+            }
+        } else if (toolName === 'read_file' || toolName === 'READ') {
+            const fileName = args.path || args.fileName;
+            if (fileName) {
+                try {
+                    const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: pathJoin(project.folder, fileName).replace(/\\/g, '/') }) });
+                    const data = await res.json();
+                    if (data.content !== undefined) {
+                        reads.push({ fileName, content: data.content });
+                        logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
+                    }
+                } catch (e) { }
+            }
+        } else if (toolName === 'execute_js') {
+            const code = args.code;
+            if (code) {
+                try {
+                    const res = await fetchWithLog(`${API_BASE}/execute/node`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, cwd: project.folder }) });
+                    const data = await res.json();
+                    if (data.success) {
+                        actionsPerformed++;
+                        chat.messages.push({ role: 'system', content: `✅ JS Output:\n\`\`\`\n${data.stdout}\n\`\`\`` });
+                    }
+                } catch (e) { }
+            }
+        }
+    }
+
+    // 1. Handle Reads (Legacy)
     const readRegex = /\[READ:(.*?)\]/g;
     while ((match = readRegex.exec(text)) !== null) {
         if (chat.isStopped) return { errors, reads, logs, actionsPerformed, toolOutputs, stopped: true };
@@ -2912,6 +3067,7 @@ async function processAgentActions(text, project, chat) {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
                 if (writeRes.isNew) filesCreated.push(fileName);
                 else filesModified.push(fileName);
+                changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount, unchanged: writeRes.unchangedCount });
                 await recordAction(`[WRITE:${fileName}]`, `Successfully wrote ${fileName}.`);
             }
         } else {
@@ -3005,6 +3161,7 @@ async function processAgentActions(text, project, chat) {
                     logs.push({ type: 'success', message: `Cambios aplicados (${successCount}/${blocksFound} bloques) en **${fileName}**` });
                     if (writeRes.isNew) filesCreated.push(fileName);
                     else filesModified.push(fileName);
+                    changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount, unchanged: writeRes.unchangedCount });
                     await recordAction(`[REPLACE:${fileName}]`, `Successfully updated ${successCount}/${blocksFound} blocks.`);
                 }
             } else {
@@ -3037,9 +3194,66 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: "No se detectaron acciones de herramientas en esta respuesta." });
     }
 
-    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified };
+    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified, changeStats };
 }
 
+
+function renderSessionSummary(changeStats, project) {
+    console.log("🛠️ renderSessionSummary called with:", changeStats.length, "items");
+    const container = document.getElementById('session-summary-container');
+    if (!container) {
+        console.error("❌ session-summary-container NOT FOUND in DOM");
+        return;
+    }
+
+    if (!changeStats || changeStats.length === 0) {
+        container.classList.add('hidden');
+        return;
+    }
+
+    const itemsHtml = changeStats.map(s => {
+        const fullPath = pathJoin(project.folder, s.fileName).replace(/\\/g, '/');
+        return `
+            <div class="session-summary-item" onclick="window.openFile('${fullPath}')">
+                <span class="file-icon">📄</span>
+                <div class="stats">
+                    <span class="added" title="Líneas agregadas">+${s.added}</span>
+                    <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
+                    <span class="unchanged" title="Líneas sin cambios">=${s.unchanged || 0}</span>
+                </div>
+                <span class="file-name">${s.fileName}</span>
+                <span class="file-path">${fullPath}</span>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="session-summary-header">
+            <h4>🛠️ Cambios Realizados</h4>
+            <span class="file-count">${changeStats.length} archivo(s)</span>
+        </div>
+        <div class="session-summary-list">
+            ${itemsHtml}
+        </div>
+        <div class="session-summary-footer">
+            <div class="summary-actions">
+                <button class="btn-reject" onclick="window.clearSessionSummary()">Descartar historial de cambios</button>
+                <button class="btn-accept" onclick="window.clearSessionSummary()">Cerrar</button>
+            </div>
+        </div>
+    `;
+    container.classList.remove('hidden');
+}
+
+window.clearSessionSummary = () => {
+    const chat = getActiveChat();
+    if (chat) chat.sessionChanges = [];
+    const container = document.getElementById('session-summary-container');
+    if (container) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+    }
+};
 
 async function autoRetry(errorContext, project, chat, retryCount = 0) {
     if (retryCount >= 20) {
@@ -3156,9 +3370,43 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
             });
 
+        let summaryHtml = '';
+        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+            const items = actionResult.changeStats.map(s => `
+                <div class="change-stat-item" onclick="window.openFile('${pathJoin(project.folder, s.fileName).replace(/\\/g, '/')}')">
+                    <span class="file-name">${s.fileName}</span>
+                    <span class="stats">
+                        <span class="added" title="Agregadas">+${s.added}</span>
+                        <span class="removed" title="Eliminadas">-${s.removed}</span>
+                        <span class="unchanged" title="Sin cambios">=${s.unchanged || 0}</span>
+                    </span>
+                </div>
+            `).join('');
+            
+            summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
+        }
 
+        chat.messages.push({ role: 'agent', content: displayContent + "\n\n" + summaryHtml + "\n\n" + logsHtml });
 
-        chat.messages.push({ role: 'agent', content: displayContent + logsHtml });
+        // --- NEW: Accumulate and Update Session Summary Bar ---
+        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+            if (!chat.sessionChanges) chat.sessionChanges = [];
+            actionResult.changeStats.forEach(s => {
+                const existing = chat.sessionChanges.find(c => c.fileName === s.fileName);
+                if (existing) {
+                    existing.added += s.added;
+                    existing.removed += s.removed;
+                    existing.unchanged = s.unchanged;
+                } else {
+                    chat.sessionChanges.push({...s});
+                }
+            });
+        }
+        
+        // Always render if there are accumulated changes in this session
+        if (chat.sessionChanges && chat.sessionChanges.length > 0) {
+            renderSessionSummary(chat.sessionChanges, project);
+        }
 
         if (actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `Contenido de ${r.fileName}:\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
@@ -3254,47 +3502,58 @@ async function performWrite(fileName, content, project, chat) {
 
         let hasChanged = false;
         if (writeResult.success) {
-            // Check mtime OR size OR direct content comparison if available
             hasChanged = writeResult.mtime !== oldStats.mtime || writeResult.size !== oldStats.size;
-
-            // If stats didn't change, double check with content (sometimes mtime doesn't update on identical writes)
             if (!hasChanged && oldContent !== content) {
                 hasChanged = true;
             }
         }
 
+        const diff = Diff.diffLines(oldContent, content);
+        let addedCount = 0;
+        let removedCount = 0;
+        let unchangedCount = 0;
+        diff.forEach(part => {
+            const lines = part.value.split(/\r?\n/);
+            const count = (lines[lines.length - 1] === '' ? lines.length - 1 : lines.length);
+            if (part.added) {
+                addedCount += count;
+            } else if (part.removed) {
+                removedCount += count;
+            } else {
+                unchangedCount += count;
+            }
+        });
+
         if (targetChat) {
             updateThinking(targetChat, true, "Verificando cambios", fileName);
-
-            if (writeResult.success) {
-                if (hasChanged) {
-                    targetChat.messages.push({ role: 'agent', content: `✅ **${fileName}** actualizado y verificado (mtime: ${new Date(writeResult.mtime).toLocaleTimeString()}).` });
-                } else {
-                    targetChat.messages.push({ role: 'agent', content: `⚠️ **AVISO DE SISTEMA:** El archivo **${fileName}** NO recibió cambios reales (el contenido enviado es idéntico al actual).` });
-                }
-            } else {
-                targetChat.messages.push({ role: 'agent', content: `❌ **ERROR DE SISTEMA:** Fallo al escribir **${fileName}**: ${writeResult.error}` });
-            }
+            // No longer pushing individual messages per file if we're going to use a summary
+            // But we keep it for now or move it to the summary
         }
-
-        // ... rest of logic for tabs ...
-        const diff = Diff.diffLines(oldContent, content);
 
         if (openFile) {
             openFile.content = content;
             openFile.diff = diff;
             openFile.pendingContent = null;
-            if (project.activeTabId === sanPath) updateViewVisibility();
         } else {
             project.openFiles.push({ path: sanPath, name: fileName, content, diff });
-            project.activeTabId = sanPath;
-            renderTabs();
-            updateViewVisibility();
         }
+        
+        project.activeTabId = sanPath;
+        renderTabs();
+        updateViewVisibility();
+        
         window.scanFolder(project.folder);
         saveData();
 
-        return { success: writeResult.success, hasChanged, isNew, error: writeResult.error };
+        return { 
+            success: writeResult.success, 
+            hasChanged, 
+            isNew, 
+            error: writeResult.error,
+            addedCount,
+            removedCount,
+            unchangedCount
+        };
 
     } catch (e) {
         console.error("Write error:", e);
@@ -3326,6 +3585,49 @@ window.rejectChange = () => {
     if (file && file.pendingContent) {
         file.pendingContent = null;
         updateViewVisibility();
+    }
+};
+
+window.renameFileUI = (oldPath, oldName) => {
+    const newName = prompt(`Renombrar "${oldName}" a:`, oldName);
+    if (newName && newName !== oldName) {
+        window.renameFile(oldPath, newName);
+    }
+};
+
+window.renameFile = async (oldPath, newName) => {
+    const dir = oldPath.substring(0, Math.max(oldPath.lastIndexOf('/'), oldPath.lastIndexOf('\\')));
+    const newPath = (dir ? dir + '/' : '') + newName;
+    
+    try {
+        const res = await fetch(`${API_BASE}/files/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ oldPath, newPath })
+        });
+        const data = await res.json();
+        if (data.success) {
+            const project = getActiveProject();
+            if (project) {
+                // Update open files if any
+                project.openFiles.forEach(f => {
+                    if (f.path.replace(/\\/g, '/') === oldPath.replace(/\\/g, '/')) {
+                        f.path = newPath;
+                        f.name = newName;
+                    }
+                });
+                if (project.activeTabId === oldPath.replace(/\\/g, '/')) {
+                    project.activeTabId = newPath.replace(/\\/g, '/');
+                }
+                window.scanFolder(project.folder);
+                renderTabs();
+            }
+        } else {
+            alert("Error al renombrar: " + data.error);
+        }
+    } catch (e) {
+        console.error("Rename error:", e);
+        alert("Error de conexión al renombrar.");
     }
 };
 
@@ -3683,6 +3985,30 @@ function setupEventListeners() {
     if (systemRestartBtn) {
         systemRestartBtn.onclick = triggerSystemRestart;
     }
+
+    // Editor Cursor Tracking
+    editorCode.contentEditable = true;
+    const updateCursorInfo = () => {
+        const selection = window.getSelection();
+        if (selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            const preCaretRange = range.cloneRange();
+            preCaretRange.selectNodeContents(editorCode);
+            preCaretRange.setEnd(range.endContainer, range.endOffset);
+            
+            const textBefore = preCaretRange.toString();
+            const lines = textBefore.split('\n');
+            const ln = lines.length;
+            const col = lines[lines.length - 1].length + 1;
+            
+            const cursorSpan = document.getElementById('editor-cursor');
+            if (cursorSpan) cursorSpan.textContent = `Ln ${ln}, Col ${col}`;
+        }
+    };
+
+    editorCode.addEventListener('keyup', updateCursorInfo);
+    editorCode.addEventListener('click', updateCursorInfo);
+    editorCode.addEventListener('input', updateCursorInfo);
 }
 
 async function handleImageSelection(e) {
