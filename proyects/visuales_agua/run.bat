@@ -1,0 +1,1 @@
+@echo off\nREM Genera un número aleatorio entre 5200 y 5800 para el puerto\set /a port=5200 + %RANDOM% %% 600\ntitle Lanzador p5.js Lightning Simulation\necho Iniciando servidor en puerto %port%... \nstart /b python -m http.server %port%\ntimeout /t 3 /nobreak &gt;nul\nstart http://127.0.0.1:%port%

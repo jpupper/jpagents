@@ -2,103 +2,18 @@
   {
     "type": "log",
     "messages": [
-      "[PROMPTS] Cargado: developer_agent"
+      "📂 Project has folder, scanning: D:\\Programacion\\jpagents\\proyects\\visuales_agua"
     ],
-    "timestamp": "2026-04-23T13:59:18.877Z",
+    "timestamp": "2026-04-23T14:06:21.610Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "[PROMPTS] Cargado: orchestrator_agent"
+      "📂 Project has folder, scanning: D:\\Programacion\\jpagents\\proyects\\visuales_fuego"
     ],
-    "timestamp": "2026-04-23T13:59:18.879Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[PROMPTS] Cargado: global_rules"
-    ],
-    "timestamp": "2026-04-23T13:59:18.881Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "📍 Restored active project:",
-      "mobjq2zdzggqfdaz2ha"
-    ],
-    "timestamp": "2026-04-23T13:59:18.917Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[MCP-CLIENT] Connecting to:",
-      "http://127.0.0.1:2998/sse"
-    ],
-    "timestamp": "2026-04-23T13:59:23.574Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[PROMPTS] Cargando instrucciones desde la carpeta PROMPTS..."
-    ],
-    "timestamp": "2026-04-23T13:59:23.576Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[PROMPTS] Cargado: developer_agent"
-    ],
-    "timestamp": "2026-04-23T13:59:23.579Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[MCP-CLIENT] Message endpoint discovered:",
-      "http://127.0.0.1:2998/messages/08ae51f4-0203-4970-9a72-462713edbb84?sessionId=97b8fb05-316a-4bc1-a16f-b0bb7d842ae5"
-    ],
-    "timestamp": "2026-04-23T13:59:23.580Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[PROMPTS] Cargado: orchestrator_agent"
-    ],
-    "timestamp": "2026-04-23T13:59:23.582Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "[PROMPTS] Cargado: global_rules"
-    ],
-    "timestamp": "2026-04-23T13:59:23.584Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "📍 Restored active project:",
-      "mobjq2zdzggqfdaz2ha"
-    ],
-    "timestamp": "2026-04-23T13:59:23.597Z",
+    "timestamp": "2026-04-23T14:06:26.706Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

@@ -407,69 +407,92 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
     }
 }
 
-async function checkSystemHealth() {
-    // 1. Check Backend
-    try {
-        const res = await fetch(`${API_BASE}/sessions`);
-        const dot = document.getElementById('backend-status-dot');
+async function checkSystemHealth(externalData = null) {
+    const updateDot = (id, live) => {
+        const dot = document.getElementById(id);
         if (dot) {
-            if (res.ok) {
-                dot.classList.remove('dead');
-                dot.classList.add('live');
-            } else {
-                dot.classList.remove('live');
-                dot.classList.add('dead');
-            }
+            dot.classList.toggle('live', live);
+            dot.classList.toggle('dead', !live);
         }
-    } catch (e) {
-        const dot = document.getElementById('backend-status-dot');
-        if (dot) {
-            dot.classList.remove('live');
-            dot.classList.add('dead');
-        }
+    };
+
+    // 1. Check Backend (and optionally use already fetched session data)
+    if (externalData) {
+        updateDot('backend-status-dot', true);
+    } else {
+        try {
+            const res = await fetch(`${API_BASE}/sessions`, { headers: { 'X-Silent-Check': 'true' } });
+            updateDot('backend-status-dot', res.ok);
+        } catch (e) { updateDot('backend-status-dot', false); }
     }
 
     // 2. Check Ollama
     try {
         const res = await fetch(`${OLLAMA_BASE}/tags`);
-        const dot = document.getElementById('ollama-status-dot');
-        if (dot) {
-            if (res.ok) {
-                dot.classList.remove('dead');
-                dot.classList.add('live');
-            } else {
-                dot.classList.remove('live');
-                dot.classList.add('dead');
-            }
-        }
-    } catch (e) {
-        const dot = document.getElementById('ollama-status-dot');
-        if (dot) {
-            dot.classList.remove('live');
-            dot.classList.add('dead');
-        }
-    }
+        updateDot('ollama-status-dot', res.ok);
+    } catch (e) { updateDot('ollama-status-dot', false); }
 
     // 3. Check MCP (Port 2998)
     try {
         const res = await fetch(`http://127.0.0.1:2998/health`, { method: 'GET' });
-        const dot = document.getElementById('mcp-status-dot');
-        if (dot) {
-            // Si responde (aunque sea con 404/405), el servidor está arriba
-            if (res.ok || res.status === 405 || res.status === 404) {
-                dot.classList.remove('dead');
-                dot.classList.add('live');
-            } else {
-                dot.classList.remove('live');
-                dot.classList.add('dead');
+        updateDot('mcp-status-dot', res.ok || res.status === 405 || res.status === 404);
+    } catch (e) { updateDot('mcp-status-dot', false); }
+}
+
+async function performPeriodicSync() {
+    try {
+        // Sync sessions and instructions (Silent call)
+        const res = await fetch(`${API_BASE}/sessions`, { headers: { 'X-Silent-Check': 'true' } });
+        if (!res.ok) {
+            checkSystemHealth(null); // Fallback to normal health check if this fails
+            return;
+        }
+        
+        const data = await res.json();
+        
+        // 1. Update Health UI using the data we just got
+        checkSystemHealth(data);
+
+        if (!data) return;
+
+        let changed = false;
+
+        // 2. Check Agents for external instructions
+        if (data.projects) {
+            for (const pServer of data.projects) {
+                const pLocal = state.projects.find(p => p.id === pServer.id);
+                if (!pLocal) continue;
+
+                for (const cServer of (pServer.chats || [])) {
+                    if (cServer.pendingExternalInstruction) {
+                        const cLocal = pLocal.chats.find(c => c.id === cServer.id);
+                        if (cLocal && !cLocal.isThinking) {
+                            console.log(`📡 Recibida instrucción externa para Agente: ${cLocal.name}`);
+                            cLocal.messages = cServer.messages;
+                            delete cServer.pendingExternalInstruction;
+                            changed = true;
+                            if (state.activeProjectId === pLocal.id) renderMessages();
+                            triggerAgentLogic(pLocal, cLocal, 'external');
+                        }
+                    }
+                }
             }
         }
-    } catch (e) {
-        const dot = document.getElementById('mcp-status-dot');
-        if (dot) {
-            dot.classList.remove('live');
-            dot.classList.add('dead');
+
+        // 3. Check Admin for external instructions
+        if (data.pendingAdminInstruction) {
+            console.log(`📡 Recibida instrucción externa para Orquestador`);
+            state.adminMessages = data.adminMessages;
+            delete data.pendingAdminInstruction;
+            changed = true;
+            if (getActiveProject()?.activeTabId === 'admin') renderAdminMessages();
+            triggerAdminAgentLogic();
         }
+
+        if (changed) await saveData();
+
+    } catch (e) {
+        checkSystemHealth(null);
     }
 }
 
@@ -594,9 +617,8 @@ async function init() {
     await loadData();
     setupEventListeners();
 
-    // Periodically check health and external instructions
-    setInterval(checkSystemHealth, 5000);
-    setInterval(checkExternalInstructions, 10000); // Check for API commands every 10s
+    // Periodically check health and external instructions every 1 minute
+    setInterval(performPeriodicSync, 60000);
 }
 
 
@@ -636,65 +658,6 @@ async function loadData() {
     }
 }
 
-async function checkExternalInstructions() {
-    try {
-        const res = await fetch(`${API_BASE}/sessions`);
-        const data = await res.json();
-
-        if (!data) return;
-
-        let changed = false;
-
-        // Check Agents
-        if (data.projects) {
-            for (const pServer of data.projects) {
-                const pLocal = state.projects.find(p => p.id === pServer.id);
-                if (!pLocal) continue;
-
-                for (const cServer of (pServer.chats || [])) {
-                    if (cServer.pendingExternalInstruction) {
-                        const cLocal = pLocal.chats.find(c => c.id === cServer.id);
-                        if (cLocal && !cLocal.isThinking) {
-                            console.log(`📡 Recibida instrucción externa para Agente: ${cLocal.name}`);
-                            // Sync messages to get the external message
-                            cLocal.messages = cServer.messages;
-                            delete cServer.pendingExternalInstruction;
-                            changed = true;
-
-                            // Si es el proyecto activo, refrescar UI
-                            if (state.activeProjectId === pLocal.id) {
-                                renderMessages();
-                            }
-
-                            triggerAgentLogic(pLocal, cLocal, 'external');
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check Admin
-        if (data.pendingAdminInstruction) {
-            console.log(`📡 Recibida instrucción externa para Orquestador`);
-            state.adminMessages = data.adminMessages;
-            delete data.pendingAdminInstruction;
-            changed = true;
-
-            if (getActiveProject()?.activeTabId === 'admin') {
-                renderAdminMessages();
-            }
-
-            triggerAdminAgentLogic();
-        }
-
-        if (changed) {
-            await saveData();
-        }
-
-    } catch (e) {
-        // Quiet fail on poll
-    }
-}
 
 
 function sanitizeProject(p) {
