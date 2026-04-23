@@ -1,25 +1,25 @@
 {
   "projects": [
     {
-      "id": "mobk21l7eqynya6nobg",
-      "name": "Nebulous Silver Shark",
-      "folder": "D:\\Programacion\\jpagents\\proyects\\nebulous_silver_shark",
+      "id": "mobk3hiw1rxcqlwclf2",
+      "name": "Organic Red Whale",
+      "folder": "D:\\Programacion\\jpagents\\proyects\\organic_red_whale",
       "model": "gemma4:e4b",
       "chats": [
         {
-          "id": "chat-mobk21lcsdixyspuvjd",
+          "id": "chat-mobk3hk3ngb7uxv0xwr",
           "name": "Agente 1",
           "messages": [],
           "isThinking": false,
           "mode": "auto",
-          "lastProgress": 1776953201808,
+          "lastProgress": 1776953269155,
           "isStopped": false,
           "model": "gemma4:e4b",
           "isNew": true
         }
       ],
       "openFiles": [],
-      "activeTabId": "chat-mobk21lcsdixyspuvjd",
+      "activeTabId": "chat-mobk3hk3ngb7uxv0xwr",
       "currentFiles": [],
       "projectPrompt": "",
       "isCorrupted": false,
@@ -28,7 +28,7 @@
   ],
   "globalPrompt": "REGLAS FUNDAMENTALES : \n\n1)Cuando te piden un sketch de p5js o de three.js, o de un shader puro siempre tenes que crearlo y el canvas tiene que estar en fullscreen.\n2)Siempre separa los archivos en style.css,index.html y script.js si es un sketch de p5js. \n3)Siempre crea un archivo .bat que ejecute se encargue de correr la aplicación en un server y abrirla en una pestaña en el explorador. Simplemnente copiale este script y pero cambiale el puerto por uno random \n\n@echo off\nset puerto=52354\nstart /b python -m http.server %puerto%\ntimeout /t 2 /nobreak >nul\nstart http://127.0.0.1:%puerto%\nexit\n\n4)El archivo bat siempre tiene que llamarse run.bat necesariamente solo puede tener ese nombre.",
   "orchestratorPrompt": "Eres el AGENTE ADMINISTRADOR y ORQUESTADOR de un sistema multi-agente.\nTu objetivo es gestionar las peticiones del usuario, delegar tareas a los agentes adecuados y coordinar sus resultados.\n\nINSTRUCCIONES DE COMANDO:\nPara delegar tareas, usa exactamente el formato:\n[@Nombre: \"Tu instrucción\"] o [@ID: \"Tu instrucción\"]\n\nREGLAS:\n1. Analiza lo que el usuario pide. Si pide cosas para distintos agentes, divídelo y delega.\n2. Si un agente te reporta que terminó, lee su resultado y decide si la tarea global está completa.\n3. Responde siempre al usuario informando qué estás haciendo.",
-  "activeProjectId": "mobk21l7eqynya6nobg",
+  "activeProjectId": "mobk3hiw1rxcqlwclf2",
   "adminMessages": [
     {
       "role": "user",
@@ -120,6 +120,16 @@
       "role": "system",
       "content": "📁 Nuevo proyecto creado: <strong>Nebulous Silver Shark</strong>",
       "timestamp": 1776953201812
+    },
+    {
+      "role": "system",
+      "content": "📁 Nuevo proyecto creado: <strong>Eternal Onyx Panther</strong>",
+      "timestamp": 1776953240776
+    },
+    {
+      "role": "system",
+      "content": "📁 Nuevo proyecto creado: <strong>Organic Red Whale</strong>",
+      "timestamp": 1776953269159
     }
   ]
 }
