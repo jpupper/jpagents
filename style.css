@@ -925,6 +925,12 @@ textarea {
     font-size: 0.9rem;
 }
 
+.file-action-link.mcp-call {
+    border-left: 4px solid var(--accent-color);
+    background: rgba(124, 77, 255, 0.05);
+    cursor: help;
+}
+
 #editor-tab-content {
   background: #0d1117;
   padding: 0;
@@ -2123,5 +2129,33 @@ pre code.hljs {
 
 @keyframes fadeInItem {
     from { opacity: 0; transform: translateX(-5px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+
+@keyframes summoned {
+  0% { transform: scale(1); box-shadow: 0 0 0 rgba(124, 77, 255, 0); }
+  50% { transform: scale(1.05); box-shadow: 0 0 20px rgba(124, 77, 255, 0.6); border-color: var(--accent-color); }
+  100% { transform: scale(1); box-shadow: 0 0 0 rgba(124, 77, 255, 0); }
+}
+
+.summoned-anim {
+  animation: summoned 1.5s ease-out 2;
+  position: relative;
+  z-index: 10;
+}
+
+.admin-log-entry {
+    background: rgba(124, 77, 255, 0.05);
+    border-left: 3px solid var(--accent-color);
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    border-radius: 4px 12px 12px 4px;
+    font-size: 0.9rem;
+    animation: slideInLeft 0.3s ease-out;
+}
+
+@keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-20px); }
     to { opacity: 1; transform: translateX(0); }
 }

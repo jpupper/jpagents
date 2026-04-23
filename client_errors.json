@@ -2,31 +2,103 @@
   {
     "type": "log",
     "messages": [
-      "%c[MCP] SENT tool:",
-      "color: #3b82f6",
-      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/proyecto_4_8/script.js\",\n    \"content\": \"// Estructura de un sistema simple de partículas que reacciona al mouse (MULTICOLOR Y GRANDE)\\nlet particles = [];\\n\\n// Clase Particle\\nclass Particle {\\n    constructor(x, y) {\\n        this.position = createVector(x, y);\\n        this.velocity = createVector(random(-1, 1), random(-1, 1));\\n        this.acceleration = createVector(0, 0);\\n        this.lifespan = 255;\\n    }\\n\\n    applyForce(force) {\\n        this.acceleration.add(force); // Añadir la fuerza al aceleración\\n    }\\n\\n    update() {\\n        this.velocity.add(this.acceleration);\\n        this.position.add(this.velocity);\\n        this.acceleration.mult(0); // Resetear aceleración\\n        this.lifespan -= 3; // Decrementar vida\\n    }\\n\\n    display() {\\n        // MODIFICACIÓN: Multicolor y más grande\\n        // Usar un color RGB aleatorio con transparencia basada en la vida.\\n        stroke(random(255), random(255), random(255), this.lifespan);\\n        // Aumentar grosor dinámicamente (entre 3 y 5)\\n        strokeWeight(3 + random(2)); \\n        point(this.position.x, this.position.y);\\n    }\\n}\\n\\nfunction setup() {\\n    // p5.js se inicializa automáticamente con el canvas en el body\\n    createCanvas(windowWidth, windowHeight);\\n    background(26, 26, 46); // Fondo oscuro inicial\\n    \\n    // Inicializar partículas en el centro\\n    for(let i = 0; i < 10; i++) {\\n        particles.push(new Particle(random(width), random(height)));\\n    }\\n}\\n\\nfunction draw() {\\n    // Dibujar un fondo semi-transparente para efecto de estela\\n    background(26, 26, 46, 50); \\n    \\n    // 1. Actualizar y dibujar partículas existentes\\n    for (let i = particles.length - 1; i >= 0; i--) {\\n        let p = particles[i];\\n        p.update();\\n        p.display();\\n        \\n        // Eliminar si la vida es menor a cero\\n        if (p.lifespan < 0) {\\n            particles.splice(i, 1);\\n        }\\n    }\\n    \\n    // 2. Interacción con el ratón: Añadir nuevas partículas en la posición del ratón\\n    // Se mantiene la lógica de creación basada en el ratón.\\n    if (frameCount % 2 === 0) {\\n        particles.push(new Particle(mouseX, mouseY));\\n    }\\n}\\n\\n// Función de interacción para redimensionar el lienzo\\nfunction windowResized() {\\n    resizeCanvas(windowWidth, windowHeight);\\n    background(26, 26, 46);\\n}\\n\\n/*\\nIMPORTANTE: Para que este sketch funcione, debes ejecutar el .bat generado \\nque servirá como servidor web y abrirá el navegador en la dirección correcta.\\n*/\"\n  },\n  \"id\": 47\n}"
+      "[PROMPTS] Cargado: developer_agent"
     ],
-    "timestamp": "2026-04-22T19:05:34.227Z",
+    "timestamp": "2026-04-23T13:59:18.877Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "%c[MCP] RECEIVED message:",
-      "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\proyecto_4_8\\\\script.js\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 47\n}"
+      "[PROMPTS] Cargado: orchestrator_agent"
     ],
-    "timestamp": "2026-04-22T19:05:34.231Z",
+    "timestamp": "2026-04-23T13:59:18.879Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
+      "[PROMPTS] Cargado: global_rules"
     ],
-    "timestamp": "2026-04-22T19:05:34.237Z",
+    "timestamp": "2026-04-23T13:59:18.881Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mobjq2zdzggqfdaz2ha"
+    ],
+    "timestamp": "2026-04-23T13:59:18.917Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] Connecting to:",
+      "http://127.0.0.1:2998/sse"
+    ],
+    "timestamp": "2026-04-23T13:59:23.574Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargando instrucciones desde la carpeta PROMPTS..."
+    ],
+    "timestamp": "2026-04-23T13:59:23.576Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: developer_agent"
+    ],
+    "timestamp": "2026-04-23T13:59:23.579Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] Message endpoint discovered:",
+      "http://127.0.0.1:2998/messages/08ae51f4-0203-4970-9a72-462713edbb84?sessionId=97b8fb05-316a-4bc1-a16f-b0bb7d842ae5"
+    ],
+    "timestamp": "2026-04-23T13:59:23.580Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: orchestrator_agent"
+    ],
+    "timestamp": "2026-04-23T13:59:23.582Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: global_rules"
+    ],
+    "timestamp": "2026-04-23T13:59:23.584Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "mobjq2zdzggqfdaz2ha"
+    ],
+    "timestamp": "2026-04-23T13:59:23.597Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

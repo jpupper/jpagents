@@ -480,21 +480,22 @@ Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Blo
 REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
-Tu objetivo es delegar tareas a los agentes adecuados.
+Tu objetivo es gestionar de principio a fin las peticiones del usuario.
 
-INSTRUCCIONES DE COMANDO (DELEGATE):
-Para delegar, usa preferiblemente el formato robusto:
-[DELEGATE:ID_O_NOMBRE]
-Instrucción clara y detallada aquí...
-[/DELEGATE]
+FLUJO PROACTIVO (REGLA DE ORO):
+Si el usuario pide "Crea un proyecto para X", NO preguntes. DEBES hacer todo en un solo paso:
+1. Crear el proyecto: [CREATE_PROJECT: Nombre]
+2. Crear al menos un agente: [CREATE_AGENT: Nombre : NombreAgente]
+3. Darle la orden de trabajo: [@NombreAgente: "Instrucción detallada para empezar"]
 
-También puedes usar el formato rápido para instrucciones simples:
-[@ID_O_NOMBRE: "Instrucción corta"]
+INSTRUCCIONES DE COMANDO:
+1. Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
+2. Administración: [CREATE_PROJECT: Nombre], [CREATE_AGENT: Proyecto: Agente], [DELETE_PROJECT: ID]
 
 REGLAS CRÍTICAS:
-1. Usa preferiblemente el ID del agente (ej: chat-xyz) proporcionado en la lista para evitar errores.
-2. NUNCA inventes nombres o IDs. Si no encuentras a quién enviar, pregunta al usuario.
-3. Puedes delegar a varios agentes en una sola respuesta si es necesario.`;
+1. Sé PROACTIVO. Si falta un agente para una tarea, créalo. Si falta un proyecto, créalo.
+2. Monitorización: Mantente atento al ESTADO de los agentes. Si uno termina, revisa su trabajo y decide el siguiente paso.
+3. No te detengas hasta que el objetivo global del usuario esté CUMPLIDO.`;
 
 
 let state = {
@@ -517,6 +518,18 @@ let state = {
 
 
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+// --- Generative Naming Arrays ---
+const ADJECTIVES = ["Cosmic", "Universal", "Quantum", "Galactic", "Nebulous", "Stellar", "Astral", "Solar", "Lunar", "Orbital", "Celestial", "Infinite", "Eternal", "Mystical", "Ethereal", "Radiant", "Vibrant", "Dynamic", "Organic", "Digital", "Atomic", "Molecular", "Tectonic", "Volcanic", "Oceanic", "Forest", "Desert", "Mountain", "Arctic", "Tropical", "Phantom", "Secret", "Hidden", "Lost", "Found", "Bright", "Dark", "Light", "Shadow", "Zenith"];
+const COLORS = ["Red", "Green", "Blue", "Yellow", "Magenta", "Cyan", "White", "Black", "Gray", "Silver", "Gold", "Platinum", "Copper", "Bronze", "Emerald", "Ruby", "Sapphire", "Amethyst", "Topaz", "Onyx", "Amber", "Coral", "Teal", "Turquoise", "Lavender", "Violet", "Indigo", "Crimson", "Scarlet", "Maroon", "Olive", "Lime", "Mint", "Forest", "Sky", "Ocean", "Navy", "Peach", "Salmon", "Orange"];
+const ANIMALS = ["Tiger", "Lion", "Wolf", "Eagle", "Hawk", "Falcon", "Owl", "Phoenix", "Dragon", "Griffin", "Kraken", "Shark", "Whale", "Dolphin", "Octopus", "Bear", "Panther", "Leopard", "Cheetah", "Lynx", "Fox", "Coyote", "Deer", "Elk", "Moose", "Bison", "Bull", "Stallion", "Raven", "Crow", "Swan", "Peacock", "Cobra", "Viper", "Python", "Gecko", "Iguana", "Chameleon", "Tortoise", "Elephant"];
+
+function generateRandomProjectName() {
+    const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+    const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+    const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+    return `${adj} ${color} ${animal}`;
+}
 
 // DOM Elements
 const chatList = document.getElementById('chat-list');
@@ -607,7 +620,7 @@ async function loadData() {
         } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
         } else {
-            createNewProject();
+            await createNewProject();
         }
 
         // Initial health check for all projects
@@ -619,7 +632,7 @@ async function loadData() {
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
-        createNewProject();
+        await createNewProject();
     }
 }
 
@@ -704,7 +717,8 @@ function sanitizeProject(p) {
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
         currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
         projectPrompt: p.projectPrompt || '',
-        isCorrupted: p.isCorrupted || false
+        isCorrupted: p.isCorrupted || false,
+        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
     };
 }
 
@@ -796,9 +810,64 @@ window.clearConsoleUI = async () => {
     refreshConsoleUI();
 };
 
-async function createNewProject() {
+async function generateGenerativeProjectName() {
+    console.log("[GENERATIVE] Generando nombre de proyecto...");
+    try {
+        // Usar el modelo seleccionado o el primero de la lista, o un fallback
+        let model = modelSelect.value;
+        if (!model && modelSelect.options.length > 0) {
+            model = modelSelect.options[0].value;
+        }
+        if (!model) model = "llama3";
+        
+        const response = await fetch(`${OLLAMA_BASE}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: model,
+                prompt: "Eres un generador de nombres creativos para proyectos de programación. Genera un nombre corto (2-3 palabras), impactante y original en español. Solo devuelve el nombre, sin comillas, sin explicaciones, sin puntos finales. Solo el nombre.",
+                stream: false,
+                options: {
+                    temperature: 0.8,
+                    num_predict: 20
+                }
+            })
+        });
+        if (!response.ok) throw new Error("Ollama error");
+        const data = await response.json();
+        let name = data.response.trim().replace(/["']/g, '');
+        // Limpieza básica si el modelo se pone charlatán
+        if (name.includes('\n')) name = name.split('\n')[0];
+        return name || `Proyecto ${state.projects.length + 1}`;
+    } catch (e) {
+        console.error("Error generating generative name:", e);
+        return `Proyecto ${state.projects.length + 1}`;
+    }
+}
+
+async function createNewProject(customName = null) {
+    // Si customName es un evento (por ser un event listener), ignorarlo
+    if (customName && typeof customName === 'object' && customName.constructor.name.includes('Event')) {
+        customName = null;
+    }
+
     const id = generateId();
-    const projectName = `Proyecto ${state.projects.length + 1}`;
+    
+    // Indicador visual en el botón de la sidebar
+    const btn = document.getElementById('new-chat');
+    const originalText = btn ? btn.innerText : '+';
+    if (btn) {
+        btn.innerText = '⏳';
+        btn.disabled = true;
+    }
+
+    const isInitial = !customName;
+    const projectName = customName || generateRandomProjectName();
+
+    if (btn) {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
 
     // Call server to create default folder
     let folderPath = '';
@@ -814,41 +883,46 @@ async function createNewProject() {
         console.error("Error creating project folder:", e);
     }
 
-    const newProject = {
-        id,
+    const newProject = sanitizeProject({
+        id: id,
         name: projectName,
         folder: folderPath,
-        model: modelSelect.value, // Save current global model as default for this project
+        model: modelSelect.value,
+        isInitialName: isInitial,
         chats: [
-            {
-                id: 'chat-' + generateId(),
-                name: 'Agente 1',
-                messages: [],
-                isThinking: false,
-                mode: 'auto',
-                model: modelSelect.value // Agent also gets the model
+            { 
+                id: 'chat-' + generateId(), 
+                name: 'Agente 1', 
+                messages: [], 
+                isThinking: false, 
+                mode: 'auto', 
+                lastProgress: Date.now(), 
+                isStopped: false,
+                model: modelSelect.value,
+                isNew: true
             }
         ],
-        openFiles: [],
-        activeTabId: null,
-        currentFiles: [],
-        projectPrompt: ''
-    };
-    newProject.activeTabId = newProject.chats[0].id;
+        isNew: true
+    });
+
     state.projects.push(newProject);
     state.activeProjectId = id;
 
     renderProjectList();
     renderTabs();
-
+    
     if (folderPath) {
         window.scanFolder(folderPath);
-    } else {
-        renderFileList();
     }
 
-    saveData();
+    // Sync with server
+    await saveData();
+    
+    adminLog(`📁 Nuevo proyecto creado: <strong>${projectName}</strong>`);
+    
+    return newProject;
 }
+
 
 async function checkProjectHealth(project) {
     if (!project.folder) return;
@@ -938,9 +1012,11 @@ function renderProjectList() {
         const corruptedClass = p.isCorrupted ? 'corrupted' : '';
         const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
         const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
+        const summonedClass = p.isNew ? 'summoned-anim' : '';
+        if (p.isNew) setTimeout(() => { p.isNew = false; }, 3000); // Clear after animation
 
         return `
-            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass}" 
+            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
                  data-id="${p.id}" 
                  title="${corruptedTitle}"
                  onclick="window.switchProject('${p.id}', event)">
@@ -994,8 +1070,11 @@ function renderTabs() {
     // 2. Chats Tabs
     const chats = project.chats || [];
     chats.forEach(chat => {
+        const summonedClass = chat.isNew ? 'summoned-anim' : '';
+        if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
+
         tabsHtml += `
-            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''}" onclick="window.switchTab('${chat.id}')">
+            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" onclick="window.switchTab('${chat.id}')">
                 <span>🤖 ${chat.name}</span>
                 <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
@@ -1372,14 +1451,14 @@ window.switchProject = (id, event = null) => {
     saveData();
 };
 
-window.deleteProject = (id) => {
+window.deleteProject = async (id) => {
     if (!confirm('¿Eliminar proyecto completo?')) return;
     state.projects = state.projects.filter(p => p.id !== id);
     if (state.activeProjectId === id) {
         if (state.projects.length > 0) {
             switchProject(state.projects[0].id);
         } else {
-            createNewProject();
+            await createNewProject();
         }
     } else {
         renderProjectList();
@@ -1387,10 +1466,10 @@ window.deleteProject = (id) => {
     saveData();
 };
 
-window.deleteAllProjects = () => {
+window.deleteAllProjects = async () => {
     if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
     state.projects = [];
-    createNewProject();
+    await createNewProject();
     saveData();
 };
 
@@ -1547,6 +1626,20 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     chat.isStopped = false;
     renderMessages();
 
+    // Si el proyecto tiene un nombre inicial aleatorio, generar uno real tras el primer prompt
+    if (project.isInitialName && chat.messages.length > 0) {
+        console.log("[NAMING] Generando nombre real para el proyecto tras primer prompt...");
+        project.isInitialName = false; // Marcar como procesado para no repetir
+        generateGenerativeProjectName().then(newName => {
+            if (newName) {
+                console.log(`[NAMING] Proyecto renombrado: ${project.name} -> ${newName}`);
+                project.name = newName;
+                renderProjectList();
+                saveData();
+            }
+        });
+    }
+
     // 1. Sync Task State
     let taskState = await getTaskState();
 
@@ -1649,6 +1742,20 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
         // Clean display text: replace code blocks with clickable links
         let displayContent = assistantResponse
+            .replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '') // Hide satisfy comments
+            .replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, (match, toolName, argsJson) => {
+                let parsedArgs = {};
+                try {
+                    // Try to clean the JSON before parsing for display
+                    let cleanJson = argsJson.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+                    parsedArgs = JSON.parse(cleanJson);
+                } catch(e) {}
+                
+                const path = parsedArgs.path ? ` en <strong>${parsedArgs.path}</strong>` : '';
+                const title = `Argumentos: ${argsJson.substring(0, 500)}${argsJson.length > 500 ? '...' : ''}`;
+                
+                return `<div class="file-action-link mcp-call" title="${escapeHtml(title)}">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
+            })
             .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
                 return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
@@ -1690,7 +1797,38 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             await autoRetry("Continuando con el número aleatorio generado...", project, chat);
         } else if (actionResult.actionsPerformed === 0) {
             // Just finished without actions or reads.
-            console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
+            const lastMsg = chat.messages[chat.messages.length - 1];
+            const text = lastMsg ? lastMsg.content.toLowerCase() : "";
+            const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "implementa", "borra", "replace", "write", "fix", "update", "change"];
+            const isTechnicalImperative = technicalKeywords.some(kw => text.includes(kw));
+
+            if (isTechnicalImperative) {
+                const retryMsg = "⚠️ Detecté que había un imperativo previo de crear o modificar archivos, pero no se realizó ninguna acción de escritura. Por favor, explica por qué no se realizaron los cambios o procede a realizarlos ahora usando las etiquetas correctas.";
+                chat.messages.push({ role: 'system', content: retryMsg });
+                console.warn(`🕵️ Imperativo detectado sin acciones. Iniciando reintento de verificación.`);
+                await autoRetry(retryMsg, project, chat);
+            } else {
+                console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
+            }
+        }
+
+        // --- NEW: Post-Creation Analysis Phase ---
+        if (actionResult.filesCreated.length > 0 || actionResult.filesModified.length > 0) {
+            const allFiles = [...actionResult.filesCreated, ...actionResult.filesModified].join(', ');
+            const analysisMsg = `🔍 FASE DE ANÁLISIS: Has creado o modificado los siguientes archivos: ${allFiles}. 
+            Por favor, realiza un análisis breve de lo que hiciste y confirma si cumplen con las REGLAS FUNDAMENTALES (separación de archivos index/style/script, canvas fullscreen, y existencia de run.bat con puerto aleatorio). 
+            Si falta algo, corrígelo ahora.`;
+            
+            chat.messages.push({ role: 'system', content: analysisMsg });
+            console.log(`🧐 Iniciando fase de análisis para: ${allFiles}`);
+            await autoRetry(analysisMsg, project, chat);
+        }
+
+        if (assistantResponse.includes("TASK COMPLETE")) {
+             adminLog(`✅ Agente <strong>${chat.name}</strong> ha reportado FINALIZACIÓN de su tarea.`);
+             // Notificar al orquestador para que revise
+             state.adminMessages.push({ role: 'system', content: `📢 NOTIFICACIÓN: El agente **${chat.name}** (Proyecto: ${project.name}) ha marcado su tarea como COMPLETADA. Revisa su estado y decide si hay más pasos.` });
+             triggerAdminAgentLogic();
         }
 
         updateThinking(chat, false);
@@ -2095,26 +2233,32 @@ window.clearAdminChat = () => {
 };
 
 function buildAdminSystemPrompt() {
-    const agentsList = state.projects.flatMap(p => p.chats.map(c => ({
-        name: c.name,
-        projectId: p.id,
-        projectName: p.name,
-        chatId: c.id,
-        status: c.isThinking ? 'OCUPADO' : 'OCIOSO'
-    })));
+    const agentsList = state.projects.flatMap(p => p.chats.map(c => {
+        const lastMsg = c.messages.length > 0 ? c.messages[c.messages.length - 1].content : '(Sin actividad)';
+        const snippet = lastMsg.length > 100 ? lastMsg.substring(0, 100) + '...' : lastMsg;
+        return {
+            name: c.name,
+            projectId: p.id,
+            projectName: p.name,
+            chatId: c.id,
+            status: c.isThinking ? 'OCUPADO' : 'OCIOSO',
+            lastUpdate: snippet
+        };
+    }));
 
-    const agentsTable = agentsList.map(a => `| ${a.chatId} | ${a.name} | ${a.projectName} | ${a.status} |`).join('\n');
+    const agentsTable = agentsList.map(a => `| ${a.chatId} | ${a.name} | ${a.projectName} | ${a.status} | ${a.lastUpdate} |`).join('\n');
 
     let prompt = (promptsCache.orchestrator_agent || state.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT) + `
 
-LISTA DE AGENTES ACTIVOS:
-| ID (USAR ESTE) | NOMBRE | PROYECTO | ESTADO |
-| :--- | :--- | :--- | :--- |
+ESTADO ACTUAL DE LA RED DE AGENTES:
+| ID | NOMBRE | PROYECTO | ESTADO | ÚLTIMO MENSAJE / RESULTADO |
+| :--- | :--- | :--- | :--- | :--- |
 ${agentsTable}
 
-INSTRUCCIONES:
-- Identifica al agente por su ID o Nombre.
-- Usa [DELEGATE:ID]...[/DELEGATE] para enviar la instrucción.`;
+INSTRUCCIONES ADICIONALES:
+- Si un agente está "OCIOSO" y ha terminado su tarea ("TASK COMPLETE" en su último mensaje), evalúa si el proyecto está listo.
+- Si el usuario pide algo complejo, puedes encadenar comandos: [CREATE_PROJECT] [CREATE_AGENT] [@Agente: "Instrucción"] todo en una sola respuesta.
+- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro.`;
     return prompt;
 }
 
@@ -2209,6 +2353,73 @@ async function triggerAdminAgentLogic(retryCount = 0) {
             dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
         }
 
+        // --- NEW ADMIN TOOLS ---
+        const createProjectRegex = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
+        const createAgentRegex = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
+        const deleteProjectRegex = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
+
+        while ((m = createProjectRegex.exec(assistantResponse)) !== null) {
+            const name = m[1].trim();
+            adminLog(`🛠️ Orquestador creando proyecto: <strong>${name}</strong>`);
+            try {
+                await createNewProject(name);
+            } catch (err) {
+                anyFailed = true;
+                failedTargets.push(`CREATE_PROJECT:${name}`);
+                state.adminMessages.push({ role: 'system', content: `❌ Error al crear proyecto "${name}": ${err.message}` });
+            }
+        }
+
+        while ((m = createAgentRegex.exec(assistantResponse)) !== null) {
+            const pId = m[1].trim();
+            const aName = m[2].trim();
+            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
+            if (project) {
+                adminLog(`🛠️ Orquestador creando agente <strong>${aName}</strong> en proyecto <strong>${project.name}</strong>`);
+                // Implementación rápida de addChat con parámetros
+                const newChat = {
+                    id: 'chat-' + generateId(),
+                    name: aName,
+                    messages: [],
+                    isThinking: false,
+                    mode: 'auto',
+                    lastProgress: Date.now(),
+                    isStopped: false,
+                    model: project.model || modelSelect.value
+                };
+                newChat.isNew = true; // For visual animation
+                project.chats.push(newChat);
+                saveData();
+                renderProjectList();
+                renderTabs();
+                renderAdminMonitor();
+            } else {
+                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para crear el agente.`);
+                anyFailed = true;
+                failedTargets.push(`CREATE_AGENT:${pId}`);
+                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo crear el agente "${aName}" porque el proyecto "${pId}" NO EXISTE. Asegúrate de crear el proyecto primero o usar el nombre exacto de un proyecto existente.` });
+            }
+        }
+
+        while ((m = deleteProjectRegex.exec(assistantResponse)) !== null) {
+            const pId = m[1].trim();
+            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
+            if (project) {
+                if (confirm(`⚠️ El Orquestador solicita eliminar el proyecto "${project.name}". ¿Confirmar?`)) {
+                    adminLog(`🗑️ Orquestador eliminando proyecto: <strong>${project.name}</strong>`);
+                    await window.deleteProject(project.id);
+                } else {
+                    adminLog(`🛑 Acción cancelada por el usuario: Eliminar proyecto ${project.name}`);
+                }
+            } else {
+                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para eliminar.`);
+                anyFailed = true;
+                failedTargets.push(`DELETE_PROJECT:${pId}`);
+                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo eliminar el proyecto "${pId}" porque NO EXISTE.` });
+            }
+        }
+        // -----------------------
+
         let anyFailed = false;
         let failedTargets = [];
 
@@ -2230,7 +2441,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
             // Primero buscar por ID exacto (prioridad)
             for (const p of state.projects) {
                 for (const c of p.chats) {
-                    if (c.id.toLowerCase() === targetName) {
+                    if ((c.id || '').toLowerCase() === targetName) {
                         c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
                         state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}**` });
                         if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
@@ -2245,8 +2456,8 @@ async function triggerAdminAgentLogic(retryCount = 0) {
             if (!found && targetName) {
                 for (const p of state.projects) {
                     for (const c of p.chats) {
-                        const agentNameLower = c.name.toLowerCase();
-                        const projectNameLower = p.name.toLowerCase();
+                        const agentNameLower = (c.name || '').toLowerCase();
+                        const projectNameLower = (p.name || '').toLowerCase();
                         const compositeName = `${agentNameLower} (${projectNameLower})`.toLowerCase();
 
                         // Coincidencias ultra-flexibles
@@ -2270,26 +2481,40 @@ async function triggerAdminAgentLogic(retryCount = 0) {
                 }
             }
             if (!found) {
-                state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${rawTarget}**` });
+                const systemCommands = ['create_project', 'create_agent', 'delete_project'];
+                if (systemCommands.includes(targetName)) {
+                    state.adminMessages.push({ role: 'system', content: `❌ ERROR: No puedes usar [@${rawTarget}: ...] para comandos de sistema. Debes usar el formato directo: [${targetName.toUpperCase()}: Parámetros]` });
+                } else {
+                    state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${rawTarget}**` });
+                }
                 anyFailed = true;
                 failedTargets.push(rawTarget);
             }
         }
 
-        if (anyFailed && retryCount < 3) {
+        if (anyFailed && retryCount < 5) {
             const agentList = state.projects.flatMap(p => p.chats.map(c => `- ${c.name} (Proyecto: ${p.name}) [ID: ${c.id}]`)).join('\n');
-            const retryFeedback = `⚠️ Error de Orquestación: No pude resolver los destinatarios: [${failedTargets.join(', ')}]. 
-Por favor, asegúrate de usar EXACTAMENTE el "Nombre" o el "ID" (sin prefijos) de esta lista oficial de agentes activos:
+            const projectList = state.projects.map(p => `- ${p.name} [ID: ${p.id}]`).join('\n');
+            const retryFeedback = `⚠️ Error de Orquestación: Algunas acciones fallaron o destinatarios no se encontraron: [${failedTargets.join(', ')}]. 
+            
+POR FAVOR CORRIGE TUS COMANDOS Y REINTENTA:
+1. Asegúrate de que el PROYECTO exista antes de crear un agente en él.
+2. Usa el formato [CREATE_AGENT: Nombre_Proyecto : Nombre_Agente].
+3. Revisa los IDs y nombres de esta lista oficial actualizada:
 
+PROYECTOS:
+${projectList}
+
+AGENTES:
 ${agentList}
 
-REINTENTO AUTOMÁTICO ${retryCount + 1}/3...`;
+REINTENTO AUTOMÁTICO ${retryCount + 1}/5...`;
 
             state.adminMessages.push({ role: 'system', content: retryFeedback });
             state.adminIsThinking = false;
 
             // Re-trigger con feedback para que corrija
-            console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/3) por error en destinatarios.`);
+            console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/5) por error en comandos/destinatarios.`);
             setTimeout(() => triggerAdminAgentLogic(retryCount + 1), 1500);
             return;
         }
@@ -2391,6 +2616,8 @@ async function processAgentActions(text, project, chat) {
     const logs = [];
     const toolOutputs = [];
     let actionsPerformed = 0;
+    const filesCreated = [];
+    const filesModified = [];
     let match;
 
     let taskState = await getTaskState();
@@ -2562,6 +2789,7 @@ async function processAgentActions(text, project, chat) {
                 const content = toolArgs.content || "";
 
                 logs.push({ type: 'success', message: `Escritura MCP exitosa: **${fileName}**` });
+                filesCreated.push(fileName); // Assume new for write_file in MCP context for now, or check exists
                 const outputMsg = `✅ MCP write_file ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
                 chat.messages.push({ role: 'system', content: outputMsg });
                 toolOutputs.push({ toolName, result: resultText });
@@ -2700,6 +2928,8 @@ async function processAgentActions(text, project, chat) {
                 await recordAction(`[WRITE:${fileName}]`, `No changes performed (identical content).`);
             } else {
                 logs.push({ type: 'success', message: `Escritura verificada para **${fileName}**` });
+                if (writeRes.isNew) filesCreated.push(fileName);
+                else filesModified.push(fileName);
                 await recordAction(`[WRITE:${fileName}]`, `Successfully wrote ${fileName}.`);
             }
         } else {
@@ -2791,6 +3021,8 @@ async function processAgentActions(text, project, chat) {
                     await recordAction(`[REPLACE:${fileName}]`, `Applied ${successCount} blocks but no effective change.`);
                 } else {
                     logs.push({ type: 'success', message: `Cambios aplicados (${successCount}/${blocksFound} bloques) en **${fileName}**` });
+                    if (writeRes.isNew) filesCreated.push(fileName);
+                    else filesModified.push(fileName);
                     await recordAction(`[REPLACE:${fileName}]`, `Successfully updated ${successCount}/${blocksFound} blocks.`);
                 }
             } else {
@@ -2823,7 +3055,7 @@ async function processAgentActions(text, project, chat) {
         logs.push({ type: 'info', message: "No se detectaron acciones de herramientas en esta respuesta." });
     }
 
-    return { errors, reads, logs, actionsPerformed, toolOutputs };
+    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified };
 }
 
 
@@ -2993,6 +3225,7 @@ async function performWrite(fileName, content, project, chat) {
 
     // Read old stats for verification
     let oldStats = { mtime: null, size: 0 };
+    let isNew = true;
     try {
         const res = await fetchWithLog(`${API_BASE}/files/read`, {
             method: 'POST',
@@ -3000,7 +3233,10 @@ async function performWrite(fileName, content, project, chat) {
             body: JSON.stringify({ filePath: sanPath })
         });
         const data = await res.json();
-        oldStats = { mtime: data.mtime, size: data.size, content: data.content || "" };
+        if (data.content !== undefined) {
+            oldStats = { mtime: data.mtime, size: data.size, content: data.content || "" };
+            isNew = false;
+        }
     } catch (e) { }
 
     const oldContent = oldStats.content || "";
@@ -3076,7 +3312,7 @@ async function performWrite(fileName, content, project, chat) {
         window.scanFolder(project.folder);
         saveData();
 
-        return { success: writeResult.success, hasChanged, error: writeResult.error };
+        return { success: writeResult.success, hasChanged, isNew, error: writeResult.error };
 
     } catch (e) {
         console.error("Write error:", e);

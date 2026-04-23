@@ -1,0 +1,7 @@
+/* Asegura que el canvas ocupe toda la pantalla y no haya márgenes */
+body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #000011;
+}
