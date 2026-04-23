@@ -1,5 +1,5 @@
 {
-  "objective": "Modifica esta linea al script.js , ponele un comentaario arriba de todo que diga \"viva el azul\"",
+  "objective": "crea un sketch de p5",
   "currentState": "PROCESSING ACTIONS",
   "lastActions": [
     {
@@ -9,65 +9,125 @@
   ],
   "steps": [
     {
-      "id": 1,
-      "timestamp": 1776972602569,
+      "id": 12,
+      "timestamp": 1776975702914,
+      "action": "[MCP:execute_js]",
+      "result": "Success"
+    },
+    {
+      "id": 13,
+      "timestamp": 1776975710848,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 14,
+      "timestamp": 1776975710903,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 15,
+      "timestamp": 1776975710968,
+      "action": "[MCP:execute_js]",
+      "result": "Success"
+    },
+    {
+      "id": 16,
+      "timestamp": 1776975739377,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 17,
+      "timestamp": 1776975739456,
+      "action": "[MCP:execute_js]",
+      "result": "Success"
+    },
+    {
+      "id": 18,
+      "timestamp": 1776975756987,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 19,
+      "timestamp": 1776975767484,
+      "action": "[MCP:execute_js]",
+      "result": "Success"
+    },
+    {
+      "id": 20,
+      "timestamp": 1776975793374,
+      "action": "[PROTOCOL_ERROR]",
+      "result": "Model hallucinated tool usage without tags."
+    },
+    {
+      "id": 21,
+      "timestamp": 1776975810642,
+      "action": "[PROTOCOL_ERROR]",
+      "result": "Model hallucinated tool usage without tags."
+    },
+    {
+      "id": 21,
+      "timestamp": 1776975820615,
+      "action": "[PROTOCOL_ERROR]",
+      "result": "Model hallucinated tool usage without tags."
+    },
+    {
+      "id": 21,
+      "timestamp": 1776975834311,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 21,
+      "timestamp": 1776975834365,
+      "action": "[MCP:execute_js]",
+      "result": "Success"
+    },
+    {
+      "id": 21,
+      "timestamp": 1776975839049,
       "action": "[MCP:read_file]",
-      "result": "Read script.js"
+      "result": "Read sketch.js"
     },
     {
-      "id": 2,
-      "timestamp": 1776972602576,
+      "id": 21,
+      "timestamp": 1776976040790,
       "action": "[MCP:write_file]",
       "result": "Success"
     },
     {
-      "id": 3,
-      "timestamp": 1776972602942,
+      "id": 21,
+      "timestamp": 1776976040809,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 21,
+      "timestamp": 1776976040835,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 21,
+      "timestamp": 1776976040903,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 4,
-      "timestamp": 1776972612264,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 5,
-      "timestamp": 1776972612415,
+      "id": 21,
+      "timestamp": 1776976284431,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 6,
-      "timestamp": 1776972612579,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 7,
-      "timestamp": 1776973642841,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 8,
-      "timestamp": 1776973642852,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 9,
-      "timestamp": 1776973642862,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 10,
-      "timestamp": 1776973642915,
+      "id": 21,
+      "timestamp": 1776976301343,
       "action": "[MCP:execute_js]",
       "result": "Success"
     }
   ],
-  "currentStep": 10
+  "currentStep": 21
 }

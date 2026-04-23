@@ -3174,6 +3174,7 @@ function renderSessionSummary(changeStats, project) {
 
     const itemsHtml = changeStats.map(s => {
         const fullPath = pathJoin(project.folder, s.fileName).replace(/\\/g, '/');
+        const displayName = s.fileName.split(/[/\\]/).pop();
         return `
             <div class="session-summary-item" onclick="window.openFile('${fullPath}')">
                 <span class="file-icon">📄</span>
@@ -3181,7 +3182,7 @@ function renderSessionSummary(changeStats, project) {
                     <span class="added" title="Líneas agregadas">+${s.added}</span>
                     <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
                 </div>
-                <span class="file-name">${s.fileName}</span>
+                <span class="file-name">${displayName}</span>
                 <span class="file-path">${fullPath}</span>
             </div>
         `;
@@ -3440,13 +3441,15 @@ async function performWrite(fileName, content, project, chat) {
 
     if (mode === 'supervised') {
         if (targetChat) {
-            targetChat.messages.push({ role: 'agent', content: `💡 Propuesta de cambio para ${fileName}. Por favor, revisa el archivo y acepta o rechaza.` });
+            const displayName = fileName.split(/[/\\]/).pop();
+            targetChat.messages.push({ role: 'agent', content: `💡 Propuesta de cambio para ${displayName}. Por favor, revisa el archivo y acepta o rechaza.` });
         }
         if (openFile) {
             openFile.pendingContent = content;
             openFile.oldContent = oldContent;
         } else {
-            project.openFiles.push({ path: sanPath, name: fileName, content: oldContent, oldContent: oldContent, pendingContent: content });
+            const displayName = fileName.split(/[/\\]/).pop();
+            project.openFiles.push({ path: sanPath, name: displayName, content: oldContent, oldContent: oldContent, pendingContent: content });
         }
         project.activeTabId = sanPath;
         renderTabs();
@@ -3517,7 +3520,8 @@ async function performWrite(fileName, content, project, chat) {
             openFile.diff = diff;
             openFile.pendingContent = null;
         } else {
-            project.openFiles.push({ path: sanPath, name: fileName, content, oldContent, diff });
+            const displayName = fileName.split(/[/\\]/).pop();
+            project.openFiles.push({ path: sanPath, name: displayName, content, oldContent, diff });
         }
         
         project.activeTabId = sanPath;
