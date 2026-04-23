@@ -1,7 +1,18 @@
 @echo off
-set puerto=5500
-title Lanzador p5.js Lightning Simulation
-REM Instala dependencias si es necesario (aunque aquí solo abre un navegador)
-start /b python -m http.server %puerto%
+REM *** Script de ejecución para el entorno web/shader ***
+
+set PORT=54664
+echo Preparando servidor en puerto: %PORT%...
+
+REM Iniciar el servidor en segundo plano
+start /b python -m http.server %PORT%
+
+REM Esperar a que el servidor esté listo (2 segundos)
 timeout /t 2 /nobreak >nul
-start http://127.0.0.1:%puerto%
+
+echo Abriendo proyecto en el navegador...
+start http://127.0.0.1:%PORT%
+
+echo.
+echo --- Proyecto en ejecucion en puerto: %PORT% ---
+exit

@@ -30,6 +30,7 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
 4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
 5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta.
 6. **RANDOM REAL**: Si necesitas un número aleatorio para cualquier lógica, DEBES usar `[CALL:RANDOM]`. Está terminantemente prohibido que "pienses" o "inventes" un número aleatorio tú mismo.
+7. **NO RUN.BAT**: NO crees ni modifiques archivos `run.bat`. Estos son gestionados automáticamente por el sistema. Céntrate únicamente en los archivos de código del proyecto (html, css, js, shaders, etc).
 
 ### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
 "Entendido. Voy a crear la estructura base del proyecto.

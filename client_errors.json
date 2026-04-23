@@ -2,18 +2,133 @@
   {
     "type": "log",
     "messages": [
-      "📂 Project has folder, scanning: D:\\Programacion\\jpagents\\proyects\\visuales_agua"
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/shader_de_fuego/script.js\",\n    \"content\": \"let lastX; \\nlet lastY;\\n\\nfunction setup() {\\n  // Establece el modo de color a HSB (Tono, Saturación, Brillo) para efectos de color vibrantes\\n  colorMode(HSB, 360, 100, 100, 100);\\n  \\n  // Crea el canvas cubriendo toda la ventana\\n  createCanvas(windowWidth, windowHeight);\\n  background(0); \\n  \\n  // Inicializa las coordenadas con la posición actual del ratón\\n  lastX = mouseX;\\n  lastY = mouseY;\\n}\"\n  },\n  \"id\": 6\n}"
     ],
-    "timestamp": "2026-04-23T14:06:21.610Z",
+    "timestamp": "2026-04-23T15:30:16.334Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "📂 Project has folder, scanning: D:\\Programacion\\jpagents\\proyects\\visuales_fuego"
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\shader_de_fuego\\\\script.js\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 6\n}"
     ],
-    "timestamp": "2026-04-23T14:06:26.706Z",
+    "timestamp": "2026-04-23T15:30:16.338Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP write_file..."
+    ],
+    "timestamp": "2026-04-23T15:30:16.341Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 7\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:16.343Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:16.385Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP execute_js..."
+    ],
+    "timestamp": "2026-04-23T15:30:16.388Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 AutoRetry 1/20: 🔍 FASE DE ANÁLISIS: Has creado o modificado los siguientes archivos: script.js. \n            Por fa"
+    ],
+    "timestamp": "2026-04-23T15:30:16.389Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"write_file\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/shader_de_fuego/style.css\",\n    \"content\": \"body { margin: 0; padding: 0; overflow: hidden; }\\nhtml, body { height: 100%; width: 100%; }\\ncanvas { display: block; }\"\n  },\n  \"id\": 8\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:23.173Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"Archivo escrito en: D:\\\\Programacion\\\\jpagents\\\\proyects\\\\shader_de_fuego\\\\style.css\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 8\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:23.176Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP write_file..."
+    ],
+    "timestamp": "2026-04-23T15:30:23.180Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 9\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:23.182Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 9\n}"
+    ],
+    "timestamp": "2026-04-23T15:30:23.221Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP execute_js..."
+    ],
+    "timestamp": "2026-04-23T15:30:23.225Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

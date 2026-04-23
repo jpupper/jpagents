@@ -193,6 +193,29 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
 
         await fs.mkdir(folderPath, { recursive: true });
         
+        // --- Create deterministic run.bat ---
+        const randomPort = Math.floor(Math.random() * (60000 - 50000 + 1)) + 50000;
+        const runBatContent = `@echo off
+REM *** Script de ejecución para el entorno web/shader ***
+
+set PORT=${randomPort}
+echo Preparando servidor en puerto: %PORT%...
+
+REM Iniciar el servidor en segundo plano
+start /b python -m http.server %PORT%
+
+REM Esperar a que el servidor esté listo (2 segundos)
+timeout /t 2 /nobreak >nul
+
+echo Abriendo proyecto en el navegador...
+start http://127.0.0.1:%PORT%
+
+echo.
+echo --- Proyecto en ejecucion en puerto: %PORT% ---
+exit`;
+        await fs.writeFile(path.join(folderPath, 'run.bat'), runBatContent, 'utf-8');
+        // ------------------------------------
+
         console.log(`[SERVER] Carpeta de proyecto creada: ${folderPath}`);
         res.json({ path: folderPath, folderName }); // Return both for the frontend to potentially sync
     } catch (e) {

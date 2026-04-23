@@ -1,5 +1,5 @@
 {
-  "objective": "inpage.js:264 Uncaught TypeError: Cannot redefine property: ethereum\n    at Object.defineProperties (<anonymous>)\n    at inpage.js:264:43023\n    at inpage.js:264:43950\n    at inpage.js:264:43954\n(anonymous) @ inpage.js:264\n(anonymous) @ inpage.js:264\n(anonymous) @ inpage.js:264Understand this error\nconfig.js:35 Uncaught SyntaxError: Invalid regular expression: /(/: Unterminated group (at config.js:35:39)Understand this error\nscript.js:26 Fallo al cargar el feed: TypeError: Cannot read properties of undefined (reading 'API_URL')\n    at loadFeed (script.js:15:59)\n    at HTMLDocument.<anonymous> (script.js:67:5)",
+  "objective": "Crea un sketch basico de p5js donde paso el mouse y va dibujando",
   "currentState": "PROCESSING ACTIONS",
   "lastActions": [
     {
@@ -9,125 +9,59 @@
   ],
   "steps": [
     {
-      "id": 21,
-      "timestamp": 1776952713741,
+      "id": 1,
+      "timestamp": 1776958161490,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 2,
+      "timestamp": 1776958161499,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 3,
+      "timestamp": 1776958161505,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 4,
+      "timestamp": 1776958161549,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776953087412,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953087421,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953087429,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953087437,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953087480,
+      "id": 5,
+      "timestamp": 1776958167035,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776953105442,
+      "id": 6,
+      "timestamp": 1776958216338,
       "action": "[MCP:write_file]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776953105454,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953105465,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953105501,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953118982,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953118993,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953119006,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953126659,
-      "action": "[MCP:RANDOM]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953126673,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953126723,
+      "id": 7,
+      "timestamp": 1776958216385,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776953135905,
+      "id": 8,
+      "timestamp": 1776958223177,
       "action": "[MCP:write_file]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776953135949,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953147365,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776953147421,
+      "id": 9,
+      "timestamp": 1776958223222,
       "action": "[MCP:execute_js]",
       "result": "Success"
     }
   ],
-  "currentStep": 21
+  "currentStep": 9
 }

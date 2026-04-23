@@ -84,7 +84,7 @@ const OLLAMA_BASE = 'http://localhost:11434/api';
 let promptsCache = {
     developer_agent: "",
     orchestrator_agent: "",
-    global_rules: ""
+    user_system_prompt: ""
 };
 
 async function loadPrompts() {
@@ -497,7 +497,7 @@ async function performPeriodicSync() {
 }
 
 // New State Structure
-const DEFAULT_GLOBAL_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
+const DEFAULT_USER_SYSTEM_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.
 
 REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.`;
@@ -527,7 +527,7 @@ let state = {
     models: [],
     selectedModel: '',
     mode: 'auto', // 'auto' or 'supervised'
-    globalPrompt: DEFAULT_GLOBAL_PROMPT,
+    userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
     adminMessages: [],
     adminIsThinking: false,
@@ -631,7 +631,7 @@ async function loadData() {
             state.projects = data.map(sanitizeProject);
         } else if (data && typeof data === 'object') {
             state.projects = (data.projects || []).map(sanitizeProject);
-            state.globalPrompt = data.globalPrompt || DEFAULT_GLOBAL_PROMPT;
+            state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
             state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
             state.activeProjectId = data.activeProjectId || null;
             state.adminMessages = data.adminMessages || [];
@@ -642,7 +642,7 @@ async function loadData() {
         } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
         } else {
-            await createNewProject();
+            state.activeProjectId = null;
         }
 
         // Initial health check for all projects
@@ -689,7 +689,7 @@ async function saveData() {
     try {
         const payload = {
             projects: state.projects,
-            globalPrompt: state.globalPrompt,
+            userSystemPrompt: state.userSystemPrompt,
             orchestratorPrompt: state.orchestratorPrompt,
             activeProjectId: state.activeProjectId,
             adminMessages: state.adminMessages
@@ -852,19 +852,7 @@ async function createNewProject(customName = null) {
         folder: folderPath,
         model: modelSelect.value,
         isInitialName: isInitial,
-        chats: [
-            { 
-                id: 'chat-' + generateId(), 
-                name: 'Agente 1', 
-                messages: [], 
-                isThinking: false, 
-                mode: 'auto', 
-                lastProgress: Date.now(), 
-                isStopped: false,
-                model: modelSelect.value,
-                isNew: true
-            }
-        ],
+        chats: [],
         isNew: true
     });
 
@@ -1023,7 +1011,15 @@ function renderProjectList() {
 
 function renderTabs() {
     const project = getActiveProject();
-    if (!project) return;
+    
+    if (!project) {
+        if (state.activeProjectId === 'admin') {
+            tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
+        } else {
+            tabsNav.innerHTML = '';
+        }
+        return;
+    }
 
     let tabsHtml = '';
 
@@ -1138,17 +1134,36 @@ window.stopAgent = (projectId, chatId) => {
 
 function updateViewVisibility() {
     const project = getActiveProject();
-    if (!project) return;
-
-    const chats = project.chats || [];
-    const isChat = chats.some(c => c.id === project.activeTabId);
-    const isOpenFile = project.openFiles.some(f => f.path.replace(/\\/g, '/') === project.activeTabId);
-
+    
     // Reset visibility
     chatTabContent.classList.add('hidden');
     editorTabContent.classList.add('hidden');
     dashboardTabContent.classList.add('hidden');
     adminTabContent.classList.add('hidden');
+
+    // Update Admin Monitor button state
+    const adminBtn = document.getElementById('admin-monitor-btn');
+    if (adminBtn) {
+        const isAdminActive = state.activeProjectId === 'admin' || (project && project.activeTabId === 'admin');
+        adminBtn.classList.toggle('active', isAdminActive);
+    }
+
+    if (state.activeProjectId === 'admin' || (project && project.activeTabId === 'admin')) {
+        saveFileBtn.classList.add('hidden');
+        adminTabContent.classList.remove('hidden');
+        renderAdminMonitor();
+        renderAdminMessages();
+        return;
+    }
+
+    if (!project) {
+        dashboardTabContent.classList.remove('hidden');
+        return;
+    }
+
+    const chats = project.chats || [];
+    const isChat = chats.some(c => c.id === project.activeTabId);
+    const isOpenFile = project.openFiles.some(f => f.path.replace(/\\/g, '/') === project.activeTabId);
 
     if (isChat) {
         saveFileBtn.classList.add('hidden');
@@ -1421,7 +1436,9 @@ window.deleteProject = async (id) => {
         if (state.projects.length > 0) {
             switchProject(state.projects[0].id);
         } else {
-            await createNewProject();
+            state.activeProjectId = null;
+            renderProjectList();
+            renderTabs();
         }
     } else {
         renderProjectList();
@@ -1432,7 +1449,9 @@ window.deleteProject = async (id) => {
 window.deleteAllProjects = async () => {
     if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
     state.projects = [];
-    await createNewProject();
+    state.activeProjectId = null;
+    renderProjectList();
+    renderTabs();
     saveData();
 };
 
@@ -1553,16 +1572,15 @@ function buildRefactoredSystemPrompt(taskState) {
     const recentStepsText = (taskState.steps || []).slice(-5).map(s =>
         `[Step ${s.id}] Action: ${s.action} -> Result: ${s.result.substring(0, 500)}${s.result.length > 500 ? '...' : ''}`
     ).join('\n');
-
     // --- CARGAR PROMPTS DESDE CACHE (EXTERNALIZADOS) ---
     const developerAgentBase = promptsCache.developer_agent || getInternalAgentInstructions();
-    const globalRules = promptsCache.global_rules || state.globalPrompt || "";
+    const userSystemPrompt = promptsCache.user_system_prompt || state.userSystemPrompt || "";
     const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
 
     return `${developerAgentBase}
 
-### GLOBAL RULES & STYLE:
-${globalRules}
+### USER SYSTEM RULES:
+${userSystemPrompt}
 
 ${projectInstructions}
 
@@ -1779,7 +1797,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (actionResult.filesCreated.length > 0 || actionResult.filesModified.length > 0) {
             const allFiles = [...actionResult.filesCreated, ...actionResult.filesModified].join(', ');
             const analysisMsg = `🔍 FASE DE ANÁLISIS: Has creado o modificado los siguientes archivos: ${allFiles}. 
-            Por favor, realiza un análisis breve de lo que hiciste y confirma si cumplen con las REGLAS FUNDAMENTALES (separación de archivos index/style/script, canvas fullscreen, y existencia de run.bat con puerto aleatorio). 
+            Por favor, realiza un análisis breve de lo que hiciste y confirma si cumplen con las REGLAS FUNDAMENTALES (separación de archivos index/style/script y canvas fullscreen). 
             Si falta algo, corrígelo ahora.`;
             
             chat.messages.push({ role: 'system', content: analysisMsg });
@@ -2109,6 +2127,7 @@ Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZA
 4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
 5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta.
 6. **RANDOM REAL**: Si necesitas un número aleatorio para cualquier lógica (puertos, IDs, valores de prueba), DEBES usar [CALL:RANDOM]. Está terminantemente prohibido que "pienses" o "inventes" un número aleatorio tú mismo.
+7. **NO RUN.BAT**: NO crees ni modifiques archivos run.bat. Estos son gestionados automáticamente por el sistema. Céntrate únicamente en los archivos de código del proyecto.
 
 ### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
 "Entendido. Voy a crear la estructura base del proyecto.
@@ -2531,7 +2550,7 @@ function renderAdminMonitor() {
                         </div>
                     </td>
                     <td>
-                        <button class="btn-stop" onclick="window.stopAgent('${p.id}', '${c.id}')">STOP</button>
+                        <button class="btn-stop" onclick="window.stopAgent('${p.id}', '${c.id}')" title="Detener Agente"></button>
                     </td>
                 </tr>
             `;
@@ -3426,9 +3445,11 @@ function setupEventListeners() {
         const p = getActiveProject();
         if (p) {
             p.activeTabId = 'admin';
-            renderTabs();
-            updateViewVisibility();
+        } else {
+            state.activeProjectId = 'admin';
         }
+        renderTabs();
+        updateViewVisibility();
     };
 
     // Sub-tab switching for Admin Monitor
@@ -3601,7 +3622,7 @@ function setupEventListeners() {
     const globalSettingsModal = document.getElementById('global-settings-modal');
     const closeModalBtn = document.querySelector('.close-modal');
     const saveGlobalBtn = document.getElementById('save-global-settings');
-    const globalPromptTextarea = document.getElementById('global-prompt');
+    const userPromptTextarea = document.getElementById('global-prompt');
     const orchestratorPromptTextarea = document.getElementById('orchestrator-prompt');
     const internalAgentDisplay = document.getElementById('internal-agent-display');
 
@@ -3634,7 +3655,7 @@ function setupEventListeners() {
     });
 
     globalSettingsBtn.onclick = () => {
-        globalPromptTextarea.value = state.globalPrompt || '';
+        userPromptTextarea.value = state.userSystemPrompt || '';
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
         globalSettingsModal.classList.remove('hidden');
@@ -3651,7 +3672,7 @@ function setupEventListeners() {
     };
 
     saveGlobalBtn.onclick = () => {
-        state.globalPrompt = globalPromptTextarea.value;
+        state.userSystemPrompt = userPromptTextarea.value;
         state.orchestratorPrompt = orchestratorPromptTextarea.value;
         saveData();
         globalSettingsModal.classList.add('hidden');

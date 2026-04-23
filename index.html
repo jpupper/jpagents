@@ -303,7 +303,7 @@
               <div id="modal-tab-system-prompts" class="modal-tab-content">
                 <!-- Sub-tabs for System Prompts -->
                 <div class="modal-sub-nav">
-                  <button class="modal-sub-tab active" data-modal-sub-tab="global">System Prompt Global</button>
+                  <button class="modal-sub-tab active" data-modal-sub-tab="global">User System Prompt</button>
                   <button class="modal-sub-tab" data-modal-sub-tab="orchestrator">System Prompt del Orquestador (Admin)</button>
                   <button class="modal-sub-tab" data-modal-sub-tab="internal">Instrucciones de Agente (Solo Lectura)</button>
                 </div>
@@ -312,8 +312,8 @@
                   <!-- Global Prompt Pane -->
                   <div id="sub-tab-global" class="sub-tab-pane">
                     <div class="config-field">
-                      <label>System Prompt Global</label>
-                      <p class="field-help">Este prompt se aplicará a TODOS los proyectos y agentes.</p>
+                      <label>User System Prompt</label>
+                      <p class="field-help">Este prompt se aplicará a todos los AGENTES de proyecto (no afecta al orquestador).</p>
                       <textarea id="global-prompt" class="config-textarea" rows="12" placeholder="Eres un asistente de programación experto..."></textarea>
                     </div>
                   </div>

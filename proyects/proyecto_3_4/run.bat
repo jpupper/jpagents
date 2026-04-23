@@ -1,16 +1,18 @@
 @echo off
-set /p:PORT=Por favor, introduce un puerto libre para correr la aplicación (ej: 8080): 
-set puerto=6000
+REM *** Script de ejecución para el entorno web/shader ***
 
-ECHO Iniciando servidor HTTP en puerto %puerto%...
+set PORT=53229
+echo Preparando servidor en puerto: %PORT%...
 
-REM Usamos python -m http.server como estándar y confiable
-start /b python -m http.server %puerto%
+REM Iniciar el servidor en segundo plano
+start /b python -m http.server %PORT%
 
+REM Esperar a que el servidor esté listo (2 segundos)
 timeout /t 2 /nobreak >nul
-start http://127.0.0.1:60000
 
-ECHO. 
-ECHO ---------------------------------------------------
-ECHO Ejecución finalizada. Cierra esta ventana para terminar el servidor.
+echo Abriendo proyecto en el navegador...
+start http://127.0.0.1:%PORT%
+
+echo.
+echo --- Proyecto en ejecucion en puerto: %PORT% ---
 exit
