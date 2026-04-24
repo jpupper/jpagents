@@ -13,6 +13,8 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/dos.min.js"></script>
+  <!-- D3.js for Data Visualization -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
   <!-- jsdiff for Diffing -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.2.0/diff.min.js"></script>
 </head>
@@ -104,6 +106,7 @@
       <section id="main-view" class="main-view">
         <nav class="tabs-nav" id="tabs-nav">
           <div class="tab active" data-tab="chat">Chat</div>
+          <div class="tab" data-tab="matrix">Matrix Agentic Tree</div>
         </nav>
 
         <!-- Dashboard View (No tab active) -->
@@ -227,6 +230,27 @@
           </div>
         </div>
 
+        <!-- Matrix / Agentic Tree View -->
+        <div id="matrix-tab-content" class="tab-content matrix-view hidden">
+          <div class="matrix-header">
+            <h2>🕸️ Agentic Matrix Tree</h2>
+            <div class="matrix-controls">
+              <button id="refresh-matrix-btn" class="btn-icon" title="Refrescar Árbol">🔄</button>
+              <button id="reset-zoom-btn" class="btn-icon" title="Resetear Zoom">🎯</button>
+              <div class="matrix-legend">
+                <span class="legend-item"><i class="dot thinking"></i> Pensando</span>
+                <span class="legend-item"><i class="dot tool"></i> Herramienta</span>
+                <span class="legend-item"><i class="dot error"></i> Error</span>
+                <span class="legend-item"><i class="dot reflection"></i> Reflexión</span>
+              </div>
+            </div>
+          </div>
+          <div id="matrix-canvas-container" class="matrix-canvas-container">
+            <svg id="matrix-svg"></svg>
+            <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
+          </div>
+        </div>
+
         <!-- Chat View -->
         <div id="chat-tab-content" class="tab-content hidden">
           <div id="chat-header" class="chat-header">
@@ -331,6 +355,9 @@
             <button class="modal-side-tab active" data-modal-tab="system-prompts">
               <span>📝 System Prompts</span>
             </button>
+            <button class="modal-side-tab" data-modal-tab="validation-loop">
+              <span>🔄 Bucle de Validación</span>
+            </button>
           </aside>
 
           <!-- Main Content Area -->
@@ -375,6 +402,26 @@
                     <p class="field-help">Estas instrucciones manejan la lectura y escritura de archivos. (Sólo lectura)
                     </p>
                     <div id="internal-agent-display" class="readonly-display">Cargando instrucciones...</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="modal-tab-validation-loop" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <div class="sub-tab-pane">
+                  <div class="config-field">
+                    <label>Máximo de Reintentos de Validación</label>
+                    <p class="field-help">Número de veces que el agente intentará corregir el proyecto si falla la validación (Screenshot + Consola). Pon 0 para desactivar, o un número alto (ej: 15) para máxima autonomía. Use "999" para infinito (virtualmente).</p>
+                    <input type="number" id="max-validation-retries" class="config-input" min="0" value="15" />
+                  </div>
+                  <div class="config-field">
+                    <label>Validación Automática</label>
+                    <p class="field-help">¿Debería el agente iniciar automáticamente la validación tras generar archivos?</p>
+                    <div class="toggle-container">
+                      <input type="checkbox" id="auto-validation-toggle" checked />
+                      <span>Activar validación automática</span>
+                    </div>
                   </div>
                 </div>
               </div>

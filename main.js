@@ -1,5 +1,8 @@
 import './style.css'
 import { marked } from 'marked'
+import { initMatrix } from './matrix.js'
+
+let activeMatrix = null;
 
 // --- Console Log Interceptor ---
 (function () {
@@ -500,7 +503,14 @@ async function performPeriodicSync() {
 const DEFAULT_USER_SYSTEM_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.
 
-REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.`;
+REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.
+
+REGLA DE ORO 3 (VALIDACIÓN): Tras realizar cambios significativos o terminar una tarea, DEBES validar que el proyecto funcione:
+1. Asegúrate de que exista un \`run.bat\`.
+2. Ejecuta el proyecto (el sistema lo hace al detectar cambios, o puedes pedirlo).
+3. Usa [CALL:take_screenshot]{} para ver el resultado visual.
+4. Usa [CALL:get_console_logs]{} para revisar errores.
+5. No des por terminada la tarea hasta que la validación sea EXITOSA. Si hay errores, corrígelos e itera.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
 Tu objetivo es gestionar de principio a fin las peticiones del usuario.
@@ -532,6 +542,8 @@ let state = {
     adminMessages: [],
     adminIsThinking: false,
     adminIsStopped: false,
+    maxValidationRetries: 15,
+    autoValidation: true,
     taskState: {
         objective: '',
         steps: [],
@@ -636,6 +648,8 @@ async function loadData() {
             state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
             state.activeProjectId = data.activeProjectId || null;
             state.adminMessages = data.adminMessages || [];
+            state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
+            state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -673,9 +687,10 @@ function sanitizeProject(p) {
             mode: c.mode || 'auto',
             lastProgress: c.lastProgress || Date.now(),
             isStopped: false,
+            validationRetries: 0,
             model: c.model || p.model || '' // Agent model
         })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, model: p.model || '' }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '' }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         sessionChanges: p.sessionChanges || [],
@@ -694,7 +709,9 @@ async function saveData() {
             userSystemPrompt: state.userSystemPrompt,
             orchestratorPrompt: state.orchestratorPrompt,
             activeProjectId: state.activeProjectId,
-            adminMessages: state.adminMessages
+            adminMessages: state.adminMessages,
+            maxValidationRetries: state.maxValidationRetries,
+            autoValidation: state.autoValidation
         };
         await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
@@ -1055,6 +1072,13 @@ function renderTabs() {
         `;
     });
 
+    // 4. Matrix Agentic Tree (Global/Project Context)
+    tabsHtml += `
+        <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
+            <span>🕸️ Matrix</span>
+        </div>
+    `;
+
     tabsNav.innerHTML = tabsHtml;
     // We only update visibility if we're not inside a recursive call
     updateViewVisibility();
@@ -1142,6 +1166,25 @@ function updateViewVisibility() {
     editorTabContent.classList.add('hidden');
     dashboardTabContent.classList.add('hidden');
     adminTabContent.classList.add('hidden');
+    const matrixTabContent = document.getElementById('matrix-tab-content');
+    if (matrixTabContent) matrixTabContent.classList.add('hidden');
+
+    // ... (logic)
+
+    if (project && project.activeTabId === 'matrix') {
+        saveFileBtn.classList.add('hidden');
+        if (matrixTabContent) {
+            matrixTabContent.classList.remove('hidden');
+            if (activeMatrix) {
+                activeMatrix.update();
+            } else {
+                activeMatrix = initMatrix('matrix-canvas-container', 'matrix-svg');
+                document.getElementById('refresh-matrix-btn').onclick = () => activeMatrix.update();
+                document.getElementById('reset-zoom-btn').onclick = () => activeMatrix.resetZoom();
+            }
+        }
+        return;
+    }
 
     // Update Admin Monitor button state
     const adminBtn = document.getElementById('admin-monitor-btn');
@@ -1662,6 +1705,84 @@ ${projectInstructions}
 Solve the task using the tools above.`;
 }
 
+async function performAutomaticValidation(project, chat) {
+    if (!state.autoValidation) return;
+    if (chat.validationRetries >= (state.maxValidationRetries || 15)) {
+        console.log(`[VALIDATION] Máximo de reintentos alcanzado (${chat.validationRetries}). Deteniendo validación automática.`);
+        adminLog(`⚠️ Agente <strong>${chat.name}</strong> alcanzó el límite de reintentos de validación (${state.maxValidationRetries}).`);
+        return;
+    }
+
+    chat.validationRetries++;
+    console.log(`[VALIDATION] Iniciando ciclo de validación ${chat.validationRetries}/${state.maxValidationRetries}...`);
+    adminLog(`🔄 Validando proyecto de <strong>${chat.name}</strong> (Intento ${chat.validationRetries}/${state.maxValidationRetries})`);
+    
+    updateThinking(chat, true, "Validando proyecto", "Ejecutando run.bat y capturando pantalla...");
+
+    try {
+        // 1. Check for run.bat
+        const runBat = project.currentFiles.find(f => f.name.toLowerCase() === 'run.bat');
+        if (runBat) {
+            console.log("[VALIDATION] Ejecutando run.bat...");
+            await fetch(`${API_BASE}/utils/run-script`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scriptPath: runBat.path, cwd: project.folder })
+            });
+            // Wait for server to start
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+
+        // 2. Take Screenshot
+        console.log("[VALIDATION] Capturando pantalla...");
+        const screenshotResult = await mcpClient.callTool('take_screenshot', {});
+        const imgContent = screenshotResult.content.find(c => c.type === 'image');
+
+        // 3. Get Console Logs
+        console.log("[VALIDATION] Obteniendo logs...");
+        const logsResult = await mcpClient.callTool('get_console_logs', {});
+        const logsText = logsResult.content.map(c => c.text).join('\n');
+
+        // 4. Send to Agent
+        const systemPrompt = `### 🔄 BUCLE DE VALIDACIÓN (Intento ${chat.validationRetries}/${state.maxValidationRetries})
+He ejecutado tu proyecto y aquí tienes el resultado para que verifiques si todo está bien:
+
+**Logs de Consola (Frontend/Sistema):**
+\`\`\`json
+${logsText.substring(0, 5000)}
+\`\`\`
+
+**Captura de Pantalla:** (Adjunta en este mensaje)
+
+**TU MISIÓN:**
+Analiza si la aplicación está funcionando como se esperaba según los requisitos originales.
+1. Si ves errores en los logs, corrígelos.
+2. Si la pantalla no muestra lo que debería, revisa tu código HTML/JS/CSS.
+3. Si TODO está perfecto, responde únicamente con "TASK COMPLETE" y una breve explicación.
+4. Si necesitas hacer cambios, usa [WRITE] o [REPLACE] y luego vuelve a validar.`;
+
+        chat.messages.push({ 
+            role: 'system', 
+            content: systemPrompt,
+            images: imgContent ? [imgContent.data] : [] 
+        });
+
+        // Mostrar en la UI que se ha enviado una validación
+        chat.messages.push({
+            role: 'agent',
+            content: `<div class="validation-pill">🔄 <strong>Validación Automática #${chat.validationRetries}</strong> enviada al agente. Analizando captura y logs...</div>`
+        });
+
+        await autoRetry("Analizando validación...", project, chat);
+
+    } catch (e) {
+        console.error("Error during validation:", e);
+        chat.messages.push({ role: 'system', content: `⚠️ Error durante la validación automática: ${e.message}` });
+        updateThinking(chat, false);
+        renderMessages();
+    }
+}
+
 async function triggerAgentLogic(project, chat, origin = 'user') {
     if (chat.isThinking) return;
 
@@ -1692,6 +1813,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     // If user just sent a message, determine if it's a technical task
     const lastMsg = chat.messages[chat.messages.length - 1];
     if (lastMsg && lastMsg.role === 'user') {
+        chat.validationRetries = 0; // Reiniciar contador para nueva tarea
         const text = lastMsg.content.toLowerCase();
         const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "lee", "busca", "implementa", "borra", "replace", "write", "read", "search", "fix", "update", "change"];
         const isTechnical = technicalKeywords.some(kw => text.includes(kw));
@@ -1712,66 +1834,78 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     // 2. Build Refactored Prompt
     const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
 
-    // RESTORE CONTEXT: Enviar los últimos 5 mensajes para que el modelo sepa qué está pasando
     const history = chat.messages.slice(-5).map(m => ({
         role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
-        content: m.content
+        content: m.content,
+        images: m.images || undefined
     }));
 
     const messages = [systemMsg, ...history];
 
     try {
+        const selectedModel = chat.model || project.model || modelSelect.value;
+        console.log(`[CHAT] Enviando petición con modelo: ${selectedModel}`);
 
-        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+        const response = await fetch(`${API_BASE}/agent/chat`, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: chat.model || project.model || modelSelect.value,
-                messages: messages,
-                stream: true // Habilitado para Fase 2: Visibilidad de progreso
+                threadId: chat.id,
+                message: lastMsg.content,
+                model: selectedModel,
+                systemPrompt: buildRefactoredSystemPrompt(taskState)
             })
         });
 
-        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        if (!response.ok) throw new Error(`Agent API Error: ${response.statusText}`);
 
-        // --- STREAMING PROCESSING ---
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let assistantResponse = '';
+        let assistantResponse = "";
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-
+            
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-
+            
             for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const json = JSON.parse(line);
-                    if (json.done) break;
-                    if (json.message && json.message.content) {
-                        assistantResponse += json.message.content;
-                        // Opcional: Actualizar UI en tiempo real aquí si se desea
+                if (line.startsWith('data: ')) {
+                    const dataStr = line.slice(6).trim();
+                    if (!dataStr || dataStr === '[DONE]') continue;
+                    
+                    try {
+                        const data = JSON.parse(dataStr);
+                        if (data.type === 'content') {
+                            assistantResponse = data.content; // Sobrescribir con el último estado
+                        } else if (data.type === 'system') {
+                            // Actualizar el indicador de "pensando" con el estado actual
+                            updateThinking(chat, true, data.content, "LangGraph en progreso...");
+                        }
+                    } catch (e) {
+                        // Silencio para fragmentos incompletos
                     }
-                } catch (e) { }
-            }
-
-            if (chat.isStopped) {
-                reader.cancel();
-                updateThinking(chat, false);
-                return;
+                }
             }
         }
-        // --- END STREAMING ---
 
+        // Limpiar el estado de "pensando" para mostrar el resultado final
+        updateThinking(chat, false);
 
         // 3. Update current state based on response
-        taskState.currentState = "PROCESSING ACTIONS";
+        taskState.currentState = "COMPLETED";
         await saveTaskState(taskState);
 
-        // Process actions
+        // Process actions (in case the agent used legacy tags or we need to refresh UI)
         const actionResult = await processAgentActions(assistantResponse, project, chat);
+        
+        // Refresh folder to see new files
+        if (project.folder) window.scanFolder(project.folder);
+
+        if (actionResult && actionResult.stopped) {
+            return;
+        }
 
         if (assistantResponse.includes("TASK COMPLETE")) {
             taskState.currentState = "FINISHED";
@@ -1779,46 +1913,29 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             await saveTaskState(taskState);
         }
 
-        if (actionResult.stopped) {
+        if (actionResult && actionResult.stopped) {
             updateThinking(chat, false);
             chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario durante el procesamiento.' });
             renderMessages();
             return;
         }
 
-        // Clean display text: replace code blocks with clickable links
+        // Format assistant response for display
         let displayContent = assistantResponse
             .replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '') // Hide satisfy comments
             .replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, (match, toolName, argsJson) => {
                 let parsedArgs = {};
                 try {
-                    // Try to clean the JSON before parsing for display
                     let cleanJson = argsJson.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
                     parsedArgs = JSON.parse(cleanJson);
                 } catch(e) {}
-                
                 const path = parsedArgs.path ? ` en <strong>${parsedArgs.path}</strong>` : '';
-                const title = `Argumentos: ${argsJson.substring(0, 500)}${argsJson.length > 500 ? '...' : ''}`;
-                
-                return `<div class="file-action-link mcp-call" title="${escapeHtml(title)}">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
-            })
-            .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
-                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
-                return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
-            })
-            .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
-                const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
-                return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
-            })
-            .replace(/\[READ:(.*?)\]/g, (match, fileName) => {
-                return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
+                return `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
             });
 
-        let logsHtml = formatLogs(actionResult.logs);
-        
-        // Ensure summaryHtml doesn't have internal newlines that get converted to <br> by simple replace
+        let logsHtml = (actionResult && actionResult.logs) ? formatLogs(actionResult.logs) : "";
         let summaryHtml = '';
-        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+        if (actionResult && actionResult.changeStats && actionResult.changeStats.length > 0) {
             const items = actionResult.changeStats.map(s => `
                 <div class="change-stat-item" onclick="window.openFile('${pathJoin(project.folder, s.fileName).replace(/\\/g, '/')}')">
                     <span class="file-name">${s.fileName}</span>
@@ -1828,15 +1945,20 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                     </span>
                 </div>
             `).join('');
-            
             summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
         }
 
-        // Push combined content. We put summary and logs outside of displayContent to avoid markdown interference if possible
-        chat.messages.push({ role: 'agent', content: displayContent + "\n\n" + summaryHtml + "\n\n" + logsHtml });
+        // Push combined content to history
+        chat.messages.push({ 
+            role: 'agent', 
+            content: displayContent + (summaryHtml ? "\n\n" + summaryHtml : "") + (logsHtml ? "\n\n" + logsHtml : "") 
+        });
 
-        // --- NEW: Accumulate and Update Session Summary Bar ---
-        if (actionResult.changeStats && actionResult.changeStats.length > 0) {
+        renderMessages();
+        saveData();
+
+        // Accumulate and Update Session Summary Bar
+        if (actionResult && actionResult.changeStats && actionResult.changeStats.length > 0) {
             if (!chat.sessionChanges) chat.sessionChanges = [];
             actionResult.changeStats.forEach(s => {
                 const existing = chat.sessionChanges.find(c => c.fileName === s.fileName);
@@ -1849,33 +1971,20 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             });
         }
         
-        // Always render if there are accumulated changes in this session
         if (chat.sessionChanges && chat.sessionChanges.length > 0) {
             renderSessionSummary(chat.sessionChanges, project);
         }
 
-        if (actionResult.reads && actionResult.reads.length > 0) {
-            // Add read content to history and auto-continue. 
-            // We wrap it in <details> for the UI to avoid cluttering, but the text is still in history.
-            const readContext = actionResult.reads.map(r => `
-<details class="execution-log">
-  <summary>🔍 Contenido de <strong>${r.fileName}</strong> (${r.content.length} caracteres)</summary>
-  <pre><code>${r.content.substring(0, 5000)}${r.content.length > 5000 ? '\n... (truncado para visualización)' : ''}</code></pre>
-</details>`).join('\n\n');
-            chat.messages.push({ role: 'system', content: `Resultado de la lectura:\n${readContext}\n\nAhora que tienes el código real, procede con las modificaciones solicitadas usando [REPLACE] o [WRITE].` });
-            console.log(`🔍 Archivos leídos (${actionResult.reads.length}). Iniciando auto-reintento para aplicar cambios.`);
-            await autoRetry("Continuando tras lectura...", project, chat);
-        } else if (actionResult.errors.length > 0) {
-            // Auto-feedback loop
-            const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}\n\nPor favor, corrige tu respuesta. Si el error es de SEARCH, lee el archivo de nuevo para asegurarte de copiar el bloque EXACTO. Si no usaste etiquetas, hazlo ahora.`;
-            chat.messages.push({ role: 'system', content: errorMsg }); // Cambiado a role: system
-            console.warn(`❌ Errores detectados en acciones. Iniciando auto-corrección.`);
-            await autoRetry(errorMsg, project, chat);
-            renderMessages();
-        } else if (actionResult.toolOutputs && actionResult.toolOutputs.some(to => to.toolName === 'RANDOM')) {
-            console.log("🎲 Herramienta RANDOM detectada. Iniciando auto-reintento para que el agente use el número.");
-            await autoRetry("Continuando con el número aleatorio generado...", project, chat);
-        } else if (actionResult.actionsPerformed === 0) {
+        // Auto-continue if there were reads or errors (Auto-Healing)
+        if (actionResult && actionResult.reads && actionResult.reads.length > 0) {
+            const readContext = actionResult.reads.map(r => `📖 Archivo leído: ${r.fileName}`).join('\n');
+            chat.messages.push({ role: 'system', content: `Archivos leídos con éxito.\n${readContext}` });
+            triggerAgentLogic(project, chat, 'system');
+        } else if (actionResult && actionResult.errors && actionResult.errors.length > 0) {
+            const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}`;
+            chat.messages.push({ role: 'system', content: errorMsg });
+            triggerAgentLogic(project, chat, 'system');
+        } else {
             // Just finished without actions or reads.
             const lastMsg = chat.messages[chat.messages.length - 1];
             const text = lastMsg ? lastMsg.content.toLowerCase() : "";
@@ -2191,50 +2300,22 @@ Agent: [REPLACE:index.html]
 }
 
 function getInternalAgentInstructions() {
-    return `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
+    return `### 🚀 PROTOCOLO DE OPERACIÓN NATIVA (LangGraph) 🚀
 
-Eres un agente de desarrollo que opera EXCLUSIVAMENTE a través de herramientas MCP. 
-Si escribes código en texto plano o usas etiquetas antiguas, el sistema RECHAZARÁ tus acciones.
+Eres un asistente de programación experto con acceso a herramientas nativas. 
 
-### 🛠️ HERRAMIENTAS (FORMATO OBLIGATORIO):
+### 🛠️ TU FLUJO DE TRABAJO:
+1. **Analiza** el objetivo del usuario.
+2. **Explora** el repositorio si es necesario (list_files, read_file).
+3. **Actúa** utilizando tus herramientas para realizar cambios o ejecuciones.
+4. **Verifica** que tus cambios sean correctos.
 
-1. **CREAR/MODIFICAR ARCHIVO**:
-   [CALL:write_file]{"path": "nombre_archivo.ext", "content": "Contenido completo aquí..."}
-   - Úsalo para TODO tipo de escritura. Escapa caracteres especiales en el JSON.
-
-2. **LEER ARCHIVO**:
-   [CALL:read_file]{"path": "nombre_archivo.ext"}
-
-3. **LISTAR ARCHIVOS**:
-   [CALL:list_files]{"path": "./"}
-
-4. **PRUEBA DE CONEXIÓN**:
-   [CALL:execute_js]{"code": "console.log('MCP OK')"}
-   - Úsalo una vez por respuesta para confirmar que el protocolo está activo.
-
-5. **NÚMERO RANDOM**:
-   [CALL:RANDOM]{"min": 0, "max": 100}
-   - ÚSALO SIEMPRE que necesites decidir un número aleatorio. NUNCA inventes un número random por tu cuenta.
-
-### ⚠️ REGLAS INFALIBLES:
-1. **COMENTARIO DE VALIDACIÓN**: DEBES incluir la cadena [CALL:write_file] o [CALL:RANDOM] en un comentario de texto en tu respuesta para que el validador acepte tu mensaje.
-2. **JSON ESCAPADO**: El campo "content" debe ser un string JSON válido. Escapa saltos de línea como \\n y comillas como \\\".
-3. **SIN CÓDIGO PLANO**: No uses bloques de código standard. Usa siempre [CALL:write_file].
-4. **FLUJO**: Lee siempre el archivo antes de intentar escribir en él para asegurar coherencia.
-5. **MÚLTIPLES ACCIONES**: Puedes realizar VARIAS llamadas a herramientas en una sola respuesta.
-6. **RANDOM REAL**: Si necesitas un número aleatorio para cualquier lógica (puertos, IDs, valores de prueba), DEBES usar [CALL:RANDOM]. Está terminantemente prohibido que "pienses" o "inventes" un número aleatorio tú mismo.
-7. **NO RUN.BAT**: NO crees ni modifiques archivos run.bat. Estos son gestionados automáticamente por el sistema. Céntrate únicamente en los archivos de código del proyecto.
-
-### 📖 EJEMPLO DE RESPUESTA MÚLTIPLE:
-"Entendido. Voy a crear la estructura base del proyecto.
-
-// satisfy [CALL:write_file]
-[CALL:write_file]{\"path\": \"index.html\", \"content\": \"...\"}
-
-// satisfy [CALL:write_file]
-[CALL:write_file]{\"path\": \"style.css\", \"content\": \"...\"}
-
-[CALL:execute_js]{\"code\": \"console.log('MCP OK')\"}"
+### ⚠️ REGLAS CRÍTICAS:
+1. **HERRAMIENTAS NATIVAS**: Utiliza SIEMPRE las funciones de herramientas integradas (tool calls) para interactuar con el sistema. NO escribas etiquetas manuales como [CALL:...] o [REPLACE:].
+2. **ESTILO DE RESPUESTA**: Responde siempre en formato Markdown elegante. Explica brevemente qué vas a hacer antes de llamar a las herramientas.
+3. **SIN CÓDIGO PLANO**: No muestres grandes bloques de código en el chat si los vas a escribir en un archivo. Escribe el archivo primero y luego confirma al usuario.
+4. **NO RUN.BAT**: NO intentes crear o modificar archivos run.bat. El sistema los genera automáticamente.
+5. **RESUMEN ESTRUCTURAL**: Si no conoces el proyecto, empieza usando summarize_repo para tener una visión global.
 `;
 }
 
@@ -2693,6 +2774,7 @@ async function processAgentActions(text, project, chat) {
     const reads = [];
     const logs = [];
     const toolOutputs = [];
+    const toolImages = [];
     let actionsPerformed = 0;
     const filesCreated = [];
     const filesModified = [];
@@ -2865,8 +2947,8 @@ async function processAgentActions(text, project, chat) {
             }
 
             actionsPerformed++;
-
-            const resultText = result.content.map(c => c.text).join('\n');
+            const resultText = result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+            const resultImages = result.content.filter(c => c.type === 'image');
 
             if (toolName === 'read_file' || toolName === 'READ') {
                 const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
@@ -2906,6 +2988,9 @@ async function processAgentActions(text, project, chat) {
                     content: outputMsg
                 });
                 toolOutputs.push({ toolName, result: resultText });
+                if (resultImages && resultImages.length > 0) {
+                    resultImages.forEach(img => toolImages.push({ toolName, ...img }));
+                }
                 await recordAction(`[MCP:${toolName}]`, `Success`);
             }
 
@@ -3155,7 +3240,7 @@ async function processAgentActions(text, project, chat) {
         }
     });
 
-    return { errors, reads, logs, actionsPerformed, toolOutputs, filesCreated, filesModified, changeStats: uniqueStats };
+    return { errors, reads, logs, actionsPerformed, toolOutputs, toolImages, filesCreated, filesModified, changeStats: uniqueStats };
 }
 
 
@@ -3949,6 +4034,12 @@ function setupEventListeners() {
         userPromptTextarea.value = state.userSystemPrompt || '';
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
+        
+        const maxRetriesInput = document.getElementById('max-validation-retries');
+        const autoValToggle = document.getElementById('auto-validation-toggle');
+        if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
+        if (autoValToggle) autoValToggle.checked = state.autoValidation;
+
         globalSettingsModal.classList.remove('hidden');
     };
 
@@ -3965,6 +4056,12 @@ function setupEventListeners() {
     saveGlobalBtn.onclick = () => {
         state.userSystemPrompt = userPromptTextarea.value;
         state.orchestratorPrompt = orchestratorPromptTextarea.value;
+        
+        const maxRetriesInput = document.getElementById('max-validation-retries');
+        const autoValToggle = document.getElementById('auto-validation-toggle');
+        if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
+        if (autoValToggle) state.autoValidation = autoValToggle.checked;
+
         saveData();
         globalSettingsModal.classList.add('hidden');
     };

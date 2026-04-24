@@ -954,6 +954,12 @@ textarea {
   color: var(--text-secondary);
 }
 
+#save-file-btn {
+  flex: none;
+  width: auto;
+  padding: 0.6rem 1.5rem;
+}
+
 .pending-actions {
   display: flex;
   align-items: center;
@@ -2458,4 +2464,190 @@ pre code.hljs {
 .summary-actions .btn-accept:hover {
     background: #2ea043;
 }
+
+/* Validation Loop Styles */
+.validation-pill {
+    background: rgba(124, 77, 255, 0.1);
+    border: 1px solid rgba(124, 77, 255, 0.3);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1rem 0;
+    color: var(--accent-color);
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    animation: fadeIn 0.5s ease-out;
+}
+
+.validation-pill strong {
+    color: white;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.modal-tab-content.hidden {
+    display: none !important;
+}
+
+.modal-side-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.modal-side-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    padding: 12px 16px;
+    border-radius: 10px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.modal-side-tab:hover {
+    background: rgba(255,255,255,0.05);
+    color: var(--text-primary);
+}
+
+.modal-side-tab.active {
+    background: var(--accent-gradient);
+    color: white;
+    box-shadow: 0 4px 12px rgba(124, 77, 255, 0.3);
+}
+
+/* --- Matrix / Agentic Tree View Styles --- */
+.matrix-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: radial-gradient(circle at center, #0a0b1e 0%, #020205 100%);
+    overflow: hidden;
+    position: relative;
+}
+
+.matrix-header {
+    padding: 1.5rem;
+    background: rgba(15, 17, 26, 0.8);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 10;
+}
+
+.matrix-header h2 {
+    margin: 0;
+    font-size: 1.5rem;
+    background: linear-gradient(90deg, #00f2ff, #006aff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.matrix-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.matrix-legend {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.legend-item .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.dot.thinking { background: #3b82f6; box-shadow: 0 0 10px #3b82f6; }
+.dot.tool { background: #10b981; box-shadow: 0 0 10px #10b981; }
+.dot.error { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
+.dot.reflection { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; }
+
+.matrix-canvas-container {
+    flex: 1;
+    position: relative;
+    cursor: grab;
+    overflow: hidden;
+}
+
+.matrix-canvas-container:active {
+    cursor: grabbing;
+}
+
+#matrix-svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* D3 Graph Elements */
+.node circle {
+    stroke-width: 2px;
+    transition: r 0.3s ease, filter 0.3s ease;
+}
+
+.node text {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    fill: rgba(255, 255, 255, 0.8);
+    pointer-events: none;
+}
+
+.link {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.1);
+    stroke-width: 1.5px;
+}
+
+.matrix-tooltip {
+    position: absolute;
+    background: rgba(15, 17, 26, 0.95);
+    border: 1px solid rgba(0, 242, 255, 0.3);
+    padding: 0.8rem;
+    border-radius: 8px;
+    color: white;
+    font-size: 0.85rem;
+    pointer-events: none;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+    z-index: 100;
+    max-width: 300px;
+}
+
+.matrix-tooltip h4 {
+    margin: 0 0 0.5rem 0;
+    color: #00f2ff;
+    font-size: 1rem;
+}
+
+.matrix-tooltip pre {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    margin: 0;
+}
+
 

@@ -9,6 +9,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
+import screenshot from "screenshot-desktop";
 
 import {
   ListToolsRequestSchema,
@@ -72,10 +73,42 @@ function createMCPServer() {
               max: { type: "number", description: "Valor máximo (defecto 100)" }
             }
           },
+        },
+        {
+          name: "take_screenshot",
+          description: "Captura una imagen de la pantalla actual (escritorio)",
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
+          name: "get_console_logs",
+          description: "Obtiene los logs recientes de la consola del frontend/sistema",
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
+          name: "summarize_repo",
+          description: "Genera un resumen estructural del repositorio (árbol de directorios y archivos clave)",
+          inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
         }
       ],
     };
   });
+
+  // Helper to validate paths (Path Jailing)
+  const validatePath = (requestedPath) => {
+    const resolvedPath = path.resolve(requestedPath);
+    // In a real scenario, we'd get the allowed root from the request or session.
+    // For now, we'll allow paths within the 'proyects' folder or the current workspace.
+    const allowedRoots = [
+        path.resolve(process.cwd()),
+        path.resolve("D:/Programacion/jpagents/proyects")
+    ];
+
+    const isAllowed = allowedRoots.some(root => resolvedPath.startsWith(root));
+    if (!isAllowed) {
+        throw new Error(`ACCESO DENEGADO: La ruta ${resolvedPath} está fuera de los directorios permitidos.`);
+    }
+    return resolvedPath;
+  };
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -83,8 +116,26 @@ function createMCPServer() {
 
     try {
       switch (name) {
+        case "summarize_repo": {
+          const folderPath = validatePath(args.path);
+          const getTree = async (dir, depth = 0) => {
+            if (depth > 3) return "[...]"; // Limit depth
+            const files = await fs.readdir(dir, { withFileTypes: true });
+            let summary = "";
+            for (const file of files) {
+              if (file.name.startsWith('.') || file.name === 'node_modules') continue;
+              summary += "  ".repeat(depth) + (file.isDirectory() ? "📁 " : "📄 ") + file.name + "\n";
+              if (file.isDirectory()) {
+                summary += await getTree(path.join(dir, file.name), depth + 1);
+              }
+            }
+            return summary;
+          };
+          const tree = await getTree(folderPath);
+          return { content: [{ type: "text", text: `Resumen estructural de ${folderPath}:\n\n${tree}` }] };
+        }
         case "list_files": {
-          const folderPath = path.resolve(args.path);
+          const folderPath = validatePath(args.path);
           const files = await fs.readdir(folderPath, { withFileTypes: true });
           const result = files.map((file) => ({
             name: file.name,
@@ -94,12 +145,12 @@ function createMCPServer() {
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
         }
         case "read_file": {
-          const filePath = path.resolve(args.path);
+          const filePath = validatePath(args.path);
           const content = await fs.readFile(filePath, "utf-8");
           return { content: [{ type: "text", text: content }] };
         }
         case "write_file": {
-          const filePath = path.resolve(args.path);
+          const filePath = validatePath(args.path);
           const dir = path.dirname(filePath);
           await fs.mkdir(dir, { recursive: true });
           await fs.writeFile(filePath, args.content, "utf-8");
@@ -107,11 +158,13 @@ function createMCPServer() {
           return { content: [{ type: "text", text: `Archivo escrito en: ${filePath}` }] };
         }
         case "execute_js": {
+          const code = args.code;
+          const cwd = args.cwd ? validatePath(args.cwd) : process.cwd();
           const tempFileName = `mcp_temp_${Date.now()}.js`;
           const tempFilePath = path.join(process.cwd(), tempFileName);
           try {
-            await fs.writeFile(tempFilePath, args.code, "utf-8");
-            const { stdout, stderr } = await execAsync(`node "${tempFilePath}"`, { cwd: args.cwd || process.cwd() });
+            await fs.writeFile(tempFilePath, code, "utf-8");
+            const { stdout, stderr } = await execAsync(`node "${tempFilePath}"`, { cwd });
             return { content: [{ type: "text", text: `STDOUT:\n${stdout}\nSTDERR:\n${stderr}` }] };
           } finally {
             try { await fs.unlink(tempFilePath); } catch (e) {}
@@ -123,6 +176,33 @@ function createMCPServer() {
           const result = Math.floor(Math.random() * (max - min + 1)) + min;
           console.log(`\x1b[32m[MCP] <<< RANDOM:\x1b[0m ${result} (range: ${min}-${max})`);
           return { content: [{ type: "text", text: result.toString() }] };
+        }
+        case "take_screenshot": {
+          const imgBuffer = await screenshot();
+          const base64 = imgBuffer.toString('base64');
+          console.log(`\x1b[32m[MCP] <<< SUCCESS:\x1b[0m take_screenshot`);
+          return { 
+            content: [
+              { 
+                type: "image", 
+                data: base64, 
+                mimeType: "image/png" 
+              },
+              {
+                type: "text",
+                text: "Captura de pantalla realizada con éxito."
+              }
+            ] 
+          };
+        }
+        case "get_console_logs": {
+          const logsPath = path.join(process.cwd(), 'client_errors.json');
+          try {
+            const data = await fs.readFile(logsPath, 'utf-8');
+            return { content: [{ type: "text", text: data }] };
+          } catch (e) {
+            return { content: [{ type: "text", text: "[]" }] };
+          }
         }
         default:
           throw new Error(`Tool not found: ${name}`);
@@ -186,7 +266,19 @@ app.get("/sse", async (req, res) => {
 app.post("/messages/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   console.log(`\x1b[35m[MCP] Message received for session:\x1b[0m ${sessionId}`);
-  const transport = transports.get(sessionId);
+  
+  let transport = transports.get(sessionId);
+
+  // Auto-create global session for backend tools
+  if (!transport && sessionId === "global") {
+    console.log(`[MCP] Creating auto-session for: global`);
+    const server = createMCPServer();
+    transport = new SSEServerTransport(`/messages/global`, res);
+    await server.connect(transport);
+    transports.set("global", transport);
+    // Note: In a real SSE this would fail if res is used for POST response, 
+    // but MCP SDK handles the response writing.
+  }
 
   if (transport) {
     try {

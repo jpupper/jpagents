@@ -1,6 +1,6 @@
-# Plan de Acción: Evolución de jpagents
+# Plan de Acción: Evolución de jpagents (LangGraph Edition)
 
-Este documento detalla el análisis de situación actual y el plan estratégico para transformar **jpagents** de un asistente basado en etiquetas a un agente autónomo de ejecución de código (Code-First) con soporte para MCP y Sandboxing.
+Este documento detalla el plan estratégico para transformar **jpagents** en un sistema de agentes autónomos de grado profesional utilizando **LangGraph** para la orquestación, persistencia y gestión avanzada de contexto.
 
 ---
 
@@ -8,56 +8,56 @@ Este documento detalla el análisis de situación actual y el plan estratégico 
 
 | Paso | Sistema | Estado | Diagnóstico |
 | :--- | :--- | :--- | :--- |
-| **1** | **Estado Centrado en Archivos** | **✅ Completada** | Sistema de checkpoints y persistencia de `state.json` operativo. |
-| **2** | **Bucle "Code-First" / ReAct** | **✅ Completada** | El agente ya ejecuta scripts Node.js mediante `/api/execute/node` para manipular archivos. |
-| **3** | **Integración de MCP** | **✅ Completada** | Herramientas estandarizadas bajo protocolo MCP en puerto 2998. |
-| **4** | **Aislamiento y Seguridad** | **⏳ Pendiente** | Falta implementar el "Workspace Jail" y ejecución en sandbox. |
+| **1** | **Estado Centrado en Archivos** | **✅ Completada** | Persistencia básica operativa en `sessions.json`. |
+| **2** | **Bucle "Code-First" / ReAct** | **✅ Completada** | El agente usa herramientas MCP para manipular archivos y ejecutar código. |
+| **3** | **Integración de MCP** | **✅ Completada** | Servidor y cliente MCP nativo funcionando. |
+| **4** | **Orquestación LangGraph** | **⏳ En Proceso** | Migrando de lógica imperativa a grafos de estados. |
+| **5** | **Aislamiento y Seguridad** | **⏳ Pendiente** | Falta implementar el "Workspace Jail" mediante herramientas estándar. |
 
 ---
 
-## 📋 2. Pasos a Seguir (Resumen Minimalista)
+## 📋 2. Nuevos Objetivos Estratégicos
 
-1. **Refactor de Persistencia**: Evolucionar la persistencia actual hacia un sistema de checkpointing basado en archivos para evitar la pérdida de contexto en tareas largas.
-2. **Motor Code-First**: Reemplazar el protocolo de etiquetas por un bucle de ejecución de código Node.js para que el agente manipule archivos mediante scripts dinámicos.
-3. **Estandarización MCP**: Estandarizar la comunicación con las herramientas del sistema mediante el protocolo MCP para facilitar la integración de nuevas capacidades.
-4. **Seguridad y Aislamiento**: Implementar un entorno de ejecución restringido (Sandboxing) para aislar las operaciones del agente y proteger el sistema operativo.
+1.  **Eliminación de "Context Rot"**: Implementar `StateGraph` con checkpointing persistente y reducers (`add_messages`) para una memoria infinita y eficiente.
+2.  **Contexto Fractal (RLM)**: Capacidad de analizar repositorios gigantes mediante la creación dinámica de sub-agentes que reportan al agente principal.
+3.  **Enrutamiento Dinámico**: Uso de aristas condicionales (`conditional_edges`) para loops automáticos de corrección de errores en herramientas.
+4.  **Seguridad por Diseño**: Migrar a `FileManagementToolkit` con `root_dir` (Path Jailing) para blindar el sistema operativo.
+5.  **Adaptadores MCP Nativos**: Conexión instantánea a cualquier herramienta externa mediante el protocolo estándar MCP.
 
 ---
 
 ## 🚀 3. Megaplan de Implementación Estratégica
 
-### Fase 1: Memoria de Ejecución Robusta (Durable Execution)
-*   **Objetivo**: Permitir que el agente reanude tareas complejas incluso tras fallos críticos o reinicios del navegador.
+### Fase 1: Motor LangGraph & Checkpointing (Durable Memory)
+*   **Objetivo**: Sustituir la gestión manual de estados por una máquina de estados robusta.
 *   **Acciones**:
-    *   Migrar `state.json` a una estructura de historial de estados (`steps`).
-    *   Implementar snapshots de contexto en `server.js` para inyectar solo la información relevante en el prompt.
-*   **Archivos**: `server.js`, `main.js`.
+    *   Implementar `StateGraph` en el backend (Node.js).
+    *   Configurar `SqliteSaver` para persistencia de hilos (threads) de conversación.
+    *   Integrar `add_messages` para gestionar el historial de forma incremental.
+*   **Archivos**: `server.js`, nuevo `agent_graph.js`.
 
-### Fase 2: Transición a Agente de Código (Code-First)
-*   **Objetivo**: Eliminar la dependencia de etiquetas `[REPLACE]` y permitir que el agente escriba su propia lógica de modificación.
+### Fase 2: Contexto Fractal & Navegación de Repositorios
+*   **Objetivo**: Permitir que el agente entienda proyectos de miles de archivos sin colapsar.
 *   **Acciones**:
-    *   Crear endpoint `/api/execute/node` para ejecución de snippets.
-    *   Actualizar el Prompt del Sistema para que el agente piense en términos de "scripts de transformación".
-    *   Reemplazar el motor de regex en `main.js` por un procesador de bloques de código JS.
-*   **Archivos**: `server.js`, `main.js`, `system_prompt`.
+    *   Crear nodo `Summarizer` para procesar directorios en paralelo.
+    *   Implementar lógica de "zoom" donde el agente solicita detalles solo de archivos específicos tras ver el mapa general.
+*   **Archivos**: `agent_graph.js`, `mcp_server.js`.
 
-### Fase 3: Estandarización de Herramientas (MCP)
-*   **Objetivo**: Centralizar todas las capacidades del servidor bajo una interfaz única y autodescubrible.
+### Fase 3: Auto-Corrección y Aristas Condicionales
+*   **Objetivo**: Que el agente aprenda de sus fallos de ejecución sin intervención humana.
 *   **Acciones**:
-    *   **✅ Completada**: Servidor MCP levantado en puerto 2998 usando SSEServerTransport.
-    *   **✅ Completada**: Mapeo de herramientas (list_files, read_file, write_file, search_files, execute_js) como herramientas MCP.
-    *   **✅ Completada**: Cliente MCP integrado en el frontend (main.js) para invocar herramientas bajo demanda.
-*   **Archivos**: `server.js`.
+    *   Definir aristas que detecten `tool_error`.
+    *   Implementar un nodo de `Reflexión` que analice por qué falló un comando y proponga un fix.
+*   **Archivos**: `agent_graph.js`.
 
-### Fase 4: Blindaje del Sistema (Sandboxing & Permissions)
-*   **Objetivo**: Garantizar que el agente no pueda dañar archivos fuera del proyecto o acceder a datos sensibles.
+### Fase 4: Blindaje (FileManagementToolkit & Root Jail)
+*   **Objetivo**: Seguridad total. El agente solo vive en su workspace.
 *   **Acciones**:
-    *   Implementar un "Workspace Jail" que valide cada ruta de archivo.
-    *   Usar entornos virtuales o contenedores ligeros para la ejecución de scripts del Fase 2.
-    *   Establecer permisos de "Solo Lectura" por defecto, requiriendo aprobación para escrituras críticas.
-*   **Archivos**: `server.js`.
+    *   Sustituir herramientas manuales en `mcp_server.js` por el kit de herramientas oficial de LangChain.
+    *   Inyectar el `root_dir` del proyecto dinámicamente en cada ejecución.
+*   **Archivos**: `mcp_server.js`, `server.js`.
 
 ---
 
 ## 🎯 Resultado Esperado
-Al finalizar este plan, **jpagents** será capaz de resolver problemas complejos de programación de forma autónoma, con una fiabilidad cercana al 100% en la aplicación de cambios y con la seguridad total de que el sistema operativo está protegido contra ejecuciones erróneas.
+Un sistema de agentes autónomos que no olvida, se auto-corrige, escala a proyectos gigantes y es 100% seguro para el sistema operativo del usuario.

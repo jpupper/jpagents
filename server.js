@@ -5,8 +5,13 @@ import path from 'path';
 import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-
 import { fileURLToPath } from 'url';
+
+// LangGraph Integration
+import { agentApp } from './agent_graph.js';
+import { HumanMessage } from "@langchain/core/messages";
+import { getAgentTraces } from './agent_trace_logger.js';
+
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -14,6 +19,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = 3001;
 let serverInstance = null; // Store server instance for graceful close
+
+// ... (rutas previas)
+
+app.get('/api/admin/traces', async (req, res) => {
+    try {
+        const traces = await getAgentTraces();
+        res.json(traces);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // Agent & Restart State
 let isAgentBusy = false;
@@ -121,6 +137,60 @@ app.post('/api/sessions/save', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// --- LangGraph Chat Endpoint ---
+app.post('/api/agent/chat', async (req, res) => {
+    const { threadId, message, model, systemPrompt } = req.body;
+    if (!threadId || !message) {
+        return res.status(400).json({ error: 'Missing threadId or message' });
+    }
+
+    console.log(`[LANGGRAPH] New message for thread: ${threadId}, Model requested: ${model}`);
+    
+    try {
+        const config = { configurable: { thread_id: threadId } };
+        
+        // Prepare initial state
+        const input = {
+            messages: [new HumanMessage(message)],
+            model: model || "llama3", // Seguimos con llama3 como último recurso
+            systemPrompt: systemPrompt || "Eres un asistente de programación experto."
+        };
+
+        console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
+        const stream = await agentApp.stream(input, config);
+        
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        let lastMessageSent = "";
+
+        for await (const chunk of stream) {
+            // chunk es un objeto tipo { nodeName: { stateUpdate } }
+            const nodeName = Object.keys(chunk)[0];
+            const stateUpdate = chunk[nodeName];
+
+            if (nodeName === 'agent' && stateUpdate.messages) {
+                const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
+                if (lastMsg && lastMsg.content && lastMsg.content !== lastMessageSent) {
+                    lastMessageSent = lastMsg.content;
+                    res.write(`data: ${JSON.stringify({ type: 'content', content: lastMsg.content, node: nodeName })}\n\n`);
+                }
+            } else if (nodeName === 'tools') {
+                res.write(`data: ${JSON.stringify({ type: 'system', content: '🛠️ Ejecutando herramientas...', node: nodeName })}\n\n`);
+            } else if (nodeName === 'reflect') {
+                res.write(`data: ${JSON.stringify({ type: 'system', content: '🤔 Reflexionando sobre el error...', node: nodeName })}\n\n`);
+            }
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+
+    } catch (error) {
+        console.error('[LANGGRAPH ERROR]', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
