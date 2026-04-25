@@ -10,9 +10,9 @@ import { logAgentTrace } from "./agent_trace_logger.js";
 // --- Tool Definitions (Wrapping MCP Tools) ---
 const MCP_BASE = "http://127.0.0.1:2998";
 
-async function callMCP(name, args, threadId) {
+async function callMCP(name, args, threadId, projectId = "global") {
     // Log trace for tool call
-    await logAgentTrace("global", threadId, "tool_call", { tool: name, args });
+    await logAgentTrace(projectId, threadId, "tool_call", { tool: name, args });
 
     const res = await fetch(`${MCP_BASE}/messages/global`, {
         method: 'POST',
@@ -36,13 +36,13 @@ async function callMCP(name, args, threadId) {
     }
 
     // Log trace for tool result
-    await logAgentTrace("global", threadId, "tool_result", { tool: name, success: !result.includes("ERROR") });
+    await logAgentTrace(projectId, threadId, "tool_result", { tool: name, success: !result.includes("ERROR") });
     
     return result;
 }
 
 const listFiles = tool(
-    async ({ path }, config) => await callMCP("list_files", { path }, config.configurable.thread_id),
+    async ({ path }, config) => await callMCP("list_files", { path }, config.configurable.thread_id, config.configurable.projectId),
     {
         name: "list_files",
         description: "Lista archivos en un directorio",
@@ -51,7 +51,7 @@ const listFiles = tool(
 );
 
 const readFile = tool(
-    async ({ path }, config) => await callMCP("read_file", { path }, config.configurable.thread_id),
+    async ({ path }, config) => await callMCP("read_file", { path }, config.configurable.thread_id, config.configurable.projectId),
     {
         name: "read_file",
         description: "Lee el contenido completo de un archivo",
@@ -60,7 +60,7 @@ const readFile = tool(
 );
 
 const writeFile = tool(
-    async ({ path, content }, config) => await callMCP("write_file", { path, content }, config.configurable.thread_id),
+    async ({ path, content }, config) => await callMCP("write_file", { path, content }, config.configurable.thread_id, config.configurable.projectId),
     {
         name: "write_file",
         description: "Escribe o sobreescribe un archivo",
@@ -69,7 +69,7 @@ const writeFile = tool(
 );
 
 const executeJs = tool(
-    async ({ code, cwd }, config) => await callMCP("execute_js", { code, cwd }, config.configurable.thread_id),
+    async ({ code, cwd }, config) => await callMCP("execute_js", { code, cwd }, config.configurable.thread_id, config.configurable.projectId),
     {
         name: "execute_js",
         description: "Ejecuta un script de Node.js dinámicamente",
@@ -78,7 +78,7 @@ const executeJs = tool(
 );
 
 const summarizeRepo = tool(
-    async ({ path }, config) => await callMCP("summarize_repo", { path }, config.configurable.thread_id),
+    async ({ path }, config) => await callMCP("summarize_repo", { path }, config.configurable.thread_id, config.configurable.projectId),
     {
         name: "summarize_repo",
         description: "Genera un resumen estructural del repositorio (árbol de directorios)",
@@ -92,6 +92,9 @@ const toolNode = new ToolNode(tools);
 // Define el esquema de estado del grafo
 const AgentState = Annotation.Root({
   ...MessagesAnnotation.spec,
+  projectId: Annotation({
+    reducer: (x, y) => y ?? x ?? "global",
+  }),
   model: Annotation({
     reducer: (x, y) => y ?? x ?? "llama3",
   }),
@@ -107,8 +110,8 @@ const callModel = async (state, config) => {
     const threadId = config.configurable.thread_id;
     const modelName = state.model || "llama3";
     
-    console.log(`[GRAPH] Node: agent, Thread: ${threadId}, Using Model: ${modelName}`);
-    await logAgentTrace("global", threadId, "thinking", { messages_count: state.messages.length, model: modelName });
+    console.log(`[GRAPH] Node: agent, Thread: ${threadId}, Project: ${state.projectId}, Using Model: ${modelName}`);
+    await logAgentTrace(state.projectId || "global", threadId, "thinking", { messages_count: state.messages.length, model: modelName });
 
     const systemPrompt = state.systemPrompt || "Eres un asistente de programación experto.";
     
@@ -126,9 +129,9 @@ const callModel = async (state, config) => {
     const response = await model.invoke(messages);
     
     if (response.tool_calls?.length) {
-        await logAgentTrace("global", threadId, "decision", { action: "tool_calls", count: response.tool_calls.length });
+        await logAgentTrace(state.projectId || "global", threadId, "decision", { action: "tool_calls", count: response.tool_calls.length });
     } else {
-        await logAgentTrace("global", threadId, "decision", { action: "reply" });
+        await logAgentTrace(state.projectId || "global", threadId, "decision", { action: "reply" });
     }
 
     return { messages: [response] };

@@ -6,11 +6,12 @@ import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import { connectDB, getCollection } from './db.js';
 
 // LangGraph Integration
 import { agentApp } from './agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
-import { getAgentTraces } from './agent_trace_logger.js';
+import { getAgentTraces, clearTraces } from './agent_trace_logger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -20,7 +21,15 @@ const app = express();
 const port = 3001;
 let serverInstance = null; // Store server instance for graceful close
 
-// ... (rutas previas)
+// Middlewares - DEBEN ir antes de las rutas
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Agent & Restart State
+let isAgentBusy = false;
+let needsRestart = false;
+let restartTimer = null;
 
 app.get('/api/admin/traces', async (req, res) => {
     try {
@@ -31,14 +40,15 @@ app.get('/api/admin/traces', async (req, res) => {
     }
 });
 
-// Agent & Restart State
-let isAgentBusy = false;
-let needsRestart = false;
-let restartTimer = null;
-
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.delete('/api/admin/traces', async (req, res) => {
+    try {
+        const { projectId } = req.query;
+        await clearTraces(projectId);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // Request Logger
 app.use((req, res, next) => {
@@ -53,22 +63,34 @@ const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
 const TASK_STATE_FILE = path.join(process.cwd(), 'state.json');
 
 
-// Persistence Helpers
+// Persistence Helpers with MongoDB
 async function loadLogs() {
     try {
-        const data = await fs.readFile(CLIENT_LOGS_FILE, 'utf-8');
-        return JSON.parse(data);
+        const collection = getCollection('client_logs');
+        return await collection.find({}).sort({ timestamp: -1 }).limit(50).toArray();
     } catch (e) {
+        console.error('[DB] Error loading logs:', e);
         return [];
     }
 }
 
 async function saveLog(logEntry) {
-    let logs = await loadLogs();
-    logs.push(logEntry);
-    // Keep only last 50 entries
-    if (logs.length > 50) logs = logs.slice(-50);
-    await fs.writeFile(CLIENT_LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+    try {
+        const collection = getCollection('client_logs');
+        await collection.insertOne(logEntry);
+        
+        // Optional: trim collection to 500 entries (instead of 50 for more history)
+        const count = await collection.countDocuments();
+        if (count > 500) {
+            const oldest = await collection.find().sort({ timestamp: 1 }).limit(count - 500).toArray();
+            if (oldest.length > 0) {
+                const ids = oldest.map(doc => doc._id);
+                await collection.deleteMany({ _id: { $in: ids } });
+            }
+        }
+    } catch (e) {
+        console.error('[DB] Error saving log:', e);
+    }
 }
 
 // Routes
@@ -103,22 +125,39 @@ app.get('/api/utils/client-logs', async (req, res) => {
 });
 
 app.post('/api/utils/client-logs/clear', async (req, res) => {
-    await fs.writeFile(CLIENT_LOGS_FILE, JSON.stringify([], null, 2), 'utf-8');
-    res.json({ success: true });
+    try {
+        const collection = getCollection('client_logs');
+        await collection.deleteMany({});
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
-// Persistence Helpers
+// Persistence Helpers (MongoDB)
 async function loadSessions() {
     try {
-        const data = await fs.readFile(SESSIONS_FILE, 'utf-8');
-        return JSON.parse(data);
+        const collection = getCollection('sessions');
+        // Filter out soft-deleted items if needed, but here we return all active ones
+        const data = await collection.findOne({ _id: 'global_state' });
+        return data ? data.state : { projects: [] };
     } catch (e) {
-        return [];
+        console.error('[DB] Error loading sessions:', e);
+        return { projects: [] };
     }
 }
 
-async function saveSessions(sessions) {
-    await fs.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
+async function saveSessions(state) {
+    try {
+        const collection = getCollection('sessions');
+        await collection.updateOne(
+            { _id: 'global_state' },
+            { $set: { state, updatedAt: new Date() } },
+            { upsert: true }
+        );
+    } catch (e) {
+        console.error('[DB] Error saving sessions:', e);
+    }
 }
 
 // Routes
@@ -140,23 +179,42 @@ app.post('/api/sessions/save', async (req, res) => {
     }
 });
 
+app.post('/api/sessions/archive', async (req, res) => {
+    try {
+        const { projectId, projectData } = req.body;
+        const collection = getCollection('archived_sessions');
+        await collection.insertOne({
+            projectId,
+            ...projectData,
+            archivedAt: new Date()
+        });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- LangGraph Chat Endpoint ---
 app.post('/api/agent/chat', async (req, res) => {
-    const { threadId, message, model, systemPrompt } = req.body;
+    const { threadId, projectId, message, model, systemPrompt } = req.body;
     if (!threadId || !message) {
         return res.status(400).json({ error: 'Missing threadId or message' });
     }
 
-    console.log(`[LANGGRAPH] New message for thread: ${threadId}, Model requested: ${model}`);
+    console.log(`[LANGGRAPH] New message for thread: ${threadId}, Project: ${projectId}, Model requested: ${model}`);
     
     try {
-        const config = { configurable: { thread_id: threadId } };
+        const config = { configurable: { thread_id: threadId, projectId: projectId || "global" } };
         
-        // Prepare initial state
         const input = {
             messages: [new HumanMessage(message)],
-            model: model || "llama3", // Seguimos con llama3 como último recurso
-            systemPrompt: systemPrompt || "Eres un asistente de programación experto."
+            projectId: projectId || "global",
+            model: model || "llama3",
+            systemPrompt: systemPrompt || `Eres un asistente de programación experto y SELECTIVO. 
+NO utilices herramientas de lectura o escritura a menos que sea estrictamente necesario para cumplir el objetivo. 
+Si el usuario hace una pregunta general, responde sin usar herramientas. 
+Si detectas que necesitas ver el código para responder, usa read_file de forma puntual. 
+No hagas barridos (list_files) a menos que no sepas dónde está el archivo.`
         };
 
         console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
@@ -329,6 +387,57 @@ app.post('/api/prompts/:name', async (req, res) => {
         res.status(500).json({ error: 'Failed to save prompt' });
     }
 });
+
+// SKILLS ENDPOINTS
+app.get('/api/skills', async (req, res) => {
+    try {
+        const skillsDir = path.join(__dirname, 'SKILLS');
+        await fs.mkdir(skillsDir, { recursive: true });
+        const files = await fs.readdir(skillsDir);
+        const skills = files
+            .filter(f => f.endsWith('.md'))
+            .map(f => f.replace('.md', ''));
+        res.json({ skills });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to list skills' });
+    }
+});
+
+app.get('/api/skills/:name', async (req, res) => {
+    try {
+        const name = req.params.name;
+        const filePath = path.join(__dirname, 'SKILLS', `${name}.md`);
+        const content = await fs.readFile(filePath, 'utf-8');
+        res.json({ content });
+    } catch (err) {
+        res.status(404).json({ error: 'Skill not found' });
+    }
+});
+
+app.post('/api/skills/:name', async (req, res) => {
+    try {
+        const name = req.params.name;
+        const { content } = req.body;
+        const filePath = path.join(__dirname, 'SKILLS', `${name}.md`);
+        await fs.mkdir(path.join(__dirname, 'SKILLS'), { recursive: true });
+        await fs.writeFile(filePath, content, 'utf-8');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to save skill' });
+    }
+});
+
+app.delete('/api/skills/:name', async (req, res) => {
+    try {
+        const name = req.params.name;
+        const filePath = path.join(__dirname, 'SKILLS', `${name}.md`);
+        await fs.unlink(filePath);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete skill' });
+    }
+});
+
 
 app.post('/api/files/list', async (req, res) => {
     let { folderPath } = req.body;
@@ -690,13 +799,12 @@ app.post('/api/admin/communicate/admin', async (req, res) => {
 });
 
 
-// Task State Persistence (Historial de pasos)
+// Task State Persistence (MongoDB)
 app.get('/api/task/state', async (req, res) => {
     try {
-        const data = await fs.readFile(TASK_STATE_FILE, 'utf-8');
-        const state = JSON.parse(data);
-        // Devolvemos el estado actual (último paso) y la meta-información
-        res.json(state);
+        const collection = getCollection('task_state');
+        const state = await collection.findOne({ _id: 'current_task' });
+        res.json(state || { objective: '', steps: [], currentStep: 0 });
     } catch (e) {
         res.json({ objective: '', steps: [], currentStep: 0 });
     }
@@ -705,15 +813,10 @@ app.get('/api/task/state', async (req, res) => {
 app.post('/api/task/state', async (req, res) => {
     try {
         const newState = req.body;
-        let history = { objective: '', steps: [], currentStep: 0 };
+        const collection = getCollection('task_state');
         
-        try {
-            const data = await fs.readFile(TASK_STATE_FILE, 'utf-8');
-            history = JSON.parse(data);
-            // Asegurar que la estructura nueva exista si el archivo es antiguo
-            if (!Array.isArray(history.steps)) history.steps = [];
-            if (history.currentStep === undefined) history.currentStep = history.steps.length;
-        } catch (e) {}
+        let history = await collection.findOne({ _id: 'current_task' });
+        if (!history) history = { objective: '', steps: [], currentStep: 0 };
 
         // Si el objetivo cambia, resetear o iniciar nuevo flujo
         if (newState.objective && newState.objective !== history.objective) {
@@ -732,12 +835,16 @@ app.post('/api/task/state', async (req, res) => {
             history.currentStep = history.steps.length;
         }
 
-        // Limitar historial a los últimos 20 pasos para no saturar el archivo
-        if (history.steps.length > 20) {
-            history.steps = history.steps.slice(-20);
+        // Limitar historial a los últimos 50 pasos en DB
+        if (history.steps.length > 50) {
+            history.steps = history.steps.slice(-50);
         }
 
-        await fs.writeFile(TASK_STATE_FILE, JSON.stringify(history, null, 2), 'utf-8');
+        await collection.updateOne(
+            { _id: 'current_task' },
+            { $set: history },
+            { upsert: true }
+        );
         res.json({ success: true, currentStep: history.currentStep });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -823,8 +930,13 @@ app.use((err, req, res, next) => {
     });
 });
 
-serverInstance = app.listen(port, () => {
+serverInstance = app.listen(port, async () => {
     console.log(`Server running at http://localhost:${port}`);
+    try {
+        await connectDB();
+    } catch (e) {
+        console.error('CRITICAL: Could not connect to MongoDB. Persistence will fail.');
+    }
 });
 
 // Final safety net

@@ -39,3 +39,23 @@ export async function getAgentTraces() {
         return [];
     }
 }
+
+export async function clearTraces(projectId = null) {
+    try {
+        if (!projectId) {
+            await fs.writeFile(TRACES_FILE, JSON.stringify([], null, 2), 'utf-8');
+            return;
+        }
+
+        let traces = [];
+        try {
+            const data = await fs.readFile(TRACES_FILE, 'utf-8');
+            traces = JSON.parse(data);
+        } catch (e) {}
+
+        const filtered = traces.filter(t => t.projectId !== projectId);
+        await fs.writeFile(TRACES_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+    } catch (e) {
+        console.error("Error clearing traces:", e);
+    }
+}

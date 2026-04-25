@@ -1,5 +1,5 @@
 {
-  "objective": "crea un sketch de p5",
+  "objective": "Creame un sketch de p5js",
   "currentState": "PROCESSING ACTIONS",
   "lastActions": [
     {
@@ -9,125 +9,59 @@
   ],
   "steps": [
     {
-      "id": 21,
-      "timestamp": 1776986491540,
+      "id": 1,
+      "timestamp": 1776992233071,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 2,
+      "timestamp": 1776992233083,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 3,
+      "timestamp": 1776992233094,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 4,
+      "timestamp": 1776992239921,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 5,
+      "timestamp": 1776992239932,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 6,
+      "timestamp": 1776992239940,
+      "action": "[MCP:write_file]",
+      "result": "Success"
+    },
+    {
+      "id": 7,
+      "timestamp": 1776992240006,
       "action": "[MCP:execute_js]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776986507039,
-      "action": "[MCP:write_file]",
+      "id": 8,
+      "timestamp": 1777154354534,
+      "action": "[MCP:list_files]",
       "result": "Success"
     },
     {
-      "id": 21,
-      "timestamp": 1776986507069,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986507139,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986527260,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986527286,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986527311,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986539395,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986545244,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776986548274,
-      "action": "[MCP:execute_js]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776990980906,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776990980918,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776990980964,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991314917,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991314945,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991314955,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991322666,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991322677,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991322687,
-      "action": "[MCP:write_file]",
-      "result": "Success"
-    },
-    {
-      "id": 21,
-      "timestamp": 1776991322749,
+      "id": 9,
+      "timestamp": 1777154354612,
       "action": "[MCP:execute_js]",
       "result": "Success"
     }
   ],
-  "currentStep": 21
+  "currentStep": 9
 }

@@ -39,9 +39,7 @@
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
       </div>
       <div class="sidebar-footer">
-        <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración
-          Global</button>
-        <div class="status-indicators">
+        <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración Global</button>
           <div class="status-indicator">
             <span id="ollama-status-dot" class="dot live"></span> Ollama
           </div>
@@ -51,7 +49,6 @@
           <div class="status-indicator">
             <span id="mcp-status-dot" class="dot dead"></span> MCP Protocol
           </div>
-        </div>
       </div>
     </aside>
 
@@ -261,6 +258,11 @@
                 <span id="chat-thinking-status">Pensando...</span>
               </div>
             </div>
+            <div class="chat-header-actions">
+                <select id="agent-skill-select" class="skill-select">
+                    <option value="">Cargar Skill...</option>
+                </select>
+            </div>
           </div>
           <div id="chat-messages" class="chat-messages">
             <!-- Messages appear here -->
@@ -351,14 +353,17 @@
 
         <div class="modal-container">
           <!-- Sidebar Navigation -->
-          <aside class="modal-sidebar">
-            <button class="modal-side-tab active" data-modal-tab="system-prompts">
-              <span>📝 System Prompts</span>
-            </button>
-            <button class="modal-side-tab" data-modal-tab="validation-loop">
-              <span>🔄 Bucle de Validación</span>
-            </button>
-          </aside>
+            <aside class="modal-sidebar">
+              <button class="modal-side-tab active" data-modal-tab="system-prompts">
+                <span>📝 System Prompts</span>
+              </button>
+              <button class="modal-side-tab" data-modal-tab="skills">
+                <span>🧠 Skills / Habilidades</span>
+              </button>
+              <button class="modal-side-tab" data-modal-tab="validation-loop">
+                <span>🔄 Bucle de Validación</span>
+              </button>
+            </aside>
 
           <!-- Main Content Area -->
           <div class="modal-main-body">
@@ -403,6 +408,39 @@
                     </p>
                     <div id="internal-agent-display" class="readonly-display">Cargando instrucciones...</div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- New Skills Tab in Modal -->
+            <div id="modal-tab-skills" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <div class="skills-header">
+                  <h3>🧠 Gestor de Skills</h3>
+                  <button id="new-skill-btn" class="btn-primary" style="width: auto;">+ Nuevo Skill</button>
+                </div>
+                
+                <div class="skills-container modal-layout">
+                  <aside class="skills-sidebar">
+                    <div id="skills-list" class="skills-list">
+                      <!-- Skills loaded by JS -->
+                    </div>
+                  </aside>
+                  <main class="skills-editor">
+                    <div id="skill-editor-container" class="hidden">
+                      <div class="skill-editor-header">
+                        <input type="text" id="skill-name-input" placeholder="Nombre..." />
+                        <div class="skill-actions">
+                          <button id="save-skill-btn" class="btn-primary">Guardar 💾</button>
+                          <button id="delete-skill-btn" class="btn-danger-outline">🗑️</button>
+                        </div>
+                      </div>
+                      <textarea id="skill-content-textarea" class="config-textarea" rows="15" placeholder="Escribe las instrucciones de este skill..."></textarea>
+                    </div>
+                    <div id="skill-empty-state" class="empty-state">
+                      <p>Selecciona un skill o crea uno nuevo.</p>
+                    </div>
+                  </main>
                 </div>
               </div>
             </div>

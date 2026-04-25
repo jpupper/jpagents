@@ -81,5 +81,89 @@
     "details": {
       "action": "reply"
     }
+  },
+  {
+    "id": "moc70r3z3a4gjtiwgbe",
+    "timestamp": 1776991772735,
+    "projectId": "global",
+    "agentId": "chat-moc6zzqz73w2gt6eck",
+    "stepName": "thinking",
+    "details": {
+      "messages_count": 1,
+      "model": "gemma4:e4b"
+    }
+  },
+  {
+    "id": "moc711wbsbgvq1z07r",
+    "timestamp": 1776991786715,
+    "projectId": "global",
+    "agentId": "chat-moc6zzqz73w2gt6eck",
+    "stepName": "decision",
+    "details": {
+      "action": "reply"
+    }
+  },
+  {
+    "id": "moc7aemvxck8mbsyla",
+    "timestamp": 1776992223127,
+    "projectId": "global",
+    "agentId": "chat-moc7a8m5oukz6r4q2kn",
+    "stepName": "thinking",
+    "details": {
+      "messages_count": 1,
+      "model": "gemma4:e4b"
+    }
+  },
+  {
+    "id": "moc7am9mo0at0obeou",
+    "timestamp": 1776992233018,
+    "projectId": "global",
+    "agentId": "chat-moc7a8m5oukz6r4q2kn",
+    "stepName": "decision",
+    "details": {
+      "action": "reply"
+    }
+  },
+  {
+    "id": "moevt5lou91rkmbbjto",
+    "timestamp": 1777154341020,
+    "projectId": "moc7bhq0dmrdl5vw1uu",
+    "agentId": "chat-moc7btw2eg555fuh5z",
+    "stepName": "thinking",
+    "details": {
+      "messages_count": 1,
+      "model": "gemma4:e4b"
+    }
+  },
+  {
+    "id": "moevtg0atp1kvabpm8e",
+    "timestamp": 1777154354506,
+    "projectId": "moc7bhq0dmrdl5vw1uu",
+    "agentId": "chat-moc7btw2eg555fuh5z",
+    "stepName": "decision",
+    "details": {
+      "action": "reply"
+    }
+  },
+  {
+    "id": "moewc7wq79kqcxavpe8",
+    "timestamp": 1777155230474,
+    "projectId": "moewbjgd3lx6v2xb6s3",
+    "agentId": "chat-moewc5suiscxigtnu7",
+    "stepName": "thinking",
+    "details": {
+      "messages_count": 1,
+      "model": "gemma4:e4b"
+    }
+  },
+  {
+    "id": "moewc91pyn7snb1uqc",
+    "timestamp": 1777155231949,
+    "projectId": "moewbjgd3lx6v2xb6s3",
+    "agentId": "chat-moewc5suiscxigtnu7",
+    "stepName": "decision",
+    "details": {
+      "action": "reply"
+    }
   }
 ]

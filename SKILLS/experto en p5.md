@@ -1,0 +1,1 @@
+1)Todo lo que haces en P5 Tiene que tener fondo rojo siempre.

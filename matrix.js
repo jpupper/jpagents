@@ -10,6 +10,7 @@ export function initMatrix(containerId, svgId) {
     
     let width = container.clientWidth;
     let height = container.clientHeight;
+    let currentFilter = null;
     
     const g = svg.append("g");
 
@@ -27,30 +28,45 @@ export function initMatrix(containerId, svgId) {
         height = container.clientHeight;
     });
 
-    async function update() {
-        const response = await fetch(`${window.API_BASE}/admin/traces`);
-        const traces = await response.json();
+    async function update(filterProjectId = null) {
+        if (filterProjectId !== undefined && filterProjectId !== 'admin') {
+            currentFilter = filterProjectId;
+        } else if (filterProjectId === 'admin') {
+            currentFilter = null;
+        }
         
-        const data = transformTracesToTree(traces);
-        renderTree(data);
+        try {
+            const response = await fetch(`${window.API_BASE}/admin/traces`);
+            const traces = await response.json();
+            
+            const data = transformTracesToTree(traces, currentFilter);
+            renderTree(data);
+        } catch (e) {
+            console.error("Matrix update error:", e);
+        }
     }
 
-    function transformTracesToTree(traces) {
-        const root = { name: "Orquestador", children: [], type: 'root' };
+    function transformTracesToTree(traces, filterProjectId = null) {
+        const root = { name: filterProjectId ? `Proyecto: ${filterProjectId}` : "Orquestador", children: [], type: 'root' };
         const projectsMap = {};
 
         traces.forEach(trace => {
+            // Si hay un filtro y no coincide, saltar
+            if (filterProjectId && trace.projectId !== filterProjectId) return;
+
             if (!projectsMap[trace.projectId]) {
                 projectsMap[trace.projectId] = { name: `Proyecto: ${trace.projectId}`, children: [], type: 'project', id: trace.projectId };
-                root.children.push(projectsMap[trace.projectId]);
+                if (!filterProjectId) {
+                    root.children.push(projectsMap[trace.projectId]);
+                }
             }
 
-            const project = projectsMap[trace.projectId];
-            let thread = project.children.find(c => c.id === trace.agentId);
+            const targetNode = filterProjectId ? root : projectsMap[trace.projectId];
+            let thread = targetNode.children.find(c => c.id === trace.agentId);
             
             if (!thread) {
                 thread = { name: `Agente: ${trace.agentId.substring(0,8)}`, children: [], type: 'agent', id: trace.agentId };
-                project.children.push(thread);
+                targetNode.children.push(thread);
             }
 
             thread.children.push({
@@ -70,7 +86,7 @@ export function initMatrix(containerId, svgId) {
         treeLayout(hierarchy);
 
         // Links
-        const links = g.selectAll(".link")
+        g.selectAll(".link")
             .data(hierarchy.links())
             .join("path")
             .attr("class", "link")
@@ -95,10 +111,22 @@ export function initMatrix(containerId, svgId) {
                 tooltip.classList.remove('hidden');
                 tooltip.style.left = (event.pageX + 10) + 'px';
                 tooltip.style.top = (event.pageY + 10) + 'px';
+                
+                let detailsHtml = '';
+                if (d.data.details) {
+                    if (d.data.name.includes('tool')) {
+                        const tool = d.data.details.tool || 'Desconocida';
+                        const args = d.data.details.args ? ` -> <code>${d.data.details.args.path || ''}</code>` : '';
+                        detailsHtml = `<p><strong>🛠️ Herramienta:</strong> ${tool}${args}</p>`;
+                    } else {
+                        detailsHtml = `<pre>${JSON.stringify(d.data.details, null, 2)}</pre>`;
+                    }
+                }
+
                 tooltip.innerHTML = `
                     <h4>${d.data.name}</h4>
                     <p>Tipo: ${d.data.type}</p>
-                    ${d.data.details ? `<pre>${JSON.stringify(d.data.details, null, 2)}</pre>` : ''}
+                    ${detailsHtml}
                     ${d.data.timestamp ? `<p><small>${new Date(d.data.timestamp).toLocaleTimeString()}</small></p>` : ''}
                 `;
             })
@@ -128,8 +156,8 @@ export function initMatrix(containerId, svgId) {
         return "#ffffff";
     }
 
-    // Auto-update every 5 seconds
-    const interval = setInterval(update, 5000);
+    // Auto-update every 5 seconds using the currentFilter
+    const interval = setInterval(() => update(currentFilter), 5000);
     update();
 
     return {

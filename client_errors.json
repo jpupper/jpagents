@@ -4,7 +4,7 @@
     "messages": [
       "[GENERATIVE] Generando nombre de proyecto..."
     ],
-    "timestamp": "2026-04-24T00:41:44.803Z",
+    "timestamp": "2026-04-25T21:59:00.902Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -13,110 +13,16 @@
     "messages": [
       "[CHAT] Enviando petición con modelo: gemma4:e4b"
     ],
-    "timestamp": "2026-04-24T00:41:44.806Z",
+    "timestamp": "2026-04-25T21:59:00.932Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "[NAMING] Proyecto renombrado: Forest Peach Fox -> Proyecto 2"
+      "[NAMING] Proyecto renombrado: Astral Bronze Bear -> Nexus código"
     ],
-    "timestamp": "2026-04-24T00:41:48.654Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:41:54.920Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:41:54.949Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:41:54.957Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "warn",
-    "messages": [
-      "🕵️ Imperativo detectado sin acciones. Iniciando reintento de verificación."
-    ],
-    "timestamp": "2026-04-24T00:41:54.959Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 AutoRetry 1/20: ⚠️ Detecté que había un imperativo previo de crear o modificar archivos, pero no se realizó ninguna "
-    ],
-    "timestamp": "2026-04-24T00:41:54.960Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🛠️ renderSessionSummary called with:",
-      "3",
-      "items"
-    ],
-    "timestamp": "2026-04-24T00:41:57.988Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🛠️ renderSessionSummary called with:",
-      "3",
-      "items"
-    ],
-    "timestamp": "2026-04-24T00:42:02.659Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:42:02.671Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:42:02.680Z",
-    "url": "http://localhost:5173/",
-    "seenByAgent": false
-  },
-  {
-    "type": "log",
-    "messages": [
-      "🔄 Refreshing file list after MCP write_file..."
-    ],
-    "timestamp": "2026-04-24T00:42:02.689Z",
+    "timestamp": "2026-04-25T21:59:12.817Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -125,9 +31,9 @@
     "messages": [
       "%c[MCP] SENT tool:",
       "color: #3b82f6",
-      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP Protocol Refreshed and Files Written OK')\"\n  },\n  \"id\": 1\n}"
+      "{\n  \"name\": \"list_files\",\n  \"args\": {\n    \"path\": \"D:/Programacion/jpagents/proyects/astral_bronze_bear/.\"\n  },\n  \"id\": 1\n}"
     ],
-    "timestamp": "2026-04-24T00:42:02.690Z",
+    "timestamp": "2026-04-25T21:59:14.517Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
@@ -136,42 +42,153 @@
     "messages": [
       "%c[MCP] RECEIVED message:",
       "color: #10b981",
-      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP Protocol Refreshed and Files Written OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1\n}"
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"[\\n  {\\n    \\\"name\\\": \\\"run.bat\\\",\\n    \\\"isDirectory\\\": false,\\n    \\\"path\\\": \\\"D:\\\\\\\\Programacion\\\\\\\\jpagents\\\\\\\\proyects\\\\\\\\astral_bronze_bear\\\\\\\\run.bat\\\"\\n  }\\n]\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1\n}"
     ],
-    "timestamp": "2026-04-24T00:42:02.748Z",
+    "timestamp": "2026-04-25T21:59:14.532Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "🛠️ renderSessionSummary called with:",
-      "3",
-      "items"
+      "🔄 Refreshing file list after MCP list_files..."
     ],
-    "timestamp": "2026-04-24T00:42:02.752Z",
+    "timestamp": "2026-04-25T21:59:14.537Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "🛠️ renderSessionSummary called with:",
-      "3",
-      "items"
+      "%c[MCP] SENT tool:",
+      "color: #3b82f6",
+      "{\n  \"name\": \"execute_js\",\n  \"args\": {\n    \"code\": \"console.log('MCP OK')\"\n  },\n  \"id\": 2\n}"
     ],
-    "timestamp": "2026-04-24T00:42:05.004Z",
+    "timestamp": "2026-04-25T21:59:14.548Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   },
   {
     "type": "log",
     "messages": [
-      "🛠️ renderSessionSummary called with:",
-      "3",
-      "items"
+      "%c[MCP] RECEIVED message:",
+      "color: #10b981",
+      "{\n  \"result\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"STDOUT:\\nMCP OK\\n\\nSTDERR:\\n\"\n      }\n    ]\n  },\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2\n}"
     ],
-    "timestamp": "2026-04-24T00:42:05.005Z",
+    "timestamp": "2026-04-25T21:59:14.610Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 Refreshing file list after MCP execute_js..."
+    ],
+    "timestamp": "2026-04-25T21:59:14.614Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🔄 AutoRetry 1/20: ⚠️ Detecté que había un imperativo previo de crear o modificar archivos, pero no se realizó ninguna "
+    ],
+    "timestamp": "2026-04-25T21:59:14.616Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "🚀 Switching to project: moc75a73guczz6o2n3r"
+    ],
+    "timestamp": "2026-04-25T22:03:53.755Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📂 Project has folder, scanning: D:\\Programacion\\jpagents\\proyects\\nebulous_forest_swan"
+    ],
+    "timestamp": "2026-04-25T22:03:53.761Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] Connecting to:",
+      "http://127.0.0.1:2998/sse"
+    ],
+    "timestamp": "2026-04-25T22:06:06.788Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargando instrucciones desde la carpeta PROMPTS..."
+    ],
+    "timestamp": "2026-04-25T22:06:06.790Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "%c[MCP] RECEIVED connect:",
+      "color: #10b981",
+      "SSE connection opened"
+    ],
+    "timestamp": "2026-04-25T22:06:06.830Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[MCP-CLIENT] Message endpoint discovered:",
+      "http://127.0.0.1:2998/messages/ec0e975d-0b7f-46ee-b296-99dc956545a6?sessionId=773234b9-d6eb-4146-913c-cd3891853d1a"
+    ],
+    "timestamp": "2026-04-25T22:06:06.833Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: developer_agent"
+    ],
+    "timestamp": "2026-04-25T22:06:06.857Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: orchestrator_agent"
+    ],
+    "timestamp": "2026-04-25T22:06:06.867Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "[PROMPTS] Cargado: user_system_prompt"
+    ],
+    "timestamp": "2026-04-25T22:06:06.869Z",
+    "url": "http://localhost:5173/",
+    "seenByAgent": false
+  },
+  {
+    "type": "log",
+    "messages": [
+      "📍 Restored active project:",
+      "moc75a73guczz6o2n3r"
+    ],
+    "timestamp": "2026-04-25T22:06:06.898Z",
     "url": "http://localhost:5173/",
     "seenByAgent": false
   }

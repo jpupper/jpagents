@@ -81,6 +81,7 @@ marked.setOptions({
 
 
 const API_BASE = 'http://localhost:3001/api';
+window.API_BASE = API_BASE;
 const OLLAMA_BASE = 'http://localhost:11434/api';
 
 // PROMPTS MANAGEMENT
@@ -500,17 +501,16 @@ async function performPeriodicSync() {
 }
 
 // New State Structure
-const DEFAULT_USER_SYSTEM_PROMPT = `REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
+const DEFAULT_USER_SYSTEM_PROMPT = `Eres un asistente de programación experto y SELECTIVO. 
+
+REGLA DE ORO 0 (SELECTIVIDAD): SOLO usa herramientas si es estrictamente necesario. Si el usuario te hace una pregunta que puedes responder con tu conocimiento base (ej: "qué es un closure"), NO leas archivos ni listes directorios. Solo usa herramientas cuando el usuario pida explícitamente modificar, leer o investigar el código del proyecto.
+
+REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
 Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.
 
-REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.
+REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta.
 
-REGLA DE ORO 3 (VALIDACIÓN): Tras realizar cambios significativos o terminar una tarea, DEBES validar que el proyecto funcione:
-1. Asegúrate de que exista un \`run.bat\`.
-2. Ejecuta el proyecto (el sistema lo hace al detectar cambios, o puedes pedirlo).
-3. Usa [CALL:take_screenshot]{} para ver el resultado visual.
-4. Usa [CALL:get_console_logs]{} para revisar errores.
-5. No des por terminada la tarea hasta que la validación sea EXITOSA. Si hay errores, corrígelos e itera.`;
+REGLA DE ORO 3 (VALIDACIÓN): Tras realizar cambios significativos o terminar una tarea técnica, DEBES validar que el proyecto funcione usando screenshots y logs de consola. No des por terminada la tarea hasta que la validación sea EXITOSA.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
 Tu objetivo es gestionar de principio a fin las peticiones del usuario.
@@ -621,6 +621,22 @@ const gitCommitMessageInput = document.getElementById('git-commit-message');
 const gitConfirmBtn = document.getElementById('git-confirm-btn');
 
 let currentAttachedImages = [];
+let skillsList = [];
+let activeSkillName = null;
+
+// DOM Elements for Skills
+const skillsManagerBtn = document.getElementById('skills-manager-btn');
+const skillsTab = document.getElementById('skills-tab');
+const skillsTabContent = document.getElementById('skills-tab-content');
+const skillsListEl = document.getElementById('skills-list');
+const skillEditorContainer = document.getElementById('skill-editor-container');
+const skillEmptyState = document.getElementById('skill-empty-state');
+const skillNameInput = document.getElementById('skill-name-input');
+const skillContentTextarea = document.getElementById('skill-content-textarea');
+const saveSkillBtn = document.getElementById('save-skill-btn');
+const deleteSkillBtn = document.getElementById('delete-skill-btn');
+const newSkillBtn = document.getElementById('new-skill-btn');
+const agentSkillSelect = document.getElementById('agent-skill-select');
 
 // Initialize
 async function init() {
@@ -628,7 +644,9 @@ async function init() {
     await checkSystemHealth();
     await fetchModels();
     await loadData();
+    await loadSkills();
     setupEventListeners();
+    setupSkillsEventListeners();
 
     // Periodically check health and external instructions every 1 minute
     setInterval(performPeriodicSync, 60000);
@@ -748,6 +766,141 @@ async function saveTaskState(taskState) {
 }
 
 
+// --- SKILLS MANAGEMENT ---
+async function loadSkills() {
+    try {
+        const res = await fetch(`${API_BASE}/skills`);
+        const data = await res.json();
+        skillsList = data.skills || [];
+        renderSkillsList();
+        updateAgentSkillSelect();
+    } catch (e) {
+        console.error("Error loading skills:", e);
+    }
+}
+
+function renderSkillsList() {
+    if (!skillsListEl) return;
+    skillsListEl.innerHTML = skillsList.map(name => {
+        const isActive = activeSkillName === name;
+        return `
+            <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}')">
+                <span>${isActive ? '🔥' : '🧠'}</span>
+                <span style="font-weight: ${isActive ? '800' : '500'}">${name}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+window.selectSkill = async (name) => {
+    activeSkillName = name;
+    renderSkillsList();
+    
+    try {
+        const res = await fetch(`${API_BASE}/skills/${name}`);
+        const data = await res.json();
+        
+        skillNameInput.value = name;
+        skillContentTextarea.value = data.content || '';
+        
+        skillEditorContainer.classList.remove('hidden');
+        skillEmptyState.classList.add('hidden');
+    } catch (e) {
+        console.error("Error selecting skill:", e);
+    }
+};
+
+function updateAgentSkillSelect() {
+    if (!agentSkillSelect) return;
+    const currentVal = agentSkillSelect.value;
+    agentSkillSelect.innerHTML = '<option value="">Cargar Skill...</option>' + 
+        skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+    agentSkillSelect.value = currentVal;
+}
+
+function setupSkillsEventListeners() {
+    // Skills Manager sidebar button removed, logic moved to global settings
+
+    if (newSkillBtn) {
+        newSkillBtn.addEventListener('click', () => {
+            activeSkillName = null;
+            skillNameInput.value = '';
+            skillContentTextarea.value = '';
+            skillEditorContainer.classList.remove('hidden');
+            skillEmptyState.classList.add('hidden');
+            renderSkillsList();
+        });
+    }
+
+    if (saveSkillBtn) {
+        saveSkillBtn.addEventListener('click', async () => {
+            const name = skillNameInput.value.trim();
+            const content = skillContentTextarea.value;
+            
+            if (!name) return alert("El skill necesita un nombre.");
+            
+            try {
+                await fetch(`${API_BASE}/skills/${name}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                activeSkillName = name;
+                await loadSkills();
+                alert("Skill guardado con éxito.");
+            } catch (e) {
+                console.error("Error saving skill:", e);
+                alert("Error al guardar el skill.");
+            }
+        });
+    }
+
+    if (deleteSkillBtn) {
+        deleteSkillBtn.addEventListener('click', async () => {
+            if (!activeSkillName) return;
+            if (!confirm(`¿Estás seguro de que quieres borrar el skill "${activeSkillName}"?`)) return;
+            
+            try {
+                await fetch(`${API_BASE}/skills/${activeSkillName}`, { method: 'DELETE' });
+                activeSkillName = null;
+                await loadSkills();
+                skillEditorContainer.classList.add('hidden');
+                skillEmptyState.classList.remove('hidden');
+            } catch (e) {
+                console.error("Error deleting skill:", e);
+            }
+        });
+    }
+
+    if (agentSkillSelect) {
+        agentSkillSelect.addEventListener('change', async () => {
+            const skillName = agentSkillSelect.value;
+            if (!skillName) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/skills/${skillName}`);
+                const data = await res.json();
+                
+                if (data.content) {
+                    const chatInput = document.getElementById('chat-input');
+                    if (chatInput) {
+                        // Append skill content or ask user?
+                        // For now, let's just append it with a separator
+                        const separator = "\n\n--- SKILL: " + skillName + " ---\n";
+                        if (!chatInput.value.includes(data.content)) {
+                            chatInput.value += separator + data.content;
+                        }
+                    }
+                }
+                // Reset select
+                agentSkillSelect.value = "";
+            } catch (e) {
+                console.error("Error loading skill into agent:", e);
+            }
+        });
+    }
+}
+
 async function getClientErrors() {
     try {
         const res = await fetch(`${API_BASE}/utils/client-logs`);
@@ -757,6 +910,7 @@ async function getClientErrors() {
         return [];
     }
 }
+
 
 async function refreshConsoleUI() {
     const consoleOutput = document.getElementById('frontend-console-output');
@@ -1166,6 +1320,7 @@ function updateViewVisibility() {
     editorTabContent.classList.add('hidden');
     dashboardTabContent.classList.add('hidden');
     adminTabContent.classList.add('hidden');
+    if (skillsTabContent) skillsTabContent.classList.add('hidden');
     const matrixTabContent = document.getElementById('matrix-tab-content');
     if (matrixTabContent) matrixTabContent.classList.add('hidden');
 
@@ -1176,10 +1331,11 @@ function updateViewVisibility() {
         if (matrixTabContent) {
             matrixTabContent.classList.remove('hidden');
             if (activeMatrix) {
-                activeMatrix.update();
+                activeMatrix.update(project ? project.id : 'admin');
             } else {
                 activeMatrix = initMatrix('matrix-canvas-container', 'matrix-svg');
-                document.getElementById('refresh-matrix-btn').onclick = () => activeMatrix.update();
+                activeMatrix.update(project ? project.id : 'admin');
+                document.getElementById('refresh-matrix-btn').onclick = () => activeMatrix.update(project ? project.id : 'admin');
                 document.getElementById('reset-zoom-btn').onclick = () => activeMatrix.resetZoom();
             }
         }
@@ -1193,11 +1349,23 @@ function updateViewVisibility() {
         adminBtn.classList.toggle('active', isAdminActive);
     }
 
+    const skillsBtn = document.getElementById('skills-manager-btn');
+    if (skillsBtn) {
+        const isSkillsActive = state.activeProjectId === 'skills' || (project && project.activeTabId === 'skills');
+        skillsBtn.classList.toggle('active', isSkillsActive);
+    }
+
     if (state.activeProjectId === 'admin' || (project && project.activeTabId === 'admin')) {
         saveFileBtn.classList.add('hidden');
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
+        return;
+    }
+
+    if (state.activeProjectId === 'skills' || (project && project.activeTabId === 'skills')) {
+        saveFileBtn.classList.add('hidden');
+        if (skillsTabContent) skillsTabContent.classList.remove('hidden');
         return;
     }
 
@@ -1422,15 +1590,31 @@ function escapeHtml(text) {
 }
 
 window.switchTab = (id) => {
+    console.log("Switching to tab:", id);
+    
+    if (id === 'admin') {
+        state.activeProjectId = 'admin';
+        renderTabs();
+        return;
+    }
+
+    if (id === 'skills') {
+        // Redirect to modal if needed, but here we just return or do nothing
+        // because the sidebar button now handles opening the modal.
+        return;
+    }
+
     const p = getActiveProject();
-    if (!p) return;
-    p.activeTabId = id;
-    renderTabs();
-    renderMessages(); // To refresh chat if switching to a chat tab
-    saveData();
+    if (p) {
+        p.activeTabId = id;
+        renderTabs();
+        renderMessages(); // To refresh chat if switching to a chat tab
+        saveData();
+    }
 };
 
-window.addChat = () => {
+
+window.addChat = async () => {
     const p = getActiveProject();
     if (!p) return;
 
@@ -1527,24 +1711,48 @@ window.switchProject = (id, event = null) => {
 };
 
 window.deleteProject = async (id) => {
-    if (!confirm('¿Eliminar proyecto completo?')) return;
-    state.projects = state.projects.filter(p => p.id !== id);
-    if (state.activeProjectId === id) {
-        if (state.projects.length > 0) {
-            switchProject(state.projects[0].id);
+    const project = state.projects.find(p => p.id === id);
+    if (!project) return;
+    
+    if (!confirm(`¿Eliminar proyecto "${project.name}"? Se guardará en el historial.`)) return;
+    
+    try {
+        // Archive on server before removing locally
+        await fetch(`${API_BASE}/sessions/archive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: id, projectData: project })
+        });
+
+        // Clear traces on backend
+        fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
+
+        state.projects = state.projects.filter(p => p.id !== id);
+        if (state.activeProjectId === id) {
+            if (state.projects.length > 0) {
+                switchProject(state.projects[0].id);
+            } else {
+                state.activeProjectId = null;
+                renderProjectList();
+                renderTabs();
+            }
         } else {
-            state.activeProjectId = null;
             renderProjectList();
-            renderTabs();
         }
-    } else {
-        renderProjectList();
+        saveData();
+        adminLog(`🗑️ Proyecto <strong>${project.name}</strong> movido al historial.`);
+    } catch (e) {
+        console.error("Error archiving project:", e);
+        alert("Error al archivar el proyecto. Intenta de nuevo.");
     }
-    saveData();
 };
 
 window.deleteAllProjects = async () => {
     if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
+    
+    // Clear all traces on backend
+    fetch(`${API_BASE}/admin/traces`, { method: 'DELETE' }).catch(e => console.error(e));
+
     state.projects = [];
     state.activeProjectId = null;
     renderProjectList();
@@ -1851,6 +2059,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 threadId: chat.id,
+                projectId: project.id,
                 message: lastMsg.content,
                 model: selectedModel,
                 systemPrompt: buildRefactoredSystemPrompt(taskState)
