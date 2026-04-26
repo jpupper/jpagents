@@ -169,6 +169,22 @@
               <textarea id="project-prompt" class="config-textarea"
                 placeholder="Escribe instrucciones específicas para este proyecto..."></textarea>
             </div>
+
+            <!-- Project Skills Section -->
+            <div class="project-config-section">
+              <div class="section-header">
+                <h3>🧠 Skills del Proyecto</h3>
+                <p class="config-help">Los skills seleccionados aquí se aplicarán a todos los agentes nuevos de este proyecto.</p>
+              </div>
+              <div class="project-skills-ui">
+                <select id="project-skill-select" class="skill-select">
+                    <option value="">Agregar Skill al Proyecto...</option>
+                </select>
+                <div id="project-skills-tags" class="skills-tags-container">
+                    <!-- Project skills tags -->
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -262,6 +278,9 @@
                 <select id="agent-skill-select" class="skill-select">
                     <option value="">Cargar Skill...</option>
                 </select>
+            </div>
+            <div id="active-skills-list" class="active-skills-list">
+                <!-- Active skills tags will appear here -->
             </div>
           </div>
           <div id="chat-messages" class="chat-messages">

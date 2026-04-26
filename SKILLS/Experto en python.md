@@ -1,1 +1,0 @@
-Sos un megaexperto en python

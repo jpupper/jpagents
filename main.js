@@ -622,6 +622,7 @@ const gitConfirmBtn = document.getElementById('git-confirm-btn');
 
 let currentAttachedImages = [];
 let skillsList = [];
+let skillsCache = {}; // Cache for skill contents: { name: content }
 let activeSkillName = null;
 
 // DOM Elements for Skills
@@ -706,15 +707,17 @@ function sanitizeProject(p) {
             lastProgress: c.lastProgress || Date.now(),
             isStopped: false,
             validationRetries: 0,
-            model: c.model || p.model || '' // Agent model
+            model: c.model || p.model || '', // Agent model
+            skills: Array.isArray(c.skills) ? c.skills : [] // Agent skills
         })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '' }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [] }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         sessionChanges: p.sessionChanges || [],
         activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
         currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
         projectPrompt: p.projectPrompt || '',
+        skills: Array.isArray(p.skills) ? p.skills : [], // Project skills
         isCorrupted: p.isCorrupted || false,
         isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
     };
@@ -772,8 +775,20 @@ async function loadSkills() {
         const res = await fetch(`${API_BASE}/skills`);
         const data = await res.json();
         skillsList = data.skills || [];
+        
+        // Cache all skill contents
+        for (const name of skillsList) {
+            try {
+                const sRes = await fetch(`${API_BASE}/skills/${name}`);
+                const sData = await sRes.json();
+                skillsCache[name] = sData.content || "";
+            } catch (e) {
+                console.warn(`Error caching skill ${name}:`, e);
+            }
+        }
+
         renderSkillsList();
-        updateAgentSkillSelect();
+        updateSkillSelects();
     } catch (e) {
         console.error("Error loading skills:", e);
     }
@@ -810,12 +825,19 @@ window.selectSkill = async (name) => {
     }
 };
 
-function updateAgentSkillSelect() {
-    if (!agentSkillSelect) return;
-    const currentVal = agentSkillSelect.value;
-    agentSkillSelect.innerHTML = '<option value="">Cargar Skill...</option>' + 
-        skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
-    agentSkillSelect.value = currentVal;
+function updateSkillSelects() {
+    const selects = [
+        { el: document.getElementById('agent-skill-select'), label: 'Cargar Skill...' },
+        { el: document.getElementById('project-skill-select'), label: 'Agregar Skill al Proyecto...' }
+    ];
+
+    selects.forEach(s => {
+        if (!s.el) return;
+        const currentVal = s.el.value;
+        s.el.innerHTML = `<option value="">${s.label}</option>` + 
+            skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        s.el.value = currentVal;
+    });
 }
 
 function setupSkillsEventListeners() {
@@ -903,29 +925,96 @@ function setupSkillsEventListeners() {
             const skillName = agentSkillSelect.value;
             if (!skillName) return;
             
-            try {
-                const res = await fetch(`${API_BASE}/skills/${skillName}`);
-                const data = await res.json();
-                
-                if (data.content) {
-                    const chatInput = document.getElementById('chat-input');
-                    if (chatInput) {
-                        // Append skill content or ask user?
-                        // For now, let's just append it with a separator
-                        const separator = "\n\n--- SKILL: " + skillName + " ---\n";
-                        if (!chatInput.value.includes(data.content)) {
-                            chatInput.value += separator + data.content;
-                        }
-                    }
+            const chat = getActiveChat();
+            if (chat) {
+                if (!chat.skills) chat.skills = [];
+                if (!chat.skills.includes(skillName)) {
+                    chat.skills.push(skillName);
+                    renderAgentSkills();
+                    saveData();
                 }
-                // Reset select
-                agentSkillSelect.value = "";
-            } catch (e) {
-                console.error("Error loading skill into agent:", e);
             }
+            // Reset select
+            agentSkillSelect.value = "";
+        });
+    }
+
+    const projectSkillSelect = document.getElementById('project-skill-select');
+    if (projectSkillSelect) {
+        projectSkillSelect.addEventListener('change', async () => {
+            const skillName = projectSkillSelect.value;
+            if (!skillName) return;
+            
+            const project = getActiveProject();
+            if (project) {
+                if (!project.skills) project.skills = [];
+                if (!project.skills.includes(skillName)) {
+                    project.skills.push(skillName);
+                    renderProjectSkills();
+                    saveData();
+                }
+            }
+            // Reset select
+            projectSkillSelect.value = "";
         });
     }
 }
+
+function renderAgentSkills() {
+    const chat = getActiveChat();
+    const container = document.getElementById('active-skills-list');
+    if (!container) return;
+
+    if (!chat || !chat.skills || chat.skills.length === 0) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = chat.skills.map(skill => `
+        <div class="skill-tag">
+            <span>🧠 ${skill}</span>
+            <span class="remove-skill" onclick="window.removeAgentSkill('${skill}')">&times;</span>
+        </div>
+    `).join('');
+}
+
+window.removeAgentSkill = (skillName) => {
+    const chat = getActiveChat();
+    if (chat && chat.skills) {
+        chat.skills = chat.skills.filter(s => s !== skillName);
+        renderAgentSkills();
+        saveData();
+    }
+};
+
+function renderProjectSkills() {
+    const project = getActiveProject();
+    const container = document.getElementById('project-skills-tags');
+    if (!container) return;
+
+    if (!project || !project.skills || project.skills.length === 0) {
+        container.innerHTML = '<p class="empty-state">No hay skills asignados a este proyecto.</p>';
+        return;
+    }
+
+    container.innerHTML = project.skills.map(skill => `
+        <div class="skill-tag project-skill">
+            <span>🧠 ${skill}</span>
+            <span class="remove-skill" onclick="window.removeProjectSkill('${skill}')">&times;</span>
+        </div>
+    `).join('');
+}
+
+window.removeProjectSkill = (skillName) => {
+    const project = getActiveProject();
+    if (project && project.skills) {
+        project.skills = project.skills.filter(s => s !== skillName);
+        renderProjectSkills();
+        saveData();
+    }
+};
 
 async function getClientErrors() {
     try {
@@ -1275,27 +1364,98 @@ window.viewProjectPrompt = (projectId) => {
     const project = state.projects.find(p => p.id === projectId);
     if (!project) return;
 
-    const prompt = project.projectPrompt || "No hay instrucciones específicas para este proyecto.";
+    const prompt = project.projectPrompt || "";
+    const skills = project.skills || [];
 
-    // Create a simple overlay to show the prompt
     const overlay = document.createElement('div');
-    overlay.className = 'modal'; // Reuse modal styles
+    overlay.className = 'modal'; 
     overlay.style.display = 'flex';
+    overlay.id = 'project-prompt-modal';
+    
     overlay.innerHTML = `
-        <div class="modal-content">
+        <div class="modal-content modal-large">
             <div class="modal-header">
-                <h3>Instrucciones de ${project.name}</h3>
+                <h3>⚙️ Configuración de Proyecto</h3>
                 <button class="close-modal" onclick="this.closest('.modal').remove()">&times;</button>
             </div>
-            <div class="modal-body">
-                <textarea class="config-textarea" readonly rows="12" style="width: 100%;">${prompt}</textarea>
+            <div class="modal-body" style="display: flex; flex-direction: column; gap: 24px; padding: 2rem;">
+                <div class="config-field">
+                    <label style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: block;">🎯 Instrucciones Globales del Proyecto</label>
+                    <p class="field-help" style="margin-bottom: 12px;">Define el comportamiento base para todos los agentes creados en este proyecto.</p>
+                    <textarea id="modal-project-prompt" class="config-textarea" rows="8" 
+                        placeholder="Ej: Este proyecto usa React y Node.js. Sigue las convenciones de Clean Code..."
+                        style="width: 100%; min-height: 200px; font-family: 'Outfit', sans-serif;">${prompt}</textarea>
+                </div>
+                
+                <div class="config-field">
+                    <label style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: block;">🧠 Skills del Proyecto</label>
+                    <p class="field-help" style="margin-bottom: 12px;">Las habilidades seleccionadas se heredarán automáticamente en cada nuevo agente.</p>
+                    <div class="project-skills-ui" style="background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border-color);">
+                        <select id="modal-project-skill-select" class="skill-select" style="width: 100%; padding: 0.8rem; margin-bottom: 1rem;">
+                            <option value="">+ Seleccionar Habilidad para el Proyecto...</option>
+                            ${skillsList.map(s => `<option value="${s}">${s}</option>`).join('')}
+                        </select>
+                        <div id="modal-project-skills-tags" class="skills-tags-container">
+                            ${skills.length > 0 ? skills.map(s => `
+                                <div class="skill-tag project-skill">
+                                    <span>🧠 ${s}</span>
+                                    <span class="remove-skill" onclick="window.removeSkillFromModal('${s}', '${project.id}')">&times;</span>
+                                </div>
+                            `).join('') : '<p class="empty-state" style="font-size: 0.8rem; opacity: 0.6;">No hay skills asignados aún.</p>'}
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn-primary" onclick="this.closest('.modal').remove()">Cerrar</button>
+            <div class="modal-footer" style="gap: 12px;">
+                <button class="btn-danger-outline" onclick="this.closest('.modal').remove()" style="width: auto; padding-inline: 1.5rem;">Cancelar</button>
+                <button class="btn-primary" id="save-modal-project-config" style="width: auto; padding-inline: 2rem;">Guardar Configuración 💾</button>
             </div>
         </div>
     `;
     document.body.appendChild(overlay);
+
+    // Event Listeners for the modal
+    const skillSelect = document.getElementById('modal-project-skill-select');
+    skillSelect.addEventListener('change', () => {
+        const val = skillSelect.value;
+        if (val && !project.skills.includes(val)) {
+            project.skills.push(val);
+            // Refresh tags in modal
+            refreshModalSkillTags(project);
+            skillSelect.value = "";
+        }
+    });
+
+    document.getElementById('save-modal-project-config').onclick = () => {
+        project.projectPrompt = document.getElementById('modal-project-prompt').value;
+        saveData();
+        // Update dashboard if visible
+        const dashboardPrompt = document.getElementById('project-prompt');
+        if (dashboardPrompt) dashboardPrompt.value = project.projectPrompt;
+        renderProjectSkills();
+        overlay.remove();
+        adminLog(`✅ Configuración de proyecto <strong>${project.name}</strong> actualizada.`);
+    };
+};
+
+function refreshModalSkillTags(project) {
+    const container = document.getElementById('modal-project-skills-tags');
+    if (container) {
+        container.innerHTML = (project.skills || []).map(s => `
+            <div class="skill-tag project-skill">
+                <span>🧠 ${s}</span>
+                <span class="remove-skill" onclick="window.removeSkillFromModal('${s}', '${project.id}')">&times;</span>
+            </div>
+        `).join('');
+    }
+}
+
+window.removeSkillFromModal = (skillName, projectId) => {
+    const project = state.projects.find(p => p.id === projectId);
+    if (project && project.skills) {
+        project.skills = project.skills.filter(s => s !== skillName);
+        refreshModalSkillTags(project);
+    }
 };
 
 window.stopActiveAgent = () => {
@@ -1404,6 +1564,7 @@ function updateViewVisibility() {
         saveFileBtn.classList.add('hidden');
         chatTabContent.classList.remove('hidden');
         renderMessages(false); // Pass false to avoid recursive renderTabs
+        renderAgentSkills();
 
         // Sync mode toggles with current chat mode
         const chat = chats.find(c => c.id === project.activeTabId);
@@ -1486,6 +1647,7 @@ function updateViewVisibility() {
                 saveData();
             };
         }
+        renderProjectSkills();
     }
 }
 
@@ -1656,7 +1818,8 @@ window.addChat = async () => {
         isThinking: false,
         mode: 'auto',
         lastProgress: Date.now(),
-        isStopped: false
+        isStopped: false,
+        skills: [...(p.skills || [])] // Inherit project skills
     };
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
@@ -1914,6 +2077,19 @@ function buildRefactoredSystemPrompt(taskState) {
     const developerAgentBase = promptsCache.developer_agent || getInternalAgentInstructions();
     const userSystemPrompt = promptsCache.user_system_prompt || state.userSystemPrompt || "";
     const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
+    
+    // Build skills content
+    let skillsContent = "";
+    const activeChat = getActiveChat();
+    if (activeChat && activeChat.skills && activeChat.skills.length > 0) {
+        skillsContent = "### AGENT SKILLS:\n" + activeChat.skills.map(sName => {
+            const content = skillsCache[sName];
+            if (content) {
+                return `#### Skill: ${sName}\n${content}`;
+            }
+            return `[SKILL: ${sName}]`;
+        }).join('\n\n') + "\n\n";
+    }
 
     const isConversation = taskState.objective === "CONVERSATION";
 
@@ -1927,6 +2103,7 @@ function buildRefactoredSystemPrompt(taskState) {
 ### USER SYSTEM RULES:
 ${userSystemPrompt}
 
+${skillsContent}
 ${projectInstructions}
 
 ### ENVIRONMENT:
