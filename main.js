@@ -837,7 +837,10 @@ function setupSkillsEventListeners() {
             const name = skillNameInput.value.trim();
             const content = skillContentTextarea.value;
             
-            if (!name) return alert("El skill necesita un nombre.");
+            if (!name) {
+                showSkillStatus("El skill necesita un nombre.", "error");
+                return;
+            }
             
             try {
                 await fetch(`${API_BASE}/skills/${name}`, {
@@ -847,13 +850,36 @@ function setupSkillsEventListeners() {
                 });
                 activeSkillName = name;
                 await loadSkills();
-                alert("Skill guardado con éxito.");
+                showSkillStatus("Skill guardado con éxito.");
             } catch (e) {
                 console.error("Error saving skill:", e);
-                alert("Error al guardar el skill.");
+                showSkillStatus("Error al guardar el skill.", "error");
             }
         });
     }
+
+    function showSkillStatus(msg, type = "success") {
+        const container = document.querySelector('.skill-actions');
+        if (!container) return;
+        
+        let statusEl = document.getElementById('skill-save-status');
+        if (!statusEl) {
+            statusEl = document.createElement('span');
+            statusEl.id = 'skill-save-status';
+            statusEl.style.fontSize = '0.8rem';
+            statusEl.style.fontWeight = '600';
+            statusEl.style.marginLeft = '10px';
+            container.appendChild(statusEl);
+        }
+        
+        statusEl.textContent = msg;
+        statusEl.style.color = type === "success" ? "#3fb950" : "#f85149";
+        
+        setTimeout(() => {
+            statusEl.textContent = "";
+        }, 3000);
+    }
+
 
     if (deleteSkillBtn) {
         deleteSkillBtn.addEventListener('click', async () => {
@@ -1363,11 +1389,7 @@ function updateViewVisibility() {
         return;
     }
 
-    if (state.activeProjectId === 'skills' || (project && project.activeTabId === 'skills')) {
-        saveFileBtn.classList.add('hidden');
-        if (skillsTabContent) skillsTabContent.classList.remove('hidden');
-        return;
-    }
+    // Global Skills state is now handled by modal, no longer a main view tab
 
     if (!project) {
         dashboardTabContent.classList.remove('hidden');
@@ -1743,7 +1765,7 @@ window.deleteProject = async (id) => {
         adminLog(`🗑️ Proyecto <strong>${project.name}</strong> movido al historial.`);
     } catch (e) {
         console.error("Error archiving project:", e);
-        alert("Error al archivar el proyecto. Intenta de nuevo.");
+        console.error("Error al archivar el proyecto:", e);
     }
 };
 
@@ -1893,6 +1915,13 @@ function buildRefactoredSystemPrompt(taskState) {
     const userSystemPrompt = promptsCache.user_system_prompt || state.userSystemPrompt || "";
     const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
 
+    const isConversation = taskState.objective === "CONVERSATION";
+
+    let mission = "### MISSION:\nSolve the task using the tools above.";
+    if (isConversation) {
+        mission = "### MISSION:\nResponde de forma amigable y natural al usuario. Solo utiliza herramientas si el usuario te lo solicita explícitamente en el contexto de la charla.";
+    }
+
     return `${developerAgentBase}
 
 ### USER SYSTEM RULES:
@@ -1909,12 +1938,17 @@ ${projectInstructions}
 - **MAIN OBJECTIVE**: ${taskState.objective || 'No active task.'}
 - **EXECUTION HISTORY**: ${recentStepsText || 'No actions yet.'}
 
-### MISSION:
-Solve the task using the tools above.`;
+${mission}`;
 }
 
 async function performAutomaticValidation(project, chat) {
     if (!state.autoValidation) return;
+    
+    let taskState = await getTaskState();
+    if (taskState.objective === "CONVERSATION") {
+        console.log("[VALIDATION] Saltando validación automática por modo CONVERSACIÓN.");
+        return;
+    }
     if (chat.validationRetries >= (state.maxValidationRetries || 15)) {
         console.log(`[VALIDATION] Máximo de reintentos alcanzado (${chat.validationRetries}). Deteniendo validación automática.`);
         adminLog(`⚠️ Agente <strong>${chat.name}</strong> alcanzó el límite de reintentos de validación (${state.maxValidationRetries}).`);
@@ -2019,23 +2053,23 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     let taskState = await getTaskState();
 
     // If user just sent a message, determine if it's a technical task
-    const lastMsg = chat.messages[chat.messages.length - 1];
-    if (lastMsg && lastMsg.role === 'user') {
+    const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
+    if (lastUserMsg && origin === 'user') {
         chat.validationRetries = 0; // Reiniciar contador para nueva tarea
-        const text = lastMsg.content.toLowerCase();
-        const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "lee", "busca", "implementa", "borra", "replace", "write", "read", "search", "fix", "update", "change"];
+        const text = lastUserMsg.content.toLowerCase();
+        const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "lee", "busca", "implementa", "borra", "replace", "write", "read", "search", "fix", "update", "change", "haz", "create", "make"];
         const isTechnical = technicalKeywords.some(kw => text.includes(kw));
-        const isGreeting = /^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|que tal|como estas|saludos)\b/i.test(text.trim());
+        const isGreeting = /^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|que tal|como estas|saludos|buen dia)\b/i.test(text.trim());
+        const isFollowUp = ["continua", "sigue", "adelante", "dale", "ok", "vale", "entendido", "procede"].some(kw => text.includes(kw));
 
-        if (isTechnical && (origin === 'user' || !taskState.objective)) {
-            taskState.objective = lastMsg.content;
+        if (isTechnical) {
+            taskState.objective = lastUserMsg.content;
             taskState.currentState = "STARTING TASK";
-        } else if (isGreeting || !isTechnical) {
-            // Si es saludo o no es técnico, y no hay un objetivo previo, marcar como conversación
-            if (!taskState.objective || taskState.objective === "CONVERSATION") {
-                taskState.objective = "CONVERSATION";
-                taskState.currentState = "IDLE/CHATTING";
-            }
+        } else if (isGreeting) {
+            taskState.objective = "CONVERSATION";
+            taskState.currentState = "IDLE/CHATTING";
+        } else if (!isTechnical && !isFollowUp && (!taskState.objective || taskState.objective === "CONVERSATION")) {
+            taskState.objective = "CONVERSATION";
         }
     }
 
@@ -2060,7 +2094,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             body: JSON.stringify({
                 threadId: chat.id,
                 projectId: project.id,
-                message: lastMsg.content,
+                message: lastUserMsg ? lastUserMsg.content : "",
                 model: selectedModel,
                 systemPrompt: buildRefactoredSystemPrompt(taskState)
             })
@@ -2195,18 +2229,18 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             triggerAgentLogic(project, chat, 'system');
         } else {
             // Just finished without actions or reads.
-            const lastMsg = chat.messages[chat.messages.length - 1];
-            const text = lastMsg ? lastMsg.content.toLowerCase() : "";
-            const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "implementa", "borra", "replace", "write", "fix", "update", "change"];
+            const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
+            const text = lastUserMsg ? lastUserMsg.content.toLowerCase() : "";
+            const technicalKeywords = ["crea", "escribe", "modifica", "arregla", "implementa", "borra", "replace", "write", "fix", "update", "change", "haz", "create", "make"];
             const isTechnicalImperative = technicalKeywords.some(kw => text.includes(kw));
 
-            if (isTechnicalImperative) {
+            if (isTechnicalImperative && taskState.objective !== "CONVERSATION") {
                 const retryMsg = "⚠️ Detecté que había un imperativo previo de crear o modificar archivos, pero no se realizó ninguna acción de escritura. Por favor, explica por qué no se realizaron los cambios o procede a realizarlos ahora usando las etiquetas correctas.";
                 chat.messages.push({ role: 'system', content: retryMsg });
                 console.warn(`🕵️ Imperativo detectado sin acciones. Iniciando reintento de verificación.`);
                 await autoRetry(retryMsg, project, chat);
             } else {
-                console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta).");
+                console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta o conversación).");
             }
         }
 
@@ -3136,7 +3170,10 @@ async function processAgentActions(text, project, chat) {
                 const fileName = toolArgs.path || toolArgs.fileName;
                 const content = toolArgs.content || toolArgs.code || "";
                 
-                if (!fileName) throw new Error("Falta el parámetro 'path' o 'fileName' para write_file");
+                if (!fileName) {
+                    console.warn(`[MCP] Ignorando llamada a ${toolName} por falta de parámetro 'path' o 'fileName'.`);
+                    continue;
+                }
                 
                 const writeRes = await performWrite(fileName, content, project, chat);
                 result = { 
@@ -3161,6 +3198,10 @@ async function processAgentActions(text, project, chat) {
 
             if (toolName === 'read_file' || toolName === 'READ') {
                 const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
+                if (!fileName) {
+                    console.warn(`[MCP] Ignorando llamada a ${toolName} por falta de parámetro 'path' o 'fileName'.`);
+                    continue;
+                }
                 const sanPath = (toolArgs.path || toolArgs.fileName || "").replace(/\\/g, '/');
                 reads.push({ fileName, content: resultText });
                 logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
@@ -3417,7 +3458,7 @@ async function processAgentActions(text, project, chat) {
     }
 
     // 4. Hallucination & Intent Detection (Critical for models like Qwen)
-    if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0) {
+    if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0 && taskState.objective !== "CONVERSATION") {
         const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo", "proyects/", "proyecto_"];
         const codeKeywords = ["<!DOCTYPE", "function ", "class ", "let ", "const ", "var ", "import "];
         const lowText = text.toLowerCase();
@@ -3900,11 +3941,11 @@ window.renameFile = async (oldPath, newName) => {
                 renderTabs();
             }
         } else {
-            alert("Error al renombrar: " + data.error);
+            console.error("Error al renombrar:", data.error);
         }
     } catch (e) {
         console.error("Rename error:", e);
-        alert("Error de conexión al renombrar.");
+        console.error("Error de conexión al renombrar.");
     }
 };
 
@@ -3968,13 +4009,13 @@ window.saveActiveFile = async () => {
             if (p.folder) window.scanFolder(p.folder);
             saveData();
         } else {
-            alert("Error al guardar: " + result.error);
+            console.error("Error al guardar:", result.error);
             saveFileBtn.textContent = 'Error ❌';
             saveFileBtn.disabled = false;
         }
     } catch (e) {
         console.error("Save error:", e);
-        alert("Error de conexión al guardar o tiempo de espera agotado.");
+        console.error("Error de conexión al guardar o timeout.");
         saveFileBtn.textContent = 'Error ❌';
         saveFileBtn.disabled = false;
     }
@@ -4015,7 +4056,7 @@ async function nativePickFolder() {
             }
         } else if (res) {
             const errorData = await res.json().catch(() => ({}));
-            alert("No se pudo abrir el selector de carpetas. " + (errorData.error || "Error desconocido"));
+            console.error("No se pudo abrir el selector de carpetas:", errorData.error);
         }
     } catch (e) {
         console.error("Exception in nativePickFolder:", e);
@@ -4180,10 +4221,10 @@ function setupEventListeners() {
             });
             const data = await res.json();
             if (!data.success) {
-                alert("Error al iniciar servidor: " + data.error);
+                console.error("Error al iniciar servidor:", data.error);
             }
         } catch (e) {
-            alert("Error de conexión: " + e.message);
+            console.error("Error de conexión:", e.message);
         }
     };
 
@@ -4394,7 +4435,7 @@ window.handleGitPush = async () => {
     const message = gitCommitMessageInput.value.trim();
 
     if (!message) {
-        alert("Por favor ingresa un mensaje para el commit.");
+        console.log("No commit message provided");
         return;
     }
 
