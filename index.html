@@ -66,13 +66,17 @@
           <div class="input-group">
             <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
             <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
+            <button id="open-folder-explorer" class="btn-icon" title="Abrir en Explorador">📂</button>
             <button id="view-project-prompt-btn" class="btn-icon" title="Ver Prompt del Proyecto"
               onclick="window.viewActiveProjectPrompt()">📝</button>
           </div>
         </div>
         <div id="project-run-container" class="config-group hidden">
           <label>&nbsp;</label>
-          <button id="run-project-btn" class="btn-run" title="Ejecutar run.bat">RUN</button>
+          <div class="run-actions">
+            <button id="run-project-btn" class="btn-run" title="Ejecutar run.bat">RUN</button>
+            <button id="open-web-btn" class="btn-icon" title="Abrir Web" style="background: var(--primary-color); color: white;">🌐</button>
+          </div>
         </div>
         <div id="git-controls-container" class="config-group hidden">
           <label>&nbsp;</label>
@@ -103,6 +107,7 @@
       <section id="main-view" class="main-view">
         <nav class="tabs-nav" id="tabs-nav">
           <div class="tab active" data-tab="chat">Chat</div>
+          <div class="tab" data-tab="terminal">Terminal</div>
           <div class="tab" data-tab="matrix">Matrix Agentic Tree</div>
         </nav>
 
@@ -185,6 +190,15 @@
                 </div>
               </div>
             </div>
+
+            <!-- Project Run Command Section -->
+            <div class="project-config-section">
+              <div class="section-header">
+                <h3>🚀 Comando de Ejecución</h3>
+                <p class="config-help">El comando que se ejecutará al pulsar RUN en la Terminal (ej: <code>node server.js</code>, <code>npm run dev</code>, <code>python -m http.server</code>).</p>
+              </div>
+              <input type="text" id="project-run-command" class="config-input" placeholder="Ej: node server.js" />
+            </div>
           </div>
         </div>
 
@@ -264,6 +278,41 @@
             <svg id="matrix-svg"></svg>
             <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
           </div>
+        </div>
+
+        <!-- Terminal View -->
+        <div id="terminal-tab-content" class="tab-content terminal-view hidden">
+            <div class="terminal-header">
+                <div class="terminal-title">🖥️ integrated_terminal -- node</div>
+                <div class="terminal-actions">
+                    <div id="terminal-status" class="terminal-status-indicator">
+                        <span class="status-dot"></span>
+                        <span class="status-text">OFFLINE</span>
+                    </div>
+                    <button id="terminal-settings-btn" title="Configurar Comando">⚙️</button>
+                    <button id="terminal-run-btn" class="btn-terminal-run" title="Ejecutar Comando">▶ RUN</button>
+                    <button id="terminal-stop-btn" class="btn-terminal-stop" title="Detener Proceso">🛑 STOP</button>
+                    <button id="clear-terminal-btn" title="Limpiar Terminal">🗑️</button>
+                </div>
+            </div>
+            
+            <!-- Terminal Settings Panel (Hidden by default) -->
+            <div id="terminal-settings-panel" class="terminal-settings-panel hidden">
+                <div class="settings-row">
+                    <label>Comando de Ejecución:</label>
+                    <input type="text" id="terminal-command-input" placeholder="Ej: node server.js" />
+                    <button id="save-terminal-settings" class="btn-primary-sm">Guardar</button>
+                </div>
+                <p class="settings-help">Este es el comando que se ejecutará al pulsar ▶ RUN.</p>
+            </div>
+
+            <div id="terminal-output" class="terminal-output">
+                <div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>
+            </div>
+            <div class="terminal-input-wrapper">
+                <span class="terminal-prompt">$</span>
+                <input type="text" id="terminal-input" placeholder="Escribe un comando..." autocomplete="off" />
+            </div>
         </div>
 
         <!-- Chat View -->

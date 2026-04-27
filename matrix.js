@@ -109,8 +109,20 @@ export function initMatrix(containerId, svgId) {
             .style("filter", d => `drop-shadow(0 0 5px ${getNodeColor(d.data)})`)
             .on("mouseover", (event, d) => {
                 tooltip.classList.remove('hidden');
-                tooltip.style.left = (event.pageX + 10) + 'px';
-                tooltip.style.top = (event.pageY + 10) + 'px';
+                
+                // Using fixed positioning to avoid issues with relative parents
+                tooltip.style.position = 'fixed';
+                tooltip.style.left = (event.clientX + 15) + 'px';
+                tooltip.style.top = (event.clientY + 15) + 'px';
+                
+                // Ensure it doesn't go off screen
+                const rect = tooltip.getBoundingClientRect();
+                if (event.clientX + 15 + 320 > window.innerWidth) {
+                    tooltip.style.left = (event.clientX - 335) + 'px';
+                }
+                if (event.clientY + 15 + rect.height > window.innerHeight) {
+                    tooltip.style.top = (event.clientY - rect.height - 15) + 'px';
+                }
                 
                 let detailsHtml = '';
                 if (d.data.details) {

@@ -686,6 +686,160 @@ try {
     }
 });
 
+app.post('/api/execute/command', async (req, res) => {
+    const { command, cwd } = req.body;
+    if (!command) return res.status(400).json({ error: 'No command provided' });
+
+    console.log(`[SHELL] Ejecutando: ${command} en ${cwd || 'root'}`);
+
+    try {
+        const { stdout, stderr } = await execAsync(command, { 
+            cwd: cwd || process.cwd(),
+            timeout: 60000 
+        });
+        res.json({ success: true, stdout, stderr });
+    } catch (error) {
+        res.json({ 
+            success: false, 
+            error: error.message, 
+            stdout: error.stdout, 
+            stderr: error.stderr 
+        });
+    } finally {
+        try { await fs.unlink(tempFilePath); } catch (e) {}
+    }
+});
+
+// --- TERMINAL PROCESS MANAGEMENT ---
+const activeProcesses = new Map(); // projectId -> ChildProcess
+
+app.post('/api/execute/command', (req, res) => {
+    const { command, cwd, projectId } = req.body;
+    if (!command || !projectId) return res.status(400).json({ error: 'Missing command or projectId' });
+
+    console.log(`[TERMINAL] Iniciando: ${command} en ${cwd} (Project: ${projectId})`);
+
+    // Si ya hay un proceso para este proyecto, lo matamos
+    if (activeProcesses.has(projectId)) {
+        const oldProc = activeProcesses.get(projectId);
+        oldProc.kill();
+        activeProcesses.delete(projectId);
+    }
+
+    try {
+        const isWin = process.platform === 'win32';
+        const shellCmd = isWin ? command : 'bash';
+        const shellArgs = isWin ? [] : ['-c', command];
+
+        const proc = spawn(shellCmd, shellArgs, { 
+            cwd: cwd || process.cwd(),
+            env: { 
+                ...process.env, 
+                FORCE_COLOR: 'true',
+                // Forzamos que los logs no se bufeen en node/python para verlos en tiempo real
+                NODE_OPTIONS: '--no-warnings',
+                PYTHONUNBUFFERED: '1'
+            },
+            shell: true,
+            stdio: ['ignore', 'pipe', 'pipe'] // Capturamos stdout y stderr
+        });
+
+        const processData = {
+            proc,
+            command,
+            logs: []
+        };
+
+        activeProcesses.set(projectId, processData);
+
+        proc.stdout.on('data', (data) => {
+            const lines = data.toString().split('\n');
+            processData.logs.push(...lines.map(l => ({ type: 'stdout', text: l })));
+            if (processData.logs.length > 1000) processData.logs.splice(0, lines.length);
+        });
+
+        proc.stderr.on('data', (data) => {
+            const lines = data.toString().split('\n');
+            processData.logs.push(...lines.map(l => ({ type: 'stderr', text: l })));
+            if (processData.logs.length > 1000) processData.logs.splice(0, lines.length);
+        });
+
+        proc.on('exit', (code) => {
+            console.log(`[TERMINAL] Proceso ${projectId} terminó con código ${code}`);
+            // No borramos inmediatamente para que el último stream pueda terminar
+            setTimeout(() => {
+                if (activeProcesses.get(projectId)?.proc === proc) {
+                    activeProcesses.delete(projectId);
+                }
+            }, 5000);
+        });
+
+        res.json({ success: true, message: 'Proceso iniciado' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/execute/stop', (req, res) => {
+    const { projectId } = req.body;
+    const data = activeProcesses.get(projectId);
+    if (data && data.proc) {
+        data.proc.kill();
+        activeProcesses.delete(projectId);
+        return res.json({ success: true });
+    }
+    res.json({ success: false, message: 'No hay proceso activo' });
+});
+
+app.get('/api/execute/status/:projectId', (req, res) => {
+    res.json({ running: activeProcesses.has(req.params.projectId) });
+});
+
+// SSE for Terminal Output
+app.get('/api/execute/stream/:projectId', (req, res) => {
+    const { projectId } = req.params;
+    
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const data = activeProcesses.get(projectId);
+    
+    const sendEvent = (type, content) => {
+        res.write(`event: ${type}\ndata: ${JSON.stringify(content)}\n\n`);
+    };
+
+    if (!data) {
+        sendEvent('error', { message: 'No hay proceso activo para este proyecto' });
+        return res.end();
+    }
+
+    // Enviar logs existentes (historial)
+    data.logs.forEach(log => {
+        sendEvent(log.type, log.text);
+    });
+
+    const onStdout = (chunk) => sendEvent('stdout', chunk.toString());
+    const onStderr = (chunk) => sendEvent('stderr', chunk.toString());
+    const onExit = (code) => {
+        sendEvent('exit', { code });
+        res.end();
+    };
+
+    data.proc.stdout.on('data', onStdout);
+    data.proc.stderr.on('data', onStderr);
+    data.proc.on('exit', onExit);
+
+    req.on('close', () => {
+        if (data.proc) {
+            data.proc.stdout.off('data', onStdout);
+            data.proc.stderr.off('data', onStderr);
+            data.proc.off('exit', onExit);
+        }
+    });
+});
+
 app.post('/api/utils/improve-prompt', async (req, res) => {
     const { content, model } = req.body;
     if (!content) return res.status(400).json({ error: 'No content provided' });
@@ -1002,6 +1156,21 @@ function triggerRestart(delay = 2000) {
     }, delay);
 }
 
+app.post('/api/utils/open-folder', async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath) return res.status(400).json({ error: 'No folder path provided' });
+
+    console.log(`[SYSTEM] Abriendo carpeta: ${folderPath}`);
+    
+    try {
+        const command = process.platform === 'win32' ? `explorer "${folderPath}"` : `open "${folderPath}"`;
+        exec(command);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 function spawnNewProcess() {
     try {
         // Wrap command in quotes to handle spaces in path (e.g., C:\Program Files\nodejs\node.exe)
@@ -1018,6 +1187,11 @@ function spawnNewProcess() {
     }
 }
 
+// 404 Handler for API
+app.use('/api', (req, res) => {
+    res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found` });
+});
+
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error('[GLOBAL ERROR]', err);
@@ -1025,19 +1199,6 @@ app.use((err, req, res, next) => {
         error: err.message || 'Internal Server Error',
         stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
-});
-
-serverInstance = app.listen(port, async () => {
-    console.log(`Server running at http://localhost:${port}`);
-    
-    // Auto-start Ollama if needed
-    ensureOllamaRunning();
-
-    try {
-        await connectDB();
-    } catch (e) {
-        console.error('CRITICAL: Could not connect to MongoDB. Persistence will fail.');
-    }
 });
 
 // Final safety net
@@ -1048,3 +1209,22 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+// Start initialization and server
+async function startServer() {
+    // Auto-start Ollama if needed
+    ensureOllamaRunning();
+
+    try {
+        await connectDB();
+        console.log('✅ DB initialization complete.');
+    } catch (e) {
+        console.error('CRITICAL: Could not connect to MongoDB. Persistence will fail.');
+    }
+
+    serverInstance = app.listen(port, () => {
+        console.log(`Server running at http://localhost:${port}`);
+    });
+}
+
+startServer();

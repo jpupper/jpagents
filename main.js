@@ -628,6 +628,16 @@ const gitCommitContainer = document.getElementById('git-commit-container');
 const gitCommitMessageInput = document.getElementById('git-commit-message');
 const gitConfirmBtn = document.getElementById('git-confirm-btn');
 
+// Terminal Elements
+const terminalTabContent = document.getElementById('terminal-tab-content');
+const terminalOutput = document.getElementById('terminal-output');
+const terminalInput = document.getElementById('terminal-input');
+const clearTerminalBtn = document.getElementById('clear-terminal-btn');
+const terminalRunBtn = document.getElementById('terminal-run-btn');
+const terminalStopBtn = document.getElementById('terminal-stop-btn');
+const openWebBtn = document.getElementById('open-web-btn');
+const matrixTabContent = document.getElementById('matrix-tab-content');
+
 let currentAttachedImages = [];
 let skillsList = [];
 let skillsCache = {}; // Cache for skill contents: { name: content }
@@ -656,6 +666,9 @@ async function init() {
     await loadSkills();
     setupEventListeners();
     setupSkillsEventListeners();
+    setupTerminalEvents();
+    setupOpenWebEvent();
+    setupOpenFolderExplorer();
 
     // Periodically check health and external instructions every 1 minute
     setInterval(performPeriodicSync, 60000);
@@ -694,12 +707,290 @@ async function loadData() {
 
         renderProjectList();
         const active = getActiveProject();
-        if (active && active.folder) window.scanFolder(active.folder);
+        if (active && active.folder) window.scanFolder(active.folder, active.id);
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
         await createNewProject();
     }
+}
+
+// --- TERMINAL LOGIC ---
+let terminalEventSource = null;
+
+function appendToTerminal(text, type = 'stdout', projectId = null) {
+    const project = projectId ? state.projects.find(p => p.id === projectId) : getActiveProject();
+    if (project) {
+        if (!project.terminalLogs) project.terminalLogs = [];
+        project.terminalLogs.push({ text, type });
+        if (project.terminalLogs.length > 1000) project.terminalLogs.shift();
+    }
+
+    // Only append to DOM if the project is active
+    const activeProject = getActiveProject();
+    if (activeProject && activeProject.id === (projectId || activeProject.id)) {
+        const line = document.createElement('div');
+        line.className = `terminal-line ${type}`;
+        line.textContent = text;
+        terminalOutput.appendChild(line);
+        terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    }
+}
+
+function refreshTerminalUI() {
+    const project = getActiveProject();
+    terminalOutput.innerHTML = '';
+    
+    // Sincronizar el input de comando en el panel de settings
+    const cmdInput = document.getElementById('terminal-command-input');
+    if (cmdInput && project) cmdInput.value = project.runCommand || '';
+
+    if (project && project.terminalLogs && project.terminalLogs.length > 0) {
+        project.terminalLogs.forEach(log => {
+            const line = document.createElement('div');
+            line.className = `terminal-line ${log.type}`;
+            line.textContent = log.text;
+            terminalOutput.appendChild(line);
+        });
+    } else {
+        terminalOutput.innerHTML = '<div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>';
+    }
+    terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    updateTerminalStatusUI();
+}
+
+async function updateTerminalStatusUI() {
+    const project = getActiveProject();
+    const statusContainer = document.getElementById('terminal-status');
+    if (!statusContainer) return;
+    const statusText = statusContainer.querySelector('.status-text');
+    
+    if (!project || !project.id) {
+        statusContainer.classList.remove('running');
+        statusText.textContent = 'OFFLINE';
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/execute/status/${project.id}`);
+        const data = await res.json();
+        console.log(`[TERMINAL] Status for ${project.id}:`, data);
+        if (data.running) {
+            statusContainer.classList.add('running');
+            statusText.textContent = 'RUNNING';
+            connectTerminalStream(project.id);
+        } else {
+            statusContainer.classList.remove('running');
+            statusText.textContent = 'OFFLINE';
+        }
+    } catch (e) {
+        console.error("Error checking terminal status:", e);
+        statusText.textContent = 'ERROR';
+    }
+}
+
+function connectTerminalStream(projectId) {
+    if (terminalEventSource) {
+        if (terminalEventSource.url.includes(`/stream/${projectId}`)) return;
+        terminalEventSource.close();
+    }
+
+    const project = state.projects.find(p => p.id === projectId);
+    if (project) {
+        project.terminalLogs = [];
+        if (state.activeProjectId === projectId) {
+            terminalOutput.innerHTML = '';
+        }
+    }
+
+    terminalEventSource = new EventSource(`${API_BASE}/execute/stream/${projectId}`);
+    
+    terminalEventSource.addEventListener('stdout', (e) => {
+        const data = JSON.parse(e.data);
+        appendToTerminal(data, 'stdout', projectId);
+    });
+
+    terminalEventSource.addEventListener('stderr', (e) => {
+        const data = JSON.parse(e.data);
+        appendToTerminal(data, 'stderr', projectId);
+    });
+
+    terminalEventSource.addEventListener('exit', (e) => {
+        const data = JSON.parse(e.data);
+        appendToTerminal(`\n[PROCESO TERMINADO - Código ${data.code}]`, 'system', projectId);
+        updateTerminalStatusUI();
+        terminalEventSource.close();
+        terminalEventSource = null;
+    });
+
+    terminalEventSource.onerror = () => {
+        terminalEventSource.close();
+        terminalEventSource = null;
+        updateTerminalStatusUI();
+    };
+}
+
+async function runTerminalCommand(command) {
+    const project = getActiveProject();
+    if (!project) return;
+    const cwd = project.folder || '';
+    
+    appendToTerminal(`$ ${command}`, 'command', project.id);
+    
+    try {
+        const res = await fetch(`${API_BASE}/execute/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command, cwd, projectId: project.id })
+        });
+        const data = await res.json();
+        if (data.success) {
+            updateTerminalStatusUI();
+            connectTerminalStream(project.id);
+        } else {
+            appendToTerminal(`Error: ${data.error}`, 'stderr', project.id);
+        }
+    } catch (e) {
+        appendToTerminal(`Error de conexión: ${e.message}`, 'stderr', project.id);
+    }
+}
+
+async function detectRunCommand(project) {
+    if (!project || !project.folder || !project.currentFiles) return 'node server.js';
+    
+    const files = project.currentFiles;
+    if (files.some(f => f.name.toLowerCase() === 'run.bat')) return 'run.bat';
+    
+    const pkg = files.find(f => f.name === 'package.json');
+    if (pkg) {
+        try {
+            const res = await fetch(`${API_BASE}/files/read?path=${encodeURIComponent(pkg.path)}`);
+            const content = await res.json();
+            const data = JSON.parse(content.content);
+            if (data.scripts) {
+                if (data.scripts.dev) return 'npm run dev';
+                if (data.scripts.start) return 'npm start';
+            }
+        } catch (e) { console.error("Error detectando comando en package.json:", e); }
+    }
+    
+    if (files.some(f => f.name === 'server.js')) return 'node server.js';
+    if (files.some(f => f.name === 'index.html')) return 'python -m http.server 53637';
+    return 'node server.js';
+}
+
+function setupTerminalEvents() {
+    const settingsBtn = document.getElementById('terminal-settings-btn');
+    const settingsPanel = document.getElementById('terminal-settings-panel');
+    const cmdInput = document.getElementById('terminal-command-input');
+    const saveBtn = document.getElementById('save-terminal-settings');
+
+    if (settingsBtn) {
+        settingsBtn.onclick = () => settingsPanel.classList.toggle('hidden');
+    }
+
+    if (saveBtn) {
+        saveBtn.onclick = () => {
+            const project = getActiveProject();
+            if (project) {
+                project.runCommand = cmdInput.value.trim();
+                saveData();
+                settingsPanel.classList.add('hidden');
+                appendToTerminal(`Sistema: Comando actualizado a "${project.runCommand}"`, 'system', project.id);
+            }
+        };
+    }
+
+    terminalInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const command = terminalInput.value.trim();
+            if (command) {
+                runTerminalCommand(command);
+                terminalInput.value = '';
+            }
+        }
+    });
+
+    clearTerminalBtn.addEventListener('click', () => {
+        const project = getActiveProject();
+        if (project) project.terminalLogs = [];
+        terminalOutput.innerHTML = '<div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>';
+    });
+
+    terminalRunBtn.addEventListener('click', async () => {
+        const project = getActiveProject();
+        if (!project) return;
+
+        let command = project.runCommand;
+        if (!command) {
+            command = await detectRunCommand(project);
+            project.runCommand = command;
+            saveData();
+        }
+
+        // Asegurar que el input de settings esté al día
+        if (cmdInput) cmdInput.value = command;
+
+        appendToTerminal(`$ ${command}`, 'command', project.id);
+        runTerminalCommand(command);
+    });
+
+    terminalStopBtn.addEventListener('click', async () => {
+        const project = getActiveProject();
+        if (!project) return;
+        try {
+            await fetch(`${API_BASE}/execute/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: project.id })
+            });
+            updateTerminalStatusUI();
+        } catch (e) { console.error("Error stopping process:", e); }
+    });
+}
+
+function setupOpenFolderExplorer() {
+    const btn = document.getElementById('open-folder-explorer');
+    if (btn) {
+        btn.onclick = async () => {
+            const project = getActiveProject();
+            if (!project || !project.folder) return;
+            try {
+                await fetch(`${API_BASE}/utils/open-folder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath: project.folder })
+                });
+            } catch (e) {
+                console.error("Error abriendo carpeta:", e);
+            }
+        };
+    }
+}
+
+function setupOpenWebEvent() {
+    openWebBtn.addEventListener('click', async () => {
+        const project = getActiveProject();
+        if (!project || !project.folder) return;
+
+        try {
+            const res = await fetch(`${API_BASE}/files/read`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filePath: `${project.folder}/run.bat` })
+            });
+            const data = await res.json();
+            if (data.content) {
+                const match = data.content.match(/set PORT=(\d+)/);
+                if (match) {
+                    window.open(`http://localhost:${match[1]}`, '_blank');
+                    return;
+                }
+            }
+        } catch (e) {}
+
+        alert("No se detectó un puerto activo. Ejecuta 'RUN' primero.");
+    });
 }
 
 
@@ -1378,7 +1669,14 @@ function renderTabs() {
         `;
     });
 
-    // 4. Matrix Agentic Tree (Global/Project Context)
+    // 4. Terminal Tab
+    tabsHtml += `
+        <div class="tab terminal-tab ${project.activeTabId === 'terminal' ? 'active' : ''}" onclick="window.switchTab('terminal')">
+            <span>🖥️ Terminal</span>
+        </div>
+    `;
+
+    // 5. Matrix Agentic Tree (Global/Project Context)
     tabsHtml += `
         <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
             <span>🕸️ Matrix</span>
@@ -1544,10 +1842,20 @@ function updateViewVisibility() {
     dashboardTabContent.classList.add('hidden');
     adminTabContent.classList.add('hidden');
     if (skillsTabContent) skillsTabContent.classList.add('hidden');
-    const matrixTabContent = document.getElementById('matrix-tab-content');
     if (matrixTabContent) matrixTabContent.classList.add('hidden');
+    if (terminalTabContent) terminalTabContent.classList.add('hidden');
 
     // ... (logic)
+
+    if (project && project.activeTabId === 'terminal') {
+        saveFileBtn.classList.add('hidden');
+        if (terminalTabContent) {
+            terminalTabContent.classList.remove('hidden');
+            refreshTerminalUI();
+        }
+        terminalInput.focus();
+        return;
+    }
 
     if (project && project.activeTabId === 'matrix') {
         saveFileBtn.classList.add('hidden');
@@ -1604,6 +1912,10 @@ function updateViewVisibility() {
         dashboardTabContent.classList.remove('hidden');
         return;
     }
+
+    // Actualizar el valor del comando de ejecución en el dashboard
+    const runCmdInput = document.getElementById('project-run-command');
+    if (runCmdInput) runCmdInput.value = project.runCommand || '';
 
     const chats = project.chats || [];
     const isChat = chats.some(c => c.id === project.activeTabId);
@@ -1928,13 +2240,16 @@ window.switchProject = (id, event = null) => {
         return;
     }
 
+    // Crucial: Update the input immediately to the project's folder
     folderPathInput.value = project.folder || '';
+    
     renderProjectList();
     renderTabs();
 
     if (project.folder) {
         console.log(`📂 Project has folder, scanning: ${project.folder}`);
-        window.scanFolder(project.folder);
+        // Pass the project ID to scanFolder to avoid race conditions
+        window.scanFolder(project.folder, id);
     } else {
         console.log("📂 Project has no folder.");
         renderFileList();
@@ -2515,7 +2830,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         const actionResult = await processAgentActions(assistantResponse, project, chat);
         
         // Refresh folder to see new files
-        if (project.folder) window.scanFolder(project.folder);
+        if (project.folder) window.scanFolder(project.folder, project.id);
 
         if (actionResult && actionResult.stopped) {
             return;
@@ -2643,11 +2958,18 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 }
 
 
-window.scanFolder = async function (pathInput = null) {
-    const p = getActiveProject();
-    if (!p) return;
+window.scanFolder = async function (pathInput = null, projectId = null) {
+    // If no projectId is provided, we use the active one as fallback
+    const targetProjectId = projectId || state.activeProjectId;
+    const project = state.projects.find(p => p.id === targetProjectId);
+    
+    if (!project) {
+        console.warn("[SCAN] No target project found for scan.");
+        renderFileList();
+        return;
+    }
 
-    let folderPath = (typeof pathInput === 'string') ? pathInput : (pathInput || p.folder || folderPathInput.value);
+    let folderPath = (typeof pathInput === 'string') ? pathInput : (pathInput || project.folder || folderPathInput.value);
 
     if (!folderPath) {
         renderFileList();
@@ -2662,35 +2984,38 @@ window.scanFolder = async function (pathInput = null) {
         });
         const data = await res.json();
 
+        // Re-find the project to ensure it still exists in state
+        const targetProject = state.projects.find(p => p.id === targetProjectId);
+        if (!targetProject) return;
+
         if (data.error) {
             console.error("Scan error:", data.error);
-            const project = getActiveProject();
-            if (project) {
-                project.isCorrupted = true;
-                renderProjectList();
-            }
+            targetProject.isCorrupted = true;
+            // Only re-render project list if it's still relevant to UI
+            renderProjectList();
             return;
         }
 
-        const project = getActiveProject();
-        if (project) {
-            project.isCorrupted = false;
-            project.currentFiles = data.files || [];
-            project.folder = data.currentPath;
+        targetProject.isCorrupted = false;
+        targetProject.currentFiles = data.files || [];
+        targetProject.folder = data.currentPath;
+
+        // Only update UI elements if this is still the active project
+        if (state.activeProjectId === targetProjectId) {
             folderPathInput.value = data.currentPath;
 
             // Auto-detect run.bat
-            const hasRunBat = project.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
+            const hasRunBat = targetProject.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
             projectRunContainer.classList.toggle('hidden', !hasRunBat);
 
             // Show Git controls if folder is selected
-            gitControlsContainer.classList.toggle('hidden', !project.folder);
+            gitControlsContainer.classList.toggle('hidden', !targetProject.folder);
 
             // Auto-detect skill.md
-            const skillFile = project.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
+            const skillFile = targetProject.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
             const skillIndicator = document.getElementById('skill-source-indicator');
 
-            if (skillFile && !project.projectPrompt) {
+            if (skillFile && !targetProject.projectPrompt) {
                 try {
                     const res = await fetchWithLog(`${API_BASE}/files/read`, {
                         method: 'POST',
@@ -2699,9 +3024,9 @@ window.scanFolder = async function (pathInput = null) {
                     });
                     const skillData = await res.json();
                     if (skillData.content) {
-                        project.projectPrompt = skillData.content;
+                        targetProject.projectPrompt = skillData.content;
                         const projectPromptInput = document.getElementById('project-prompt');
-                        if (projectPromptInput) projectPromptInput.value = project.projectPrompt;
+                        if (projectPromptInput) projectPromptInput.value = targetProject.projectPrompt;
                         if (skillIndicator) skillIndicator.classList.remove('hidden');
                     }
                 } catch (e) {
@@ -2712,11 +3037,12 @@ window.scanFolder = async function (pathInput = null) {
             } else {
                 if (skillIndicator) skillIndicator.classList.add('hidden');
             }
-
-            renderFileList();
-            saveData();
             renderFileList();
         }
+        
+        saveData();
+        if (state.activeProjectId === targetProjectId) renderFileList();
+        
     } catch (e) {
         console.error("Fetch error scanning folder:", e);
     } finally {
@@ -4231,7 +4557,7 @@ async function performWrite(fileName, content, project, chat) {
         project.activeTabId = sanPath;
         renderTabs();
         updateViewVisibility();
-        window.scanFolder(project.folder);
+        window.scanFolder(project.folder, project.id);
         saveData();
 
         return { 
@@ -4306,7 +4632,7 @@ window.renameFile = async (oldPath, newName) => {
                 if (project.activeTabId === oldPath.replace(/\\/g, '/')) {
                     project.activeTabId = newPath.replace(/\\/g, '/');
                 }
-                window.scanFolder(project.folder);
+                window.scanFolder(project.folder, project.id);
                 renderTabs();
             }
         } else {
@@ -4375,7 +4701,7 @@ window.saveActiveFile = async () => {
             }, 2000);
 
             // If the file is open in multiple places or needs refresh
-            if (p.folder) window.scanFolder(p.folder);
+            if (p.folder) window.scanFolder(p.folder, p.id);
             saveData();
         } else {
             console.error("Error al guardar:", result.error);
@@ -4512,7 +4838,7 @@ function setupEventListeners() {
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     scanFolderBtn.onclick = nativePickFolder;
     if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
-    folderPathInput.oninput = (e) => window.scanFolder(e.target.value);
+    folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
     modelSelect.onchange = (e) => {
         checkVisionCapability();
