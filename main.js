@@ -88,7 +88,8 @@ const OLLAMA_BASE = 'http://localhost:11434/api';
 let promptsCache = {
     developer_agent: "",
     orchestrator_agent: "",
-    user_system_prompt: ""
+    user_system_prompt: "",
+    improver_agent: ""
 };
 
 async function loadPrompts() {
@@ -436,11 +437,8 @@ async function checkSystemHealth(externalData = null) {
         updateDot('ollama-status-dot', res.ok);
     } catch (e) { updateDot('ollama-status-dot', false); }
 
-    // 3. Check MCP (Port 2998)
-    try {
-        const res = await fetch(`http://127.0.0.1:2998/health`, { method: 'GET' });
-        updateDot('mcp-status-dot', res.ok || res.status === 405 || res.status === 404);
-    } catch (e) { updateDot('mcp-status-dot', false); }
+    // 3. MCP Check removed as requested to avoid 404 console spam
+    // The MCP status will be updated by other means or remain in its last state.
 }
 
 async function performPeriodicSync() {
@@ -501,16 +499,24 @@ async function performPeriodicSync() {
 }
 
 // New State Structure
-const DEFAULT_USER_SYSTEM_PROMPT = `Eres un asistente de programación experto y SELECTIVO. 
+const DEFAULT_USER_SYSTEM_PROMPT = `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
 
-REGLA DE ORO 0 (SELECTIVIDAD): SOLO usa herramientas si es estrictamente necesario. Si el usuario te hace una pregunta que puedes responder con tu conocimiento base (ej: "qué es un closure"), NO leas archivos ni listes directorios. Solo usa herramientas cuando el usuario pida explícitamente modificar, leer o investigar el código del proyecto.
+Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
+Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema RECHAZARÁ tus acciones.
 
-REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. 
-Esto garantiza que el bloque SEARCH coincida exactamente y evita errores de "Bloque no encontrado". No intentes adivinar el código, léelo siempre primero.
+### 🛠️ REGLAS DE ORO:
 
-REGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta.
+1. **REGLA DE SELECTIVIDAD**: SOLO usa herramientas si es estrictamente necesario. Si puedes responder con tu conocimiento base, hazlo sin usar herramientas.
+2. **REGLA DE LECTURA (OBLIGATORIA)**: ANTES de modificar o escribir en cualquier archivo, DEBES leer su contenido usando [CALL:read_file]{"path": "..."}. No intentes adivinar el código.
+3. **REGLA DE ESCRITURA**: Para crear o modificar archivos, DEBES usar EXACTAMENTE este formato:
+   [CALL:write_file]{"path": "nombre.ext", "content": "Contenido completo..."}
+   No uses bloques de código standard ( \`\`\`js ).
+4. **REGLA DE HONESTIDAD**: Si una herramienta devuelve un ERROR, NO digas que la tarea está terminada. Informa del error al usuario, analiza por qué falló (ej: ruta incorrecta, JSON mal escapado) e intenta corregirlo. NUNCA mientas sobre el estado de una operación.
+5. **REGLA DE ALEATORIEDAD**: Si necesitas un número aleatorio, USA SIEMPRE [CALL:RANDOM]{"min": X, "max": Y}.
 
-REGLA DE ORO 3 (VALIDACIÓN): Tras realizar cambios significativos o terminar una tarea técnica, DEBES validar que el proyecto funcione usando screenshots y logs de consola. No des por terminada la tarea hasta que la validación sea EXITOSA.`;
+### ⚠️ MANEJO DE ERRORES:
+- Si el error dice "File not found", usa [CALL:list_files] para ver la estructura real.
+- Si el error es de JSON, asegúrate de que el campo "content" tenga los saltos de línea como \\n y las comillas escapadas.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
 Tu objetivo es gestionar de principio a fin las peticiones del usuario.
@@ -539,6 +545,7 @@ let state = {
     mode: 'auto', // 'auto' or 'supervised'
     userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
+    improverPrompt: "",
     adminMessages: [],
     adminIsThinking: false,
     adminIsStopped: false,
@@ -548,7 +555,8 @@ let state = {
         objective: '',
         steps: [],
         currentStep: 0
-    }
+    },
+    skillsMetadata: {} // Maps skill name to metadata object { isDefault: boolean }
 };
 
 
@@ -665,10 +673,12 @@ async function loadData() {
             state.projects = (data.projects || []).map(sanitizeProject);
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
             state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
+            state.improverPrompt = data.improverPrompt || "";
             state.activeProjectId = data.activeProjectId || null;
             state.adminMessages = data.adminMessages || [];
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
+            state.skillsMetadata = data.skillsMetadata || {};
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -729,6 +739,7 @@ async function saveData() {
             projects: state.projects,
             userSystemPrompt: state.userSystemPrompt,
             orchestratorPrompt: state.orchestratorPrompt,
+            improverPrompt: state.improverPrompt,
             activeProjectId: state.activeProjectId,
             adminMessages: state.adminMessages,
             maxValidationRetries: state.maxValidationRetries,
@@ -796,12 +807,14 @@ async function loadSkills() {
 
 function renderSkillsList() {
     if (!skillsListEl) return;
+    
     skillsListEl.innerHTML = skillsList.map(name => {
-        const isActive = activeSkillName === name;
+        const isDefault = state.skillsMetadata[name]?.isDefault;
+        const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
         return `
-            <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}')">
-                <span>${isActive ? '🔥' : '🧠'}</span>
-                <span style="font-weight: ${isActive ? '800' : '500'}">${name}</span>
+            <div class="skill-item ${activeSkillName === name ? 'active' : ''}" onclick="window.selectSkill('${name}')">
+                <span class="skill-icon">🧠</span>
+                <span class="skill-name">${name} ${badge}</span>
             </div>
         `;
     }).join('');
@@ -818,10 +831,15 @@ window.selectSkill = async (name) => {
         skillNameInput.value = name;
         skillContentTextarea.value = data.content || '';
         
+        // Load metadata
+        const meta = state.skillsMetadata[name] || { isDefault: false };
+        const defaultCheckbox = document.getElementById('skill-default-checkbox');
+        if (defaultCheckbox) defaultCheckbox.checked = meta.isDefault;
+        
         skillEditorContainer.classList.remove('hidden');
         skillEmptyState.classList.add('hidden');
     } catch (e) {
-        console.error("Error selecting skill:", e);
+        console.error("Error loading skill:", e);
     }
 };
 
@@ -865,13 +883,21 @@ function setupSkillsEventListeners() {
             }
             
             try {
+                const isDefault = document.getElementById('skill-default-checkbox')?.checked || false;
+                
                 await fetch(`${API_BASE}/skills/${name}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content })
                 });
+                
+                // Save metadata in global state
+                if (!state.skillsMetadata) state.skillsMetadata = {};
+                state.skillsMetadata[name] = { isDefault };
+                
                 activeSkillName = name;
                 await loadSkills();
+                saveData(); // Save global state with new metadata
                 showSkillStatus("Skill guardado con éxito.");
             } catch (e) {
                 console.error("Error saving skill:", e);
@@ -1134,6 +1160,16 @@ async function createNewProject(customName = null) {
         console.error("Error creating project folder:", e);
     }
 
+    // Collect default skills
+    const defaultSkills = [];
+    if (state.skillsMetadata) {
+        for (const [name, meta] of Object.entries(state.skillsMetadata)) {
+            if (meta.isDefault && skillsList.includes(name)) {
+                defaultSkills.push(name);
+            }
+        }
+    }
+
     const newProject = sanitizeProject({
         id: id,
         name: projectName,
@@ -1141,6 +1177,7 @@ async function createNewProject(customName = null) {
         model: modelSelect.value,
         isInitialName: isInitial,
         chats: [],
+        skills: defaultSkills,
         isNew: true
     });
 
@@ -1523,6 +1560,18 @@ function updateViewVisibility() {
                 activeMatrix.update(project ? project.id : 'admin');
                 document.getElementById('refresh-matrix-btn').onclick = () => activeMatrix.update(project ? project.id : 'admin');
                 document.getElementById('reset-zoom-btn').onclick = () => activeMatrix.resetZoom();
+                const clearMatrixBtn = document.getElementById('clear-matrix-btn');
+                if (clearMatrixBtn) {
+                    clearMatrixBtn.onclick = async () => {
+                        const p = getActiveProject();
+                        if (!p) return;
+                        if (!confirm(`¿Estás seguro de que deseas limpiar el historial de la Matrix para el proyecto "${p.name}"?`)) return;
+                        try {
+                            const res = await fetch(`${API_BASE}/admin/traces?projectId=${p.id}`, { method: 'DELETE' });
+                            if (res.ok) activeMatrix.update(p.id);
+                        } catch (e) { console.error("Error clearing traces:", e); }
+                    };
+                }
             }
         }
         return;
@@ -2065,6 +2114,119 @@ async function sendMessage() {
     await triggerAgentLogic(project, chat);
 }
 
+async function improvePrompt(targetElementId) {
+    const target = document.getElementById(targetElementId);
+    if (!target) return;
+
+    const content = target.value.trim();
+    if (!content) return;
+
+    const originalText = target.value;
+    const btn = event?.currentTarget; // Get the button that triggered the improvement
+    const originalBtnText = btn ? btn.innerText : null;
+
+    if (btn) {
+        btn.innerText = "✨ Mejorando...";
+        btn.disabled = true;
+    }
+    target.disabled = true;
+
+    try {
+        const selectedModel = state.selectedModel || modelSelect.value || 'llama3';
+        const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, model: selectedModel })
+        });
+
+        if (!res.ok) throw new Error("Error al mejorar el prompt");
+
+        const data = await res.json();
+        if (data.improvedContent && data.improvedContent !== originalText) {
+            // If it's a skill or global prompt, show diff
+            if (targetElementId === 'skill-content-textarea' || targetElementId === 'global-prompt' || targetElementId === 'orchestrator-prompt' || targetElementId === 'improver-prompt') {
+                showPromptDiffUI(targetElementId, originalText, data.improvedContent);
+            } else {
+                target.value = data.improvedContent;
+            }
+        } else {
+            target.value = originalText;
+        }
+    } catch (e) {
+        console.error("Error improvePrompt:", e);
+        alert("No se pudo mejorar el prompt: " + e.message);
+        target.value = originalText;
+    } finally {
+        if (btn) {
+            btn.innerText = originalBtnText || "🪄";
+            btn.disabled = false;
+        }
+        target.disabled = false;
+        target.focus();
+    }
+}
+
+function showPromptDiffUI(targetId, original, improved) {
+    const target = document.getElementById(targetId);
+    const parent = target.parentElement;
+
+    // Remove existing diff if any
+    const existing = parent.querySelector('.prompt-diff-container');
+    if (existing) existing.remove();
+
+    const diffContainer = document.createElement('div');
+    diffContainer.className = 'prompt-diff-container';
+    diffContainer.innerHTML = `
+        <div class="prompt-diff-header">
+            <span>🔍 Comparación de Cambios (IA)</span>
+            <div class="prompt-diff-actions">
+                <button class="btn-danger-outline" onclick="this.closest('.prompt-diff-container').remove()" style="padding: 4px 10px; font-size: 0.7rem;">Descartar ✕</button>
+                <button class="btn-primary btn-accept-prompt" style="padding: 4px 12px; font-size: 0.75rem; width: auto; background: #238636;">Aplicar Cambios ✓</button>
+            </div>
+        </div>
+        <div class="prompt-diff-body"></div>
+    `;
+
+    const body = diffContainer.querySelector('.prompt-diff-body');
+    renderPromptDiff(body, original, improved);
+
+    diffContainer.querySelector('.btn-accept-prompt').onclick = () => {
+        target.value = improved;
+        diffContainer.remove();
+        // Trigger save if needed
+        if (targetId === 'global-prompt') state.userSystemPrompt = improved;
+        if (targetId === 'orchestrator-prompt') state.orchestratorPrompt = improved;
+        if (targetId === 'improver-prompt') state.improverPrompt = improved;
+        // Skills are saved manually via the Save button, but we could trigger it
+    };
+
+    // Insert after the textarea or before depending on preference
+    target.after(diffContainer);
+    diffContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderPromptDiff(container, original, improved) {
+    const engine = getDiffEngine();
+    if (!engine) {
+        container.innerText = "Error: JsDiff engine not found.";
+        return;
+    }
+
+    const changes = engine.diffLines(original, improved);
+    let html = '';
+    changes.forEach(part => {
+        const lines = part.value.split(/\r?\n/);
+        if (lines[lines.length - 1] === '') lines.pop();
+
+        lines.forEach(line => {
+            const type = part.added ? 'added' : (part.removed ? 'removed' : '');
+            const marker = part.added ? '+' : (part.removed ? '-' : ' ');
+            html += `<div class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</div>`;
+        });
+    });
+    container.innerHTML = html;
+}
+
 function buildRefactoredSystemPrompt(taskState) {
     const p = getActiveProject();
     const backendStatus = document.getElementById('backend-status-dot')?.classList.contains('live') ? 'ONLINE' : 'OFFLINE';
@@ -2265,13 +2427,25 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         const selectedModel = chat.model || project.model || modelSelect.value;
         console.log(`[CHAT] Enviando petición con modelo: ${selectedModel}`);
 
+        // Log user input to traces (Client side reinforcement)
+        fetch(`${API_BASE}/admin/traces`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                projectId: project.id,
+                agentId: chat.id,
+                stepName: 'user_input',
+                details: { message: lastUserMsg ? lastUserMsg.content : "System trigger" }
+            })
+        }).catch(() => {});
+
         const response = await fetch(`${API_BASE}/agent/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 threadId: chat.id,
                 projectId: project.id,
-                message: lastUserMsg ? lastUserMsg.content : "",
+                message: origin === 'system' ? chat.messages[chat.messages.length - 1].content : (lastUserMsg ? lastUserMsg.content : ""),
                 model: selectedModel,
                 systemPrompt: buildRefactoredSystemPrompt(taskState)
             })
@@ -2317,7 +2491,27 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         taskState.currentState = "COMPLETED";
         await saveTaskState(taskState);
 
-        // Process actions (in case the agent used legacy tags or we need to refresh UI)
+        // 4. Format assistant response for display
+        let displayContent = assistantResponse
+            .replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '') // Hide satisfy comments
+            .replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, (match, toolName, argsJson) => {
+                let parsedArgs = {};
+                try {
+                    let cleanJson = argsJson.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+                    parsedArgs = JSON.parse(cleanJson);
+                } catch(e) {}
+                const path = parsedArgs.path ? ` en <strong>${parsedArgs.path}</strong>` : '';
+                return `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
+            });
+
+        // 5. Push agent message to history BEFORE processing actions to maintain logical order
+        chat.messages.push({ 
+            role: 'agent', 
+            content: displayContent
+        });
+        renderMessages();
+
+        // 6. Process actions (MCP calls, legacy tags, etc.)
         const actionResult = await processAgentActions(assistantResponse, project, chat);
         
         // Refresh folder to see new files
@@ -2333,26 +2527,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             await saveTaskState(taskState);
         }
 
-        if (actionResult && actionResult.stopped) {
-            updateThinking(chat, false);
-            chat.messages.push({ role: 'agent', content: '🛑 Ejecución detenida por el usuario durante el procesamiento.' });
-            renderMessages();
-            return;
-        }
-
-        // Format assistant response for display
-        let displayContent = assistantResponse
-            .replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '') // Hide satisfy comments
-            .replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, (match, toolName, argsJson) => {
-                let parsedArgs = {};
-                try {
-                    let cleanJson = argsJson.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-                    parsedArgs = JSON.parse(cleanJson);
-                } catch(e) {}
-                const path = parsedArgs.path ? ` en <strong>${parsedArgs.path}</strong>` : '';
-                return `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
-            });
-
+        // Add logs and summary if they exist as a follow-up system message
         let logsHtml = (actionResult && actionResult.logs) ? formatLogs(actionResult.logs) : "";
         let summaryHtml = '';
         if (actionResult && actionResult.changeStats && actionResult.changeStats.length > 0) {
@@ -2368,11 +2543,12 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
         }
 
-        // Push combined content to history
-        chat.messages.push({ 
-            role: 'agent', 
-            content: displayContent + (summaryHtml ? "\n\n" + summaryHtml : "") + (logsHtml ? "\n\n" + logsHtml : "") 
-        });
+        if (summaryHtml || logsHtml) {
+            chat.messages.push({
+                role: 'agent', // Or 'system', but agent makes it look like part of the response
+                content: summaryHtml + (logsHtml ? "\n\n" + logsHtml : "")
+            });
+        }
 
         renderMessages();
         saveData();
@@ -2399,6 +2575,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (actionResult && actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `📖 Archivo leído: ${r.fileName}`).join('\n');
             chat.messages.push({ role: 'system', content: `Archivos leídos con éxito.\n${readContext}` });
+            triggerAgentLogic(project, chat, 'system');
+        } else if (actionResult && actionResult.toolOutputs && actionResult.toolOutputs.length > 0) {
+            // After any tool output, we should trigger the agent again so it can process the result
             triggerAgentLogic(project, chat, 'system');
         } else if (actionResult && actionResult.errors && actionResult.errors.length > 0) {
             const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}`;
@@ -3382,6 +3561,10 @@ async function processAgentActions(text, project, chat) {
                 const sanPath = (toolArgs.path || toolArgs.fileName || "").replace(/\\/g, '/');
                 reads.push({ fileName, content: resultText });
                 logs.push({ type: 'success', message: `Lectura MCP exitosa: **${fileName}**` });
+
+                const outputMsg = `📖 Archivo **${fileName}** leído con éxito. El agente ha analizado su contenido.`;
+                chat.messages.push({ role: 'system', content: outputMsg });
+                toolOutputs.push({ toolName, result: resultText });
                 await recordAction(`[MCP:${toolName}]`, `Read ${fileName}`);
 
                 // Sync local state if file is open
@@ -3401,15 +3584,20 @@ async function processAgentActions(text, project, chat) {
                 // performWrite already handled the local state sync and diffs
             } else if (toolName === 'execute_js') {
                 logs.push({ type: 'success', message: `Ejecución MCP exitosa: **${toolName}**` });
-                const outputMsg = `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 1000)}${resultText.length > 1000 ? '...' : ''}\n\`\`\``;
+                const outputMsg = `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText}\n\`\`\``;
                 chat.messages.push({
                     role: 'system',
                     content: outputMsg
                 });
                 toolOutputs.push({ toolName, result: resultText });
                 await recordAction(`[MCP:${toolName}]`, `Success`);
+            } else if (toolName === 'summarize_repo') {
+                const outputMsg = `📂 Herramienta **${toolName}** ejecutada con éxito. El agente ahora conoce la estructura del proyecto.`;
+                chat.messages.push({ role: 'system', content: outputMsg });
+                toolOutputs.push({ toolName, result: resultText });
+                await recordAction(`[MCP:${toolName}]`, `Success`);
             } else {
-                const outputMsg = `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText.substring(0, 500)}${resultText.length > 500 ? '...' : ''}\n\`\`\``;
+                const outputMsg = `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText}\n\`\`\``;
                 chat.messages.push({
                     role: 'system',
                     content: outputMsg
@@ -3452,6 +3640,10 @@ async function processAgentActions(text, project, chat) {
             if (data.content !== undefined) {
                 reads.push({ fileName, content: data.content });
                 logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}** (${data.content.length} bytes)` });
+                
+                const outputMsg = `📖 Archivo **${fileName}** leído con éxito.`;
+                chat.messages.push({ role: 'system', content: outputMsg });
+                
                 await recordAction(`[READ:${fileName}]`, `Successfully read ${fileName} (${data.content.length} bytes).`);
             } else {
                 const errorDetail = `El archivo ${fileName} parece no existir o está vacío.`;
@@ -4376,6 +4568,21 @@ function setupEventListeners() {
         saveData();
     };
 
+    const improveAdminPromptBtn = document.getElementById('improve-admin-prompt-btn');
+    if (improveAdminPromptBtn) {
+        improveAdminPromptBtn.onclick = () => improvePrompt('admin-global-input');
+    }
+
+    const improveChatPromptBtn = document.getElementById('improve-chat-prompt-btn');
+    if (improveChatPromptBtn) {
+        improveChatPromptBtn.onclick = () => improvePrompt('chat-input');
+    }
+
+    const improveSkillBtn = document.getElementById('improve-skill-btn');
+    if (improveSkillBtn) {
+        improveSkillBtn.onclick = () => improvePrompt('skill-content-textarea');
+    }
+
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
 
@@ -4427,6 +4634,7 @@ function setupEventListeners() {
     const saveGlobalBtn = document.getElementById('save-global-settings');
     const userPromptTextarea = document.getElementById('global-prompt');
     const orchestratorPromptTextarea = document.getElementById('orchestrator-prompt');
+    const improverPromptTextarea = document.getElementById('improver-prompt');
     const internalAgentDisplay = document.getElementById('internal-agent-display');
 
     // Tab Switching Logic for Modal
@@ -4460,6 +4668,7 @@ function setupEventListeners() {
     globalSettingsBtn.onclick = () => {
         userPromptTextarea.value = state.userSystemPrompt || '';
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
+        improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
         
         const maxRetriesInput = document.getElementById('max-validation-retries');
@@ -4483,6 +4692,17 @@ function setupEventListeners() {
     saveGlobalBtn.onclick = () => {
         state.userSystemPrompt = userPromptTextarea.value;
         state.orchestratorPrompt = orchestratorPromptTextarea.value;
+        state.improverPrompt = improverPromptTextarea.value;
+
+        // Save improver prompt to file as well
+        if (state.improverPrompt) {
+            fetch(`${API_BASE}/prompts/improver_agent`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: state.improverPrompt })
+            });
+            promptsCache.improver_agent = state.improverPrompt;
+        }
         
         const maxRetriesInput = document.getElementById('max-validation-retries');
         const autoValToggle = document.getElementById('auto-validation-toggle');

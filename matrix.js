@@ -70,7 +70,7 @@ export function initMatrix(containerId, svgId) {
             }
 
             thread.children.push({
-                name: trace.stepName,
+                name: trace.stepName === 'user_input' ? 'User Input' : trace.stepName,
                 type: 'step',
                 details: trace.details,
                 timestamp: trace.timestamp
@@ -152,7 +152,12 @@ export function initMatrix(containerId, svgId) {
         if (step.includes('thinking')) return "#3b82f6";
         if (step.includes('tool_call')) return "#10b981";
         if (step.includes('tool_result')) return data.details?.success ? "#10b981" : "#ef4444";
-        if (step.includes('reflection')) return "#f59e0b";
+        if (step.includes('reflection_start')) return "#f59e0b";
+        if (step.includes('reflection_result')) return "#fbbf24";
+        if (step.includes('validation_start')) return "#8b5cf6";
+        if (step.includes('validation_result')) return data.details?.success ? "#10b981" : "#f43f5e";
+        if (step.includes('model_response')) return "#60a5fa";
+        if (step === 'User Input') return "#f97316"; 
         return "#ffffff";
     }
 

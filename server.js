@@ -11,7 +11,7 @@ import { connectDB, getCollection } from './db.js';
 // LangGraph Integration
 import { agentApp } from './agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
-import { getAgentTraces, clearTraces } from './agent_trace_logger.js';
+import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -40,6 +40,16 @@ app.get('/api/admin/traces', async (req, res) => {
     }
 });
 
+app.post('/api/admin/traces', async (req, res) => {
+    try {
+        const { projectId, agentId, stepName, details } = req.body;
+        await logAgentTrace(projectId, agentId, stepName, details);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.delete('/api/admin/traces', async (req, res) => {
     try {
         const { projectId } = req.query;
@@ -58,6 +68,36 @@ app.use((req, res, next) => {
 });
 
 const OLLAMA_URL = 'http://localhost:11434';
+
+async function ensureOllamaRunning() {
+    try {
+        // Verificar si ya está corriendo
+        const check = await fetch(`${OLLAMA_URL}/api/tags`).catch(() => null);
+        if (check && check.ok) {
+            console.log('\x1b[32m[OLLAMA]\x1b[0m Sistema detectado y activo.');
+            return;
+        }
+
+        console.log('\x1b[33m[OLLAMA]\x1b[0m No se detectó Ollama. Intentando iniciar servicio...');
+        
+        // Iniciar ollama serve de forma independiente
+        const ollamaProcess = spawn('ollama', ['serve'], {
+            detached: true,
+            stdio: 'ignore',
+            shell: true
+        });
+        
+        ollamaProcess.unref();
+        console.log('\x1b[32m[OLLAMA]\x1b[0m Comando de inicio enviado (ollama serve).');
+        
+        // Esperar un momento para que el proceso inicialice
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    } catch (error) {
+        console.error('\x1b[31m[OLLAMA ERROR]\x1b[0m No se pudo auto-iniciar Ollama:', error.message);
+        console.log('\x1b[33m[TIP]\x1b[0m Asegúrate de que Ollama esté instalado y en tu PATH.');
+    }
+}
+
 const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
 const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
 const TASK_STATE_FILE = path.join(process.cwd(), 'state.json');
@@ -204,17 +244,28 @@ app.post('/api/agent/chat', async (req, res) => {
     console.log(`[LANGGRAPH] New message for thread: ${threadId}, Project: ${projectId}, Model requested: ${model}`);
     
     try {
-        const config = { configurable: { thread_id: threadId, projectId: projectId || "global" } };
+        const threadIdToUse = threadId || "global";
+        const projectIdToUse = projectId || "global";
+
+        // Log user input to traces for Requirement 2
+        await logAgentTrace(projectIdToUse, threadIdToUse, "user_input", { message: message });
+
+        const config = { configurable: { thread_id: threadIdToUse, projectId: projectIdToUse } };
         
         const input = {
             messages: [new HumanMessage(message)],
             projectId: projectId || "global",
             model: model || "llama3",
-            systemPrompt: systemPrompt || `Eres un asistente de programación experto y SELECTIVO. 
-NO utilices herramientas de lectura o escritura a menos que sea estrictamente necesario para cumplir el objetivo. 
-Si el usuario hace una pregunta general, responde sin usar herramientas. 
-Si detectas que necesitas ver el código para responder, usa read_file de forma puntual. 
-No hagas barridos (list_files) a menos que no sepas dónde está el archivo.`
+            systemPrompt: systemPrompt || `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
+
+Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
+Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema RECHAZARÁ tus acciones.
+
+### 🛠️ REGLAS DE ORO:
+1. **REGLA DE LECTURA**: ANTES de modificar o escribir en cualquier archivo, DEBES leer su contenido usando read_file.
+2. **REGLA DE HONESTIDAD**: Si una herramienta devuelve un ERROR, NO digas que la tarea está terminada. Informa del error al usuario, analiza por qué falló e intenta corregirlo.
+3. **REGLA DE ALEATORIEDAD**: Si necesitas un número aleatorio, USA SIEMPRE la herramienta RANDOM.
+4. **FORMATO**: Usa siempre las herramientas disponibles. No escribas bloques de código standard si vas a modificar archivos.`
         };
 
         console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
@@ -236,6 +287,11 @@ No hagas barridos (list_files) a menos que no sepas dónde está el archivo.`
                 if (lastMsg && lastMsg.content && lastMsg.content !== lastMessageSent) {
                     lastMessageSent = lastMsg.content;
                     res.write(`data: ${JSON.stringify({ type: 'content', content: lastMsg.content, node: nodeName })}\n\n`);
+                }
+            } else if (nodeName === 'validate' && stateUpdate.messages) {
+                const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
+                if (lastMsg && lastMsg.content) {
+                    res.write(`data: ${JSON.stringify({ type: 'system', content: lastMsg.content, node: nodeName })}\n\n`);
                 }
             } else if (nodeName === 'tools') {
                 res.write(`data: ${JSON.stringify({ type: 'system', content: '🛠️ Ejecutando herramientas...', node: nodeName })}\n\n`);
@@ -630,6 +686,47 @@ try {
     }
 });
 
+app.post('/api/utils/improve-prompt', async (req, res) => {
+    const { content, model } = req.body;
+    if (!content) return res.status(400).json({ error: 'No content provided' });
+
+    try {
+        const improverPromptPath = path.join(__dirname, 'PROMPTS', 'improver_agent.md');
+        let improverPrompt = "Eres un experto en ingeniería de prompts. Mejora el siguiente texto para que sea un prompt de IA más efectivo.";
+        try {
+            improverPrompt = await fs.readFile(improverPromptPath, 'utf-8');
+        } catch (e) {
+            console.warn("[SERVER] Improver prompt file not found, using default.");
+        }
+
+        const payload = {
+            model: model || 'llama3',
+            prompt: `${improverPrompt}\n\nTEXTO A MEJORAR:\n${content}\n\nTEXTO MEJORADO:`,
+            stream: false,
+            options: {
+                temperature: 0.7
+            }
+        };
+
+        const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ollama error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        res.json({ improvedContent: data.response.trim() });
+
+    } catch (error) {
+        console.error('[SERVER] Error improving prompt:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/utils/git-commit', async (req, res) => {
     const { folderPath, message } = req.body;
     if (!folderPath || !message) return res.status(400).json({ error: 'Missing folderPath or message' });
@@ -932,6 +1029,10 @@ app.use((err, req, res, next) => {
 
 serverInstance = app.listen(port, async () => {
     console.log(`Server running at http://localhost:${port}`);
+    
+    // Auto-start Ollama if needed
+    ensureOllamaRunning();
+
     try {
         await connectDB();
     } catch (e) {

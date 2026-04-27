@@ -93,49 +93,79 @@ function createMCPServer() {
     };
   });
 
-  // Helper to validate paths (Path Jailing)
-  const validatePath = (requestedPath) => {
+  // Helper to validate paths (Path Jailing) - Ahora dinámico
+  const validatePath = async (requestedPath) => {
     const resolvedPath = path.resolve(requestedPath);
-    // In a real scenario, we'd get the allowed root from the request or session.
-    // For now, we'll allow paths within the 'proyects' folder or the current workspace.
+    
+    // Directorios permitidos por defecto (incluimos tu raíz de programación para mayor comodidad)
     const allowedRoots = [
         path.resolve(process.cwd()),
-        path.resolve("D:/Programacion/jpagents/proyects")
+        path.resolve("D:/Programacion") 
     ];
 
-    const isAllowed = allowedRoots.some(root => resolvedPath.startsWith(root));
+    // Cargar dinámicamente las carpetas de los proyectos registrados en jpagents
+    try {
+        const sessionsPath = path.join(process.cwd(), "sessions.json");
+        const sessionsData = await fs.readFile(sessionsPath, "utf-8");
+        const sessions = JSON.parse(sessionsData);
+        if (sessions && sessions.projects) {
+            sessions.projects.forEach(p => {
+                if (p.folder) {
+                    allowedRoots.push(path.resolve(p.folder));
+                }
+            });
+        }
+    } catch (e) {
+        // Si no hay sesiones o falla la lectura, continuamos con los defaults
+    }
+
+    const isAllowed = allowedRoots.some(root => {
+        const resolvedRoot = path.resolve(root);
+        return resolvedPath.toLowerCase().startsWith(resolvedRoot.toLowerCase());
+    });
+
     if (!isAllowed) {
         throw new Error(`ACCESO DENEGADO: La ruta ${resolvedPath} está fuera de los directorios permitidos.`);
     }
     return resolvedPath;
   };
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+  // Helper to execute tools (refactored for reusability)
+  const executeTool = async (name, args) => {
     console.log(`\x1b[36m[MCP] >>> START TOOL:\x1b[0m ${name}`);
-
     try {
       switch (name) {
         case "summarize_repo": {
-          const folderPath = validatePath(args.path);
+          if (!args.path) throw new Error("Parámetro 'path' es obligatorio para summarize_repo.");
+          const folderPath = await validatePath(args.path);
           const getTree = async (dir, depth = 0) => {
-            if (depth > 3) return "[...]"; // Limit depth
-            const files = await fs.readdir(dir, { withFileTypes: true });
+            if (depth > 4) return "  ".repeat(depth) + "[... (Límite de profundidad alcanzado)]\n"; 
+            let files;
+            try {
+              files = await fs.readdir(dir, { withFileTypes: true });
+            } catch (err) {
+              return "  ".repeat(depth) + `⚠️ Error leyendo: ${path.basename(dir)} (${err.message})\n`;
+            }
+            
             let summary = "";
+            // Ordenar directorios primero
+            files.sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1));
+            
             for (const file of files) {
-              if (file.name.startsWith('.') || file.name === 'node_modules') continue;
-              summary += "  ".repeat(depth) + (file.isDirectory() ? "📁 " : "📄 ") + file.name + "\n";
-              if (file.isDirectory()) {
+              if (file.name.startsWith('.') || file.name === 'node_modules' || file.name === 'checkpoints.db') continue;
+              const isDir = file.isDirectory();
+              summary += "  ".repeat(depth) + (isDir ? "📁 " : "📄 ") + file.name + "\n";
+              if (isDir) {
                 summary += await getTree(path.join(dir, file.name), depth + 1);
               }
             }
             return summary;
           };
           const tree = await getTree(folderPath);
-          return { content: [{ type: "text", text: `Resumen estructural de ${folderPath}:\n\n${tree}` }] };
+          return { content: [{ type: "text", text: `Resumen estructural de ${folderPath}:\n\n${tree || "(Carpeta vacía)"}` }] };
         }
         case "list_files": {
-          const folderPath = validatePath(args.path);
+          const folderPath = await validatePath(args.path);
           const files = await fs.readdir(folderPath, { withFileTypes: true });
           const result = files.map((file) => ({
             name: file.name,
@@ -145,21 +175,28 @@ function createMCPServer() {
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
         }
         case "read_file": {
-          const filePath = validatePath(args.path);
-          const content = await fs.readFile(filePath, "utf-8");
-          return { content: [{ type: "text", text: content }] };
+          if (!args.path) throw new Error("Parámetro 'path' es obligatorio para read_file.");
+          const filePath = await validatePath(args.path);
+          try {
+            const content = await fs.readFile(filePath, "utf-8");
+            return { content: [{ type: "text", text: content }] };
+          } catch (err) {
+            throw new Error(`No se pudo leer el archivo: ${err.message}`);
+          }
         }
         case "write_file": {
-          const filePath = validatePath(args.path);
+          if (!args.path) throw new Error("Parámetro 'path' es obligatorio para write_file.");
+          if (args.content === undefined) throw new Error("Parámetro 'content' es obligatorio para write_file.");
+          const filePath = await validatePath(args.path);
           const dir = path.dirname(filePath);
           await fs.mkdir(dir, { recursive: true });
           await fs.writeFile(filePath, args.content, "utf-8");
           console.log(`\x1b[32m[MCP] <<< SUCCESS:\x1b[0m write_file (${filePath})`);
-          return { content: [{ type: "text", text: `Archivo escrito en: ${filePath}` }] };
+          return { content: [{ type: "text", text: `Archivo escrito con éxito en: ${filePath}` }] };
         }
         case "execute_js": {
           const code = args.code;
-          const cwd = args.cwd ? validatePath(args.cwd) : process.cwd();
+          const cwd = args.cwd ? await validatePath(args.cwd) : process.cwd();
           const tempFileName = `mcp_temp_${Date.now()}.js`;
           const tempFilePath = path.join(process.cwd(), tempFileName);
           try {
@@ -211,15 +248,41 @@ function createMCPServer() {
       console.error(`[MCP] Tool Error (${name}):`, error.message);
       return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
     }
+  };
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    return await executeTool(request.params.name, request.params.arguments);
   });
+
+  // Attach the executeTool to the server instance so it can be accessed directly
+  server.executeToolDirectly = executeTool;
 
   return server;
 }
 
-app.get("/health", (req, res) => res.send("OK"));
+// Removed /health route as requested
+
 
 // Use json middleware ONLY for routes that need it and are NOT handled by MCP SDK
 const jsonParser = express.json();
+
+// Direct tool execution for backend/internal use (bypasses SSE sessions)
+app.post("/api/mcp/tool", jsonParser, async (req, res) => {
+  const { method, params } = req.body;
+  if (method !== "tools/call") {
+    return res.status(400).json({ error: "Only tools/call is supported via this endpoint" });
+  }
+
+  console.log(`\x1b[35m[MCP] Direct tool call received:\x1b[0m ${params.name}`);
+  const server = createMCPServer();
+  
+  try {
+    const result = await server.executeToolDirectly(params.name, params.arguments);
+    res.json({ jsonrpc: "2.0", result, id: req.body.id });
+  } catch (error) {
+    res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: error.message }, id: req.body.id });
+  }
+});
 
 app.get("/sse", async (req, res) => {
   console.log(`\x1b[35m[MCP] Incoming SSE request...\x1b[0m`);
@@ -269,16 +332,8 @@ app.post("/messages/:sessionId", async (req, res) => {
   
   let transport = transports.get(sessionId);
 
-  // Auto-create global session for backend tools
-  if (!transport && sessionId === "global") {
-    console.log(`[MCP] Creating auto-session for: global`);
-    const server = createMCPServer();
-    transport = new SSEServerTransport(`/messages/global`, res);
-    await server.connect(transport);
-    transports.set("global", transport);
-    // Note: In a real SSE this would fail if res is used for POST response, 
-    // but MCP SDK handles the response writing.
-  }
+  // Auto-create global session logic removed as it caused SSE/Header conflicts.
+  // Internal tools should use /api/mcp/tool instead.
 
   if (transport) {
     try {
@@ -286,7 +341,9 @@ app.post("/messages/:sessionId", async (req, res) => {
       console.log(`\x1b[32m[MCP] Message handled successfully\x1b[0m`);
     } catch (err) {
       console.error(`\x1b[31m[MCP] Error handling message:\x1b[0m`, err.message);
-      res.status(500).send(err.message);
+      if (!res.headersSent) {
+        res.status(500).send(err.message);
+      }
     }
   } else {
     console.error(`\x1b[31m[MCP] POST received for unknown session:\x1b[0m ${sessionId}`);

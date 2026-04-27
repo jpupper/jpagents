@@ -12,9 +12,9 @@ const MCP_BASE = "http://127.0.0.1:2998";
 
 async function callMCP(name, args, threadId, projectId = "global") {
     // Log trace for tool call
-    await logAgentTrace(projectId, threadId, "tool_call", { tool: name, args });
+    await logAgentTrace(projectId || "global", threadId, "tool_call", { tool: name, args });
 
-    const res = await fetch(`${MCP_BASE}/messages/global`, {
+    const res = await fetch(`${MCP_BASE}/api/mcp/tool`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -36,7 +36,7 @@ async function callMCP(name, args, threadId, projectId = "global") {
     }
 
     // Log trace for tool result
-    await logAgentTrace(projectId, threadId, "tool_result", { tool: name, success: !result.includes("ERROR") });
+    await logAgentTrace(projectId || "global", threadId, "tool_result", { tool: name, success: !result.includes("ERROR") });
     
     return result;
 }
@@ -101,6 +101,15 @@ const AgentState = Annotation.Root({
   systemPrompt: Annotation({
     reducer: (x, y) => y ?? x ?? "Eres un asistente de programación experto.",
   }),
+  objective: Annotation({
+    reducer: (x, y) => y ?? x ?? "",
+  }),
+  iterations: Annotation({
+    reducer: (x, y) => (y !== undefined ? y : (x || 0)),
+  }),
+  requiresRetry: Annotation({
+    reducer: (x, y) => y,
+  }),
 });
 
 // --- Graph Definition ---
@@ -110,10 +119,22 @@ const callModel = async (state, config) => {
     const threadId = config.configurable.thread_id;
     const modelName = state.model || "llama3";
     
-    console.log(`[GRAPH] Node: agent, Thread: ${threadId}, Project: ${state.projectId}, Using Model: ${modelName}`);
-    await logAgentTrace(state.projectId || "global", threadId, "thinking", { messages_count: state.messages.length, model: modelName });
+    console.log(`[GRAPH] Node: agent, Thread: ${threadId}, Iteration: ${state.iterations || 1}`);
+    
+    // Si es la primera iteración y no hay objetivo, intentamos extraerlo del primer mensaje del usuario
+    let objective = state.objective;
+    if (!objective && state.messages.length > 0) {
+        const firstUserMsg = state.messages.find(m => m.role === "user");
+        if (firstUserMsg) objective = firstUserMsg.content;
+    }
 
-    const systemPrompt = state.systemPrompt || "Eres un asistente de programación experto.";
+    await logAgentTrace(state.projectId || "global", threadId, "thinking", { 
+        messages_count: state.messages.length, 
+        model: modelName,
+        iteration: state.iterations 
+    });
+
+    let systemPrompt = state.systemPrompt || "Eres un asistente de programación experto.";
     
     const model = new ChatOllama({
         baseUrl: "http://localhost:11434",
@@ -131,58 +152,134 @@ const callModel = async (state, config) => {
     if (response.tool_calls?.length) {
         await logAgentTrace(state.projectId || "global", threadId, "decision", { action: "tool_calls", count: response.tool_calls.length });
     } else {
-        await logAgentTrace(state.projectId || "global", threadId, "decision", { action: "reply" });
+        await logAgentTrace(state.projectId || "global", threadId, "model_response", { content: response.content });
     }
 
-    return { messages: [response] };
+    return { 
+        messages: [response],
+        objective: objective,
+        iterations: (state.iterations || 0)
+    };
+};
+
+// Nodo de Validación (El "Guardián" del Objetivo)
+const validateObjective = async (state, config) => {
+    const threadId = config.configurable.thread_id;
+    const modelName = state.model || "llama3";
+    
+    // Si ya hemos iterado demasiado, detenemos para evitar bucles infinitos
+    if (state.iterations > 10) {
+        console.log(`[GRAPH] Max iterations reached (${state.iterations}). Stopping.`);
+        return { messages: [{ role: "system", content: "⚠️ Se ha alcanzado el límite de iteraciones. Por favor, revisa si el objetivo se cumplió parcialmente." }] };
+    }
+
+    const lastMessage = state.messages[state.messages.length - 1];
+    
+    // Prompt de validación rápida
+    const validationPrompt = `
+    OBJETIVO DEL USUARIO: "${state.objective}"
+    ÚLTIMA RESPUESTA DEL AGENTE: "${lastMessage.content}"
+    
+    ¿Se ha cumplido el OBJETIVO PRINCIPAL del usuario de forma completa? 
+    Responde ÚNICAMENTE con 'SÍ' o 'NO'. 
+    
+    Nota: Si el usuario pidió un análisis o resumen y el agente solo leyó archivos pero no escribió el análisis, responde 'NO'.
+    `;
+
+    await logAgentTrace(state.projectId || "global", threadId, "validation_start", { objective: state.objective });
+
+    const model = new ChatOllama({
+        baseUrl: "http://localhost:11434",
+        model: modelName,
+        temperature: 0,
+    });
+
+    const response = await model.invoke([{ role: "system", content: validationPrompt }]);
+    const isDone = response.content.trim().toUpperCase().includes("SÍ");
+
+    await logAgentTrace(state.projectId || "global", threadId, "validation_result", { success: isDone, reasoning: response.content });
+
+    if (isDone) {
+        console.log(`[GRAPH] Objective validated as COMPLETED.`);
+        return { requiresRetry: false };
+    } else {
+        console.log(`[GRAPH] Objective NOT met. Triggering internal iteration...`);
+        return { 
+            messages: [{ 
+                role: "system", 
+                content: `🤖 RECORDATORIO INTERNO: El objetivo principal ("${state.objective}") aún no se ha cumplido totalmente. Por favor, finaliza la tarea entregando lo solicitado (ej: el análisis, el resumen o la confirmación del cambio).` 
+            }],
+            iterations: (state.iterations || 0) + 1,
+            requiresRetry: true
+        };
+    }
 };
 
 // Nodo de Reflexión (Auto-Corrección)
 const reflectOnError = async (state, config) => {
     const threadId = config.configurable.thread_id;
-    await logAgentTrace("global", threadId, "reflection_start", { reason: "tool_error" });
+    const projectId = config.configurable.projectId || state.projectId || "global";
+    await logAgentTrace(projectId, threadId, "reflection_start", { reason: "tool_error" });
 
     const modelName = state.model || "llama3";
     
-    const lastMessage = state.messages[state.messages.length - 1];
-    const errorMessages = state.messages.filter(m => m.role === "tool" && m.content.includes("ERROR"));
+    const toolMessages = state.messages.filter(m => m.role === "tool");
+    const errorMessages = toolMessages.filter(m => m.content.includes("ERROR"));
     
     const reflectionPrompt = `Has encontrado errores al ejecutar herramientas. Analiza los errores y propón una solución clara. 
     Errores recientes: ${JSON.stringify(errorMessages.slice(-2))}
-    Objetivo original: ${state.messages[0].content}`;
+    
+    Si el error es que un archivo no existe, usa 'list_files' para verificar la ruta correcta.
+    Si el error es de JSON, asegúrate de escapar correctamente los caracteres especiales.
+    SIEMPRE reporta el error al usuario si no puedes solucionarlo tras 2 intentos.`;
 
     const model = new ChatOllama({
         baseUrl: "http://localhost:11434",
         model: modelName,
-        temperature: 0.2,
+        temperature: 0.1,
     });
 
     const response = await model.invoke([
-        { role: "system", content: "Eres un experto en debugging. Tu tarea es analizar errores y dar instrucciones precisas al agente para corregirlos." },
+        { role: "system", content: "Eres un experto en debugging. Tu tarea es analizar errores y dar instrucciones precisas al agente para corregirlos. Sé breve y directo." },
         { role: "user", content: reflectionPrompt }
     ]);
 
-    return { messages: [{ role: "system", content: `ANÁLISIS DE ERROR: ${response.content}. Intenta de nuevo con una estrategia corregida.` }] };
+    await logAgentTrace(state.projectId || "global", threadId, "reflection_result", { solution: response.content });
+
+    return { messages: [{ role: "system", content: `🚨 ANÁLISIS DE ERROR: ${response.content}\n\nPor favor, intenta corregir esto usando las herramientas de nuevo con los parámetros correctos.` }] };
 };
 
 // Lógica de Enrutamiento (Conditional Edge)
 const shouldContinue = (state) => {
     const lastMessage = state.messages[state.messages.length - 1];
     
-    // Si hay llamadas a herramientas, ir al nodo de herramientas
+    // 1. Si hay llamadas a herramientas, ir al nodo de herramientas
     if (lastMessage.tool_calls?.length) {
         return "tools";
     }
 
-    // Si la última herramienta devolvió un error, ir a reflexión
+    // 2. Si la última herramienta devolvió un error, ir a reflexión
     const toolMessages = state.messages.filter(m => m.role === "tool");
     const lastToolMessage = toolMessages[toolMessages.length - 1];
     if (lastToolMessage && lastToolMessage.content.includes("ERROR")) {
-        // Solo reflexionar si no estamos ya en un bucle infinito de reflexión (max 3 intentos)
         const reflectionCount = state.messages.filter(m => m.content.includes("ANÁLISIS DE ERROR")).length;
         if (reflectionCount < 3) return "reflect";
     }
 
+    // 3. Si no hay herramientas ni errores, validar si el objetivo se cumplió
+    // Pero solo si no acabamos de salir de una validación negativa (para evitar bucle inmediato)
+    const lastIsSystemReminder = lastMessage.role === "system" && lastMessage.content.includes("RECORDATORIO INTERNO");
+    if (lastIsSystemReminder) {
+        return "agent"; // Volver al agente para que responda al recordatorio
+    }
+
+    return "validate";
+};
+
+const checkValidation = (state) => {
+    if (state.requiresRetry && state.iterations < 10) {
+        return "agent";
+    }
     return "__end__";
 };
 
@@ -190,14 +287,20 @@ const workflow = new StateGraph(AgentState)
     .addNode("agent", callModel)
     .addNode("tools", toolNode)
     .addNode("reflect", reflectOnError)
+    .addNode("validate", validateObjective)
     .addEdge("__start__", "agent")
     .addConditionalEdges("agent", shouldContinue, {
         "tools": "tools",
         "reflect": "reflect",
-        "__end__": "__end__"
+        "validate": "validate",
+        "agent": "agent"
     })
     .addEdge("tools", "agent")
-    .addEdge("reflect", "agent");
+    .addEdge("reflect", "agent")
+    .addConditionalEdges("validate", checkValidation, {
+        "agent": "agent",
+        "__end__": "__end__"
+    });
 
 // Checkpointer
 const checkpointer = SqliteSaver.fromConnString("./checkpoints.db");

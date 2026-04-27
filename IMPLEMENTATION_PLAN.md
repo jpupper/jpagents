@@ -11,7 +11,7 @@ Este documento detalla el plan estratégico para transformar **jpagents** en un 
 | **1** | **Estado Centrado en Archivos** | **✅ Completada** | Persistencia básica operativa en `sessions.json`. |
 | **2** | **Bucle "Code-First" / ReAct** | **✅ Completada** | El agente usa herramientas MCP para manipular archivos y ejecutar código. |
 | **3** | **Integración de MCP** | **✅ Completada** | Servidor y cliente MCP nativo funcionando. |
-| **4** | **Orquestación LangGraph** | **⏳ En Proceso** | Migrando de lógica imperativa a grafos de estados. |
+| **4** | **Orquestación LangGraph** | **✅ Completada** | Migración exitosa con sistema de validación de objetivos automático. |
 | **5** | **Aislamiento y Seguridad** | **⏳ Pendiente** | Falta implementar el "Workspace Jail" mediante herramientas estándar. |
 
 ---
@@ -57,7 +57,19 @@ Este documento detalla el plan estratégico para transformar **jpagents** en un 
     *   Inyectar el `root_dir` del proyecto dinámicamente en cada ejecución.
 *   **Archivos**: `mcp_server.js`, `server.js`.
 
+### Fase 5: UX Avanzada y Estabilización
+*   **Objetivo**: Pulir la interfaz de usuario y resolver errores críticos de comunicación.
+*   **Acciones**:
+    *   **Prompt Diff System**: Implementar visualización de cambios (diff) al mejorar prompts en la configuración global.
+    *   **Professional Skills Editor**: Transformar el panel de skills en un editor de texto profesional (más ancho, cómodo y funcional).
+    *   **Modal Optimization**: Ampliar el ancho del modal de configuración global para mejor legibilidad.
+    *   **Selective HMR Control**: Configurar Vite para evitar el auto-refresco (HMR) al modificar archivos internos del sistema, preservando el estado de la aplicación.
+    *   **Cleanup**: Eliminar la ruta `/health` obsoleta que no aporta logs ni funcionalidad.
+    *   **MCP Protocol Fix**: Resolver errores de "SSE connection not established" y "ERR_HTTP_HEADERS_SENT" en el servidor MCP.
+*   **Archivos**: `main.js`, `style.css`, `server.js`, `mcp_server.js`, `vite.config.js` (si existe).
+
 ---
 
 ## 🎯 Resultado Esperado
-Un sistema de agentes autónomos que no olvida, se auto-corrige, escala a proyectos gigantes y es 100% seguro para el sistema operativo del usuario.
+Un sistema de agentes autónomos que no olvida, se auto-corrige, escala a proyectos gigantes, es 100% seguro y ofrece una experiencia de usuario fluida, profesional y estable.
+

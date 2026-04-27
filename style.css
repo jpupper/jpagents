@@ -51,12 +51,15 @@ body {
   font-size: 1.5rem;
   font-weight: 600;
   margin-bottom: 2rem;
-}
-
-.sidebar-header h1 span {
   background: var(--accent-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+
+.sidebar-header h1 span {
+  background: none;
+  -webkit-background-clip: initial;
+  -webkit-text-fill-color: var(--text-primary);
 }
 
 .status-indicators {
@@ -2765,6 +2768,7 @@ pre code.hljs {
 }
 
 .dot.thinking { background: #3b82f6; box-shadow: 0 0 10px #3b82f6; }
+.dot.user-input { background: #f97316; box-shadow: 0 0 10px #f97316; }
 .dot.tool { background: #10b981; box-shadow: 0 0 10px #10b981; }
 .dot.error { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
 .dot.reflection { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; }
