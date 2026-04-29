@@ -468,12 +468,27 @@ const shouldContinue = (state) => {
 };
 
 
+const routeAfterTools = (state) => {
+    const toolMessages = state.messages.filter(m => m.role === "tool" || m._getType?.() === "tool");
+    const lastToolMessage = toolMessages[toolMessages.length - 1];
+    
+    if (lastToolMessage && typeof lastToolMessage.content === 'string' && lastToolMessage.content.includes("ERROR")) {
+        const reflectionCount = state.messages.filter(m => typeof m.content === 'string' && m.content.includes("ANÁLISIS DE ERROR")).length;
+        if (reflectionCount < 3) {
+            console.log("[GRAPH] Herramienta falló con error. Derivando a reflexión...");
+            return "reflect";
+        }
+    }
+    return "agent";
+};
+
 const checkValidation = (state) => {
     if (state.requiresRetry && state.iterations < 10) {
         return "agent";
     }
     return "__end__";
 };
+
 
 const workflow = new StateGraph(AgentState)
     .addNode("agent", callModel)
@@ -489,7 +504,10 @@ const workflow = new StateGraph(AgentState)
         "__end__": "__end__"
     })
 
-    .addEdge("tools", "agent")
+    .addConditionalEdges("tools", routeAfterTools, {
+        "reflect": "reflect",
+        "agent": "agent"
+    })
     .addEdge("reflect", "agent")
     .addConditionalEdges("validate", checkValidation, {
         "agent": "agent",

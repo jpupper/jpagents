@@ -4023,12 +4023,86 @@ async function processAgentActions(text, project, chat) {
                     else filesModified.push(fileName);
                     changeStats.push({ fileName, added: writeRes.addedCount, removed: writeRes.removedCount });
                 }
+            } else if (toolName === 'edit_file' || toolName === 'EDIT') {
+                const fileName = toolArgs.path || toolArgs.fileName;
+                if (!fileName) {
+                    console.warn(`[MCP] Ignorando llamada a ${toolName} por falta de parámetro 'path' o 'fileName'.`);
+                    continue;
+                }
+                const sanPath = fileName.replace(/\\/g, '/');
+                
+                let oldContent = "";
+                try {
+                    const res = await fetch(`${API_BASE}/files/read`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filePath: sanPath })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        oldContent = data.content || "";
+                    }
+                } catch (e) { console.warn("Read before edit failed:", e); }
+
+                result = await Promise.race([
+                    mcpClient.callTool(toolName, toolArgs),
+                    stopPromise
+                ]);
+
+                let newContent = "";
+                try {
+                    const res = await fetch(`${API_BASE}/files/read`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filePath: sanPath })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        newContent = data.content || "";
+                    }
+                } catch (e) { console.warn("Read after edit failed:", e); }
+
+                let addedCount = 0;
+                let removedCount = 0;
+                if (oldContent !== newContent) {
+                    const engine = getDiffEngine();
+                    if (engine) {
+                        try {
+                            const diff = engine.diffLines(oldContent, newContent);
+                            diff.forEach(part => {
+                                const c = countLines(part.value);
+                                if (part.added) addedCount += c;
+                                else if (part.removed) removedCount += c;
+                            });
+                        } catch (e) { console.error("Engine diff error:", e); }
+                    }
+                    
+                    if (addedCount === 0 && removedCount === 0) {
+                        const oldLines = countLines(oldContent);
+                        const newLines = countLines(newContent);
+                        if (newLines > oldLines) addedCount = newLines - oldLines;
+                        else if (oldLines > newLines) removedCount = oldLines - newLines;
+                        else { addedCount = 1; removedCount = 1; }
+                    }
+                    
+                    const displayName = fileName.split(/[/\\]/).pop();
+                    filesModified.push(displayName);
+                    changeStats.push({ fileName: displayName, added: addedCount, removed: removedCount });
+                    
+                    const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
+                    if (openFile) {
+                        openFile.oldContent = oldContent;
+                        openFile.content = newContent;
+                        openFile.pendingContent = null;
+                    }
+                }
             } else {
                 result = await Promise.race([
                     mcpClient.callTool(toolName, toolArgs),
                     stopPromise
                 ]);
             }
+
 
             actionsPerformed++;
             const resultText = result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
