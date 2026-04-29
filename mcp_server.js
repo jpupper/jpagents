@@ -88,6 +88,19 @@ function createMCPServer() {
           name: "summarize_repo",
           description: "Genera un resumen estructural del repositorio (árbol de directorios y archivos clave)",
           inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+        },
+        {
+          name: "edit_file",
+          description: "Edita quirúrgicamente un archivo reemplazando un fragmento de texto específico por otro.",
+          inputSchema: { 
+            type: "object", 
+            properties: { 
+              path: { type: "string", description: "Ruta del archivo" }, 
+              target: { type: "string", description: "El texto exacto que quieres buscar para reemplazar" },
+              replacement: { type: "string", description: "El nuevo texto que reemplazará al target" }
+            }, 
+            required: ["path", "target", "replacement"] 
+          },
         }
       ],
     };
@@ -239,6 +252,30 @@ function createMCPServer() {
             return { content: [{ type: "text", text: data }] };
           } catch (e) {
             return { content: [{ type: "text", text: "[]" }] };
+          }
+        }
+        case "edit_file": {
+          if (!args.path) throw new Error("Parámetro 'path' es obligatorio para edit_file.");
+          if (args.target === undefined) throw new Error("Parámetro 'target' es obligatorio para edit_file.");
+          if (args.replacement === undefined) throw new Error("Parámetro 'replacement' es obligatorio para edit_file.");
+          
+          const filePath = await validatePath(args.path);
+          
+          try {
+            const content = await fs.readFile(filePath, "utf-8");
+            
+            if (!content.includes(args.target)) {
+              throw new Error(`El texto 'target' no se encontró de forma exacta en el archivo. Verifica los espacios en blanco y saltos de línea.`);
+            }
+            
+            // Reemplaza la primera ocurrencia del target
+            const newContent = content.replace(args.target, args.replacement);
+            
+            await fs.writeFile(filePath, newContent, "utf-8");
+            console.log(`\x1b[32m[MCP] <<< SUCCESS:\x1b[0m edit_file (${filePath})`);
+            return { content: [{ type: "text", text: `Archivo editado quirúrgicamente con éxito en: ${filePath}` }] };
+          } catch (err) {
+            throw new Error(`No se pudo editar el archivo: ${err.message}`);
           }
         }
         default:

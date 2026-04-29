@@ -66,10 +66,41 @@ Este documento detalla el plan estratégico para transformar **jpagents** en un 
     *   **Selective HMR Control**: Configurar Vite para evitar el auto-refresco (HMR) al modificar archivos internos del sistema, preservando el estado de la aplicación.
     *   **Cleanup**: Eliminar la ruta `/health` obsoleta que no aporta logs ni funcionalidad.
     *   **MCP Protocol Fix**: Resolver errores de "SSE connection not established" y "ERR_HTTP_HEADERS_SENT" en el servidor MCP.
-*   **Archivos**: `main.js`, `style.css`, `server.js`, `mcp_server.js`, `vite.config.js` (si existe).
+*   **Archivos**: `main.js`, `style.css`, `server.js`, `mcp_server.js`, `vite.config.js`.
+
+### Fase 6: Evolución a "AI Editor Style" (Inspirado en Cursor/Windsurf)
+*   **Objetivo**: Adaptar pragmáticamente las mejores prácticas de los editores profesionales a la interfaz web de `jpagents`.
+*   **Acciones**:
+    *   **Workspace Indexer (RAG Local)**: Crear un script/nodo que lea el proyecto, genere embeddings y permita búsquedas semánticas.
+    *   **Diff Viewer Quirúrgico**: Modificar la interfaz para que los cambios de archivos sugeridos por la IA se muestren como Diffs (rojo/verde) antes de aplicarse.
+    *   **Feedback Loop de Consola**: Capturar errores de ejecución en tiempo real y enviarlos al flujo de LangGraph para auto-corrección.
+*   **Archivos**: `agent_graph.js`, `index.html`, `main.js`, nuevo `indexer.js`.
 
 ---
 
 ## 🎯 Resultado Esperado
-Un sistema de agentes autónomos que no olvida, se auto-corrige, escala a proyectos gigantes, es 100% seguro y ofrece una experiencia de usuario fluida, profesional y estable.
+Un entorno de desarrollo asistido por IA que combina la flexibilidad web de `jpagents` con la precisión quirúrgica y el entendimiento de contexto de los editores profesionales de primer nivel.
+
+---
+
+## 📌 PENDIENTES
+
+A continuación se centraliza el log de tareas pendientes, ordenadas por prioridad y agrupadas por su área de impacto.
+
+### 🛠️ Core & Seguridad
+*   [ ] **Workspace Jail (Path Jailing)**: Blindar el sistema de archivos mediante `root_dir` en herramientas LangChain.
+*   [ ] **Context Caching**: Configurar adaptadores para Gemini/Anthropic que aprovechen el cacheo de contexto.
+
+### 🧠 Inteligencia & Razonamiento (AI Editor Style)
+*   [ ] **Pipeline de RAG Local**: Implementar indexación vectorial del codebase usando SQLite/Chroma.
+*   [ ] **Enrutamiento Inteligente (Model Routing)**: Crear lógica en LangGraph para usar modelos baratos vs. caros según la complejidad.
+
+### 🎨 Interfaz de Usuario (UX/UI)
+*   [ ] **Visor de Diffs Nativo**: Interfaz gráfica para aprobar/rechazar cambios en archivos específicos.
+*   [ ] **Terminal & Diagnostics**: Panel unificado que muestre el "Pensamiento del Agente" y errores de compilación.
+
+### 🔄 Logs de Cambios y Tareas Completadas
+*   *2026-04-28*: Implementación de la herramienta quirúrgica `edit_file` en el servidor MCP y LangGraph.
+*   *2026-04-28*: Definición de la estrategia de optimización de costos y diseño del Megaplan de Evolución.
+
 

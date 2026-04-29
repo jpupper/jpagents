@@ -68,6 +68,19 @@ const writeFile = tool(
     }
 );
 
+const editFile = tool(
+    async ({ path, target, replacement }, config) => await callMCP("edit_file", { path, target, replacement }, config.configurable.thread_id, config.configurable.projectId),
+    {
+        name: "edit_file",
+        description: "Edita quirúrgicamente un archivo reemplazando un fragmento de texto específico (target) por otro (replacement).",
+        schema: z.object({ 
+            path: z.string(), 
+            target: z.string().describe("Texto exacto que se desea modificar en el archivo"),
+            replacement: z.string().describe("El nuevo texto que reemplazará al target")
+        }),
+    }
+);
+
 const executeJs = tool(
     async ({ code, cwd }, config) => await callMCP("execute_js", { code, cwd }, config.configurable.thread_id, config.configurable.projectId),
     {
@@ -86,7 +99,7 @@ const summarizeRepo = tool(
     }
 );
 
-const tools = [listFiles, readFile, writeFile, executeJs, summarizeRepo];
+const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo];
 const toolNode = new ToolNode(tools);
 
 // Define el esquema de estado del grafo
@@ -124,8 +137,17 @@ const callModel = async (state, config) => {
     // Si es la primera iteración y no hay objetivo, intentamos extraerlo del primer mensaje del usuario
     let objective = state.objective;
     if (!objective && state.messages.length > 0) {
-        const firstUserMsg = state.messages.find(m => m.role === "user");
-        if (firstUserMsg) objective = firstUserMsg.content;
+        const firstUserMsg = state.messages.find(m => 
+            m.role === "user" || 
+            m._getType?.() === "human" || 
+            m.getType?.() === "human" ||
+            m.constructor?.name === "HumanMessage"
+        );
+        if (firstUserMsg) objective = typeof firstUserMsg?.content === 'string' ? firstUserMsg.content : JSON.stringify(firstUserMsg?.content || "");
+        
+        if (!objective && state.messages[0]) {
+            objective = typeof state.messages[0].content === 'string' ? state.messages[0].content : JSON.stringify(state.messages[0].content || "");
+        }
     }
 
     await logAgentTrace(state.projectId || "global", threadId, "thinking", { 
