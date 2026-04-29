@@ -267,7 +267,7 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 2. **REGLA DE HONESTIDAD**: Si una herramienta devuelve un ERROR, NO digas que la tarea está terminada. Informa del error al usuario, analiza por qué falló e intenta corregirlo.
 3. **REGLA DE ALEATORIEDAD**: Si necesitas un número aleatorio, USA SIEMPRE la herramienta RANDOM.
 4. **FORMATO**: Usa siempre las herramientas disponibles. No escribas bloques de código standard si vas a modificar archivos.`
-    };
+    ;
 
     console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
     const stream = await agentApp.stream(input, config);
