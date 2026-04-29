@@ -6,6 +6,7 @@ import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { z } from "zod";
 import fetch from "node-fetch";
 import { logAgentTrace } from "./agent_trace_logger.js";
+import { validateCodeSyntax, validateObjective } from "./validator_routines.js";
 
 // --- Tool Definitions (Wrapping MCP Tools) ---
 const MCP_BASE = "http://127.0.0.1:2998";
@@ -184,57 +185,32 @@ const callModel = async (state, config) => {
     };
 };
 
-// Nodo de Validación (El "Guardián" del Objetivo)
-const validateObjective = async (state, config) => {
-    const threadId = config.configurable.thread_id;
-    const modelName = state.model || "llama3";
-    
-    // Si ya hemos iterado demasiado, detenemos para evitar bucles infinitos
-    if (state.iterations > 10) {
-        console.log(`[GRAPH] Max iterations reached (${state.iterations}). Stopping.`);
-        return { messages: [{ role: "system", content: "⚠️ Se ha alcanzado el límite de iteraciones. Por favor, revisa si el objetivo se cumplió parcialmente." }] };
-    }
-
-    const lastMessage = state.messages[state.messages.length - 1];
-    
-    // Prompt de validación rápida
-    const validationPrompt = `
-    OBJETIVO DEL USUARIO: "${state.objective}"
-    ÚLTIMA RESPUESTA DEL AGENTE: "${lastMessage.content}"
-    
-    ¿Se ha cumplido el OBJETIVO PRINCIPAL del usuario de forma completa? 
-    Responde ÚNICAMENTE con 'SÍ' o 'NO'. 
-    
-    Nota: Si el usuario pidió un análisis o resumen y el agente solo leyó archivos pero no escribió el análisis, responde 'NO'.
-    `;
-
-    await logAgentTrace(state.projectId || "global", threadId, "validation_start", { objective: state.objective });
-
-    const model = new ChatOllama({
-        baseUrl: "http://localhost:11434",
-        model: modelName,
-        temperature: 0,
-    });
-
-    const response = await model.invoke([{ role: "system", content: validationPrompt }]);
-    const isDone = response.content.trim().toUpperCase().includes("SÍ");
-
-    await logAgentTrace(state.projectId || "global", threadId, "validation_result", { success: isDone, reasoning: response.content });
-
-    if (isDone) {
-        console.log(`[GRAPH] Objective validated as COMPLETED.`);
-        return { requiresRetry: false };
-    } else {
-        console.log(`[GRAPH] Objective NOT met. Triggering internal iteration...`);
+// Nodo de Validación Integral (Sintaxis y Objetivo)
+const runValidation = async (state, config) => {
+    // 1. Validar Sintaxis primero
+    const syntaxResult = await validateCodeSyntax(state, config);
+    if (!syntaxResult.isValid) {
+        console.log(`[GRAPH] Code syntax validation failed.`);
         return { 
-            messages: [{ 
-                role: "system", 
-                content: `🤖 RECORDATORIO INTERNO: El objetivo principal ("${state.objective}") aún no se ha cumplido totalmente. Por favor, finaliza la tarea entregando lo solicitado (ej: el análisis, el resumen o la confirmación del cambio).` 
-            }],
+            messages: [{ role: "system", content: syntaxResult.feedback }],
             iterations: (state.iterations || 0) + 1,
             requiresRetry: true
         };
     }
+    
+    // 2. Validar Objetivo después
+    const objectiveResult = await validateObjective(state, config);
+    if (!objectiveResult.isValid) {
+        console.log(`[GRAPH] Objective validation failed.`);
+        return { 
+            messages: [{ role: "system", content: objectiveResult.feedback }],
+            iterations: (state.iterations || 0) + 1,
+            requiresRetry: true
+        };
+    }
+    
+    console.log(`[GRAPH] All validations passed.`);
+    return { requiresRetry: false };
 };
 
 // Nodo de Reflexión (Auto-Corrección)
@@ -309,7 +285,7 @@ const workflow = new StateGraph(AgentState)
     .addNode("agent", callModel)
     .addNode("tools", toolNode)
     .addNode("reflect", reflectOnError)
-    .addNode("validate", validateObjective)
+    .addNode("validate", runValidation)
     .addEdge("__start__", "agent")
     .addConditionalEdges("agent", shouldContinue, {
         "tools": "tools",

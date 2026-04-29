@@ -7,11 +7,11 @@ export function initMatrix(containerId, svgId) {
     const svg = d3.select(`#${svgId}`);
     const container = document.getElementById(containerId);
     const tooltip = document.getElementById('matrix-tooltip');
-    
+
     let width = container.clientWidth;
     let height = container.clientHeight;
     let currentFilter = null;
-    
+
     const g = svg.append("g");
 
     // Zoom behavior
@@ -34,16 +34,16 @@ export function initMatrix(containerId, svgId) {
         } else if (filterProjectId === 'admin') {
             currentFilter = null;
         }
-        
+
         try {
             const response = await fetch(`${window.API_BASE}/admin/traces`);
             const traces = await response.json();
-            
+
             const data = transformTracesToTree(traces, currentFilter);
             renderTree(data);
         } catch (e) {
             console.error("Matrix update error:", e);
-        }
+        }ddqw 5984189 + 12
     }
 
     function transformTracesToTree(traces, filterProjectId = null) {
@@ -63,9 +63,9 @@ export function initMatrix(containerId, svgId) {
 
             const targetNode = filterProjectId ? root : projectsMap[trace.projectId];
             let thread = targetNode.children.find(c => c.id === trace.agentId);
-            
+
             if (!thread) {
-                thread = { name: `Agente: ${trace.agentId.substring(0,8)}`, children: [], type: 'agent', id: trace.agentId };
+                thread = { name: `Agente: ${trace.agentId.substring(0, 8)}`, children: [], type: 'agent', id: trace.agentId };
                 targetNode.children.push(thread);
             }
 
@@ -109,12 +109,12 @@ export function initMatrix(containerId, svgId) {
             .style("filter", d => `drop-shadow(0 0 5px ${getNodeColor(d.data)})`)
             .on("mouseover", (event, d) => {
                 tooltip.classList.remove('hidden');
-                
+
                 // Using fixed positioning to avoid issues with relative parents
                 tooltip.style.position = 'fixed';
                 tooltip.style.left = (event.clientX + 15) + 'px';
                 tooltip.style.top = (event.clientY + 15) + 'px';
-                
+
                 // Ensure it doesn't go off screen
                 const rect = tooltip.getBoundingClientRect();
                 if (event.clientX + 15 + 320 > window.innerWidth) {
@@ -123,7 +123,7 @@ export function initMatrix(containerId, svgId) {
                 if (event.clientY + 15 + rect.height > window.innerHeight) {
                     tooltip.style.top = (event.clientY - rect.height - 15) + 'px';
                 }
-                
+
                 let detailsHtml = '';
                 if (d.data.details) {
                     if (d.data.name.includes('tool')) {
@@ -159,7 +159,7 @@ export function initMatrix(containerId, svgId) {
         if (data.type === 'root') return "#7c4dff";
         if (data.type === 'project') return "#00f2ff";
         if (data.type === 'agent') return "#3b82f6";
-        
+
         const step = data.name;
         if (step.includes('thinking')) return "#3b82f6";
         if (step.includes('tool_call')) return "#10b981";
@@ -169,7 +169,7 @@ export function initMatrix(containerId, svgId) {
         if (step.includes('validation_start')) return "#8b5cf6";
         if (step.includes('validation_result')) return data.details?.success ? "#10b981" : "#f43f5e";
         if (step.includes('model_response')) return "#60a5fa";
-        if (step === 'User Input') return "#f97316"; 
+        if (step === 'User Input') return "#f97316";
         return "#ffffff";
     }
 
