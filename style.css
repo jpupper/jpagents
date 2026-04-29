@@ -656,10 +656,14 @@ select:hover, input[type="text"]:focus {
   border-radius: 18px;
   line-height: 1.5;
   word-wrap: break-word;
+  min-width: 0;
 }
+
 
 .message.user { align-self: flex-end; background: var(--accent-gradient); color: white; }
 .message.agent { align-self: flex-start; background: var(--card-bg); border: 1px solid var(--border-color); }
+.message.system { align-self: center; background: rgba(255, 255, 255, 0.03); color: var(--text-secondary); border: 1px solid var(--border-color); font-size: 0.85rem; padding: 0.6rem 1.2rem; border-radius: 12px; text-align: center; max-width: 90%; margin: 0.5rem 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+
 .message.agent p { margin-bottom: 0.8rem; }
 .message.agent p:last-child { margin-bottom: 0; }
 .message.agent strong { color: #fff; font-weight: 600; }
@@ -2455,7 +2459,10 @@ pre code.hljs {
     margin-bottom: 0.4rem;
     cursor: pointer;
     transition: all 0.2s;
+    min-width: 0;
+    gap: 1rem;
 }
+
 
 .change-stat-item:hover {
     border-color: var(--accent-color);
@@ -2467,7 +2474,10 @@ pre code.hljs {
     font-size: 0.9rem;
     font-weight: 600;
     color: var(--text-primary);
+    word-break: break-all;
+    min-width: 0;
 }
+
 
 .change-stat-item .stats {
     display: flex;

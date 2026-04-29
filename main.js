@@ -267,7 +267,7 @@ class MCPClient {
 
                 if (!res.ok) {
                     this.pendingRequests.delete(id);
-                    
+
                     if (res.status === 404 && !isRetry) {
                         console.warn(`[MCP-CLIENT] Session expired (404). Attempting to reconnect and retry...`);
                         this.log('warn', 'received', 'Session expired (404), reconnecting...');
@@ -449,9 +449,9 @@ async function performPeriodicSync() {
             checkSystemHealth(null); // Fallback to normal health check if this fails
             return;
         }
-        
+
         const data = await res.json();
-        
+
         // 1. Update Health UI using the data we just got
         checkSystemHealth(data);
 
@@ -677,9 +677,9 @@ async function init() {
     setInterval(async () => {
         const ollamaDot = document.getElementById('ollama-status-dot');
         const wasDead = ollamaDot && ollamaDot.classList.contains('dead');
-        
+
         await checkSystemHealth();
-        
+
         const isLive = ollamaDot && ollamaDot.classList.contains('live');
         if ((wasDead && isLive) || !state.models || state.models.length === 0) {
             await fetchModels();
@@ -754,7 +754,7 @@ function appendToTerminal(text, type = 'stdout', projectId = null) {
 function refreshTerminalUI() {
     const project = getActiveProject();
     terminalOutput.innerHTML = '';
-    
+
     // Sincronizar el input de comando en el panel de settings
     const cmdInput = document.getElementById('terminal-command-input');
     if (cmdInput && project) cmdInput.value = project.runCommand || '';
@@ -778,7 +778,7 @@ async function updateTerminalStatusUI() {
     const statusContainer = document.getElementById('terminal-status');
     if (!statusContainer) return;
     const statusText = statusContainer.querySelector('.status-text');
-    
+
     if (!project || !project.id) {
         statusContainer.classList.remove('running');
         statusText.textContent = 'OFFLINE';
@@ -818,7 +818,7 @@ function connectTerminalStream(projectId) {
     }
 
     terminalEventSource = new EventSource(`${API_BASE}/execute/stream/${projectId}`);
-    
+
     terminalEventSource.addEventListener('stdout', (e) => {
         const data = JSON.parse(e.data);
         appendToTerminal(data, 'stdout', projectId);
@@ -848,9 +848,9 @@ async function runTerminalCommand(command) {
     const project = getActiveProject();
     if (!project) return;
     const cwd = project.folder || '';
-    
+
     appendToTerminal(`$ ${command}`, 'command', project.id);
-    
+
     try {
         const res = await fetch(`${API_BASE}/execute/command`, {
             method: 'POST',
@@ -871,10 +871,10 @@ async function runTerminalCommand(command) {
 
 async function detectRunCommand(project) {
     if (!project || !project.folder || !project.currentFiles) return 'node server.js';
-    
+
     const files = project.currentFiles;
     if (files.some(f => f.name.toLowerCase() === 'run.bat')) return 'run.bat';
-    
+
     const pkg = files.find(f => f.name === 'package.json');
     if (pkg) {
         try {
@@ -887,7 +887,7 @@ async function detectRunCommand(project) {
             }
         } catch (e) { console.error("Error detectando comando en package.json:", e); }
     }
-    
+
     if (files.some(f => f.name === 'server.js')) return 'node server.js';
     if (files.some(f => f.name === 'index.html')) return 'python -m http.server 53637';
     return 'node server.js';
@@ -898,7 +898,7 @@ function setupTerminalEvents() {
     const settingsPanel = document.getElementById('terminal-settings-panel');
     const cmdInput = document.getElementById('terminal-command-input');
     const saveBtn = document.getElementById('save-terminal-settings');
-    
+
     const terminalInput = document.getElementById('terminal-input');
     const clearTerminalBtn = document.getElementById('clear-terminal-btn');
     const terminalRunBtn = document.getElementById('terminal-run-btn');
@@ -1017,7 +1017,7 @@ function setupOpenWebEvent() {
                     return;
                 }
             }
-        } catch (e) {}
+        } catch (e) { }
 
         alert("No se detectó un puerto activo. Ejecuta 'RUN' primero.");
     });
@@ -1107,7 +1107,7 @@ async function loadSkills() {
         const res = await fetch(`${API_BASE}/skills`);
         const data = await res.json();
         skillsList = data.skills || [];
-        
+
         // Cache all skill contents
         for (const name of skillsList) {
             try {
@@ -1128,7 +1128,7 @@ async function loadSkills() {
 
 function renderSkillsList() {
     if (!skillsListEl) return;
-    
+
     skillsListEl.innerHTML = skillsList.map(name => {
         const isDefault = state.skillsMetadata[name]?.isDefault;
         const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
@@ -1144,19 +1144,19 @@ function renderSkillsList() {
 window.selectSkill = async (name) => {
     activeSkillName = name;
     renderSkillsList();
-    
+
     try {
         const res = await fetch(`${API_BASE}/skills/${name}`);
         const data = await res.json();
-        
+
         skillNameInput.value = name;
         skillContentTextarea.value = data.content || '';
-        
+
         // Load metadata
         const meta = state.skillsMetadata[name] || { isDefault: false };
         const defaultCheckbox = document.getElementById('skill-default-checkbox');
         if (defaultCheckbox) defaultCheckbox.checked = meta.isDefault;
-        
+
         skillEditorContainer.classList.remove('hidden');
         skillEmptyState.classList.add('hidden');
     } catch (e) {
@@ -1173,7 +1173,7 @@ function updateSkillSelects() {
     selects.forEach(s => {
         if (!s.el) return;
         const currentVal = s.el.value;
-        s.el.innerHTML = `<option value="">${s.label}</option>` + 
+        s.el.innerHTML = `<option value="">${s.label}</option>` +
             skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
         s.el.value = currentVal;
     });
@@ -1197,25 +1197,25 @@ function setupSkillsEventListeners() {
         saveSkillBtn.addEventListener('click', async () => {
             const name = skillNameInput.value.trim();
             const content = skillContentTextarea.value;
-            
+
             if (!name) {
                 showSkillStatus("El skill necesita un nombre.", "error");
                 return;
             }
-            
+
             try {
                 const isDefault = document.getElementById('skill-default-checkbox')?.checked || false;
-                
+
                 await fetch(`${API_BASE}/skills/${name}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content })
                 });
-                
+
                 // Save metadata in global state
                 if (!state.skillsMetadata) state.skillsMetadata = {};
                 state.skillsMetadata[name] = { isDefault };
-                
+
                 activeSkillName = name;
                 await loadSkills();
                 saveData(); // Save global state with new metadata
@@ -1230,7 +1230,7 @@ function setupSkillsEventListeners() {
     function showSkillStatus(msg, type = "success") {
         const container = document.querySelector('.skill-actions');
         if (!container) return;
-        
+
         let statusEl = document.getElementById('skill-save-status');
         if (!statusEl) {
             statusEl = document.createElement('span');
@@ -1240,10 +1240,10 @@ function setupSkillsEventListeners() {
             statusEl.style.marginLeft = '10px';
             container.appendChild(statusEl);
         }
-        
+
         statusEl.textContent = msg;
         statusEl.style.color = type === "success" ? "#3fb950" : "#f85149";
-        
+
         setTimeout(() => {
             statusEl.textContent = "";
         }, 3000);
@@ -1254,7 +1254,7 @@ function setupSkillsEventListeners() {
         deleteSkillBtn.addEventListener('click', async () => {
             if (!activeSkillName) return;
             if (!confirm(`¿Estás seguro de que quieres borrar el skill "${activeSkillName}"?`)) return;
-            
+
             try {
                 await fetch(`${API_BASE}/skills/${activeSkillName}`, { method: 'DELETE' });
                 activeSkillName = null;
@@ -1271,7 +1271,7 @@ function setupSkillsEventListeners() {
         agentSkillSelect.addEventListener('change', async () => {
             const skillName = agentSkillSelect.value;
             if (!skillName) return;
-            
+
             const chat = getActiveChat();
             if (chat) {
                 if (!chat.skills) chat.skills = [];
@@ -1291,7 +1291,7 @@ function setupSkillsEventListeners() {
         projectSkillSelect.addEventListener('change', async () => {
             const skillName = projectSkillSelect.value;
             if (!skillName) return;
-            
+
             const project = getActiveProject();
             if (project) {
                 if (!project.skills) project.skills = [];
@@ -1417,7 +1417,7 @@ async function generateGenerativeProjectName() {
             model = modelSelect.options[0].value;
         }
         if (!model) model = "llama3";
-        
+
         const response = await fetch(`${OLLAMA_BASE}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1450,7 +1450,7 @@ async function createNewProject(customName = null) {
     }
 
     const id = generateId();
-    
+
     // Indicador visual en el botón de la sidebar
     const btn = document.getElementById('new-chat');
     const originalText = btn ? btn.innerText : '+';
@@ -1507,16 +1507,16 @@ async function createNewProject(customName = null) {
 
     renderProjectList();
     renderTabs();
-    
+
     if (folderPath) {
         window.scanFolder(folderPath);
     }
 
     // Sync with server
     await saveData();
-    
+
     adminLog(`📁 Nuevo proyecto creado: <strong>${projectName}</strong>`);
-    
+
     return newProject;
 }
 
@@ -1657,7 +1657,7 @@ function renderProjectList() {
 
 function renderTabs() {
     const project = getActiveProject();
-    
+
     if (!project) {
         if (state.activeProjectId === 'admin') {
             tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
@@ -1733,10 +1733,10 @@ window.viewProjectPrompt = (projectId) => {
     const skills = project.skills || [];
 
     const overlay = document.createElement('div');
-    overlay.className = 'modal'; 
+    overlay.className = 'modal';
     overlay.style.display = 'flex';
     overlay.id = 'project-prompt-modal';
-    
+
     overlay.innerHTML = `
         <div class="modal-content modal-large">
             <div class="modal-header">
@@ -1848,6 +1848,9 @@ window.stopAgent = (projectId, chatId) => {
         if (chat) {
             chat.isStopped = true;
             chat.isThinking = false;
+            if (chat.abortController) {
+                try { chat.abortController.abort(); } catch (e) { }
+            }
         }
     } else {
         const project = state.projects.find(p => p.id === projectId);
@@ -1856,6 +1859,9 @@ window.stopAgent = (projectId, chatId) => {
         if (chat) {
             chat.isStopped = true;
             chat.isThinking = false;
+            if (chat.abortController) {
+                try { chat.abortController.abort(); } catch (e) { }
+            }
         }
     }
     renderAdminMonitor();
@@ -1863,9 +1869,10 @@ window.stopAgent = (projectId, chatId) => {
     renderProjectList();
 };
 
+
 function updateViewVisibility() {
     const project = getActiveProject();
-    
+
     // Reset visibility
     chatTabContent.classList.add('hidden');
     editorTabContent.classList.add('hidden');
@@ -2065,7 +2072,7 @@ function renderCode(file) {
         } else {
             content = escapeHtml(file.content);
         }
-        
+
         // Render line numbers
         const lines = file.content.split(/\r?\n/);
         let gutterHtml = '';
@@ -2074,7 +2081,7 @@ function renderCode(file) {
         });
         editorGutter.innerHTML = gutterHtml;
         editorCode.innerHTML = content;
-        
+
     } catch (e) {
         console.error("Highlight error:", e);
         editorCode.textContent = file.content;
@@ -2096,7 +2103,7 @@ function countLines(str) {
 function renderDiff(file, isPending = false) {
     const engine = getDiffEngine();
     let changes = null;
-    
+
     if (isPending && engine) {
         changes = engine.diffLines(file.content || "", file.pendingContent || "");
     } else {
@@ -2124,7 +2131,7 @@ function renderDiff(file, isPending = false) {
             if (part.removed) removedCount++;
 
             html += `<span class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</span>`;
-            
+
             // For the gutter, we only increment line number for non-removed lines
             // or we show something else for removed lines.
             // Traditional editors usually show the line number for both or skip for removed.
@@ -2166,7 +2173,7 @@ function escapeHtml(text) {
 
 window.switchTab = (id) => {
     console.log("Switching to tab:", id);
-    
+
     if (id === 'admin') {
         state.activeProjectId = 'admin';
         renderTabs();
@@ -2272,7 +2279,7 @@ window.switchProject = (id, event = null) => {
 
     // Crucial: Update the input immediately to the project's folder
     folderPathInput.value = project.folder || '';
-    
+
     renderProjectList();
     renderTabs();
 
@@ -2292,9 +2299,9 @@ window.switchProject = (id, event = null) => {
 window.deleteProject = async (id) => {
     const project = state.projects.find(p => p.id === id);
     if (!project) return;
-    
+
     if (!confirm(`¿Eliminar proyecto "${project.name}"? Se guardará en el historial.`)) return;
-    
+
     try {
         // Archive on server before removing locally
         await fetch(`${API_BASE}/sessions/archive`, {
@@ -2305,30 +2312,31 @@ window.deleteProject = async (id) => {
 
         // Clear traces on backend
         fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
-
-        state.projects = state.projects.filter(p => p.id !== id);
-        if (state.activeProjectId === id) {
-            if (state.projects.length > 0) {
-                switchProject(state.projects[0].id);
-            } else {
-                state.activeProjectId = null;
-                renderProjectList();
-                renderTabs();
-            }
-        } else {
-            renderProjectList();
-        }
-        saveData();
-        adminLog(`🗑️ Proyecto <strong>${project.name}</strong> movido al historial.`);
     } catch (e) {
-        console.error("Error archiving project:", e);
-        console.error("Error al archivar el proyecto:", e);
+        console.error("Error archiving project on backend, proceeding with local deletion:", e);
     }
+
+    // Always delete locally even if backend fails
+    state.projects = state.projects.filter(p => p.id !== id);
+    if (state.activeProjectId === id) {
+        if (state.projects.length > 0) {
+            switchProject(state.projects[0].id);
+        } else {
+            state.activeProjectId = null;
+            renderProjectList();
+            renderTabs();
+        }
+    } else {
+        renderProjectList();
+    }
+    saveData();
+    adminLog(`🗑️ Proyecto <strong>${project.name}</strong> movido al historial.`);
 };
+
 
 window.deleteAllProjects = async () => {
     if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
-    
+
     // Clear all traces on backend
     fetch(`${API_BASE}/admin/traces`, { method: 'DELETE' }).catch(e => console.error(e));
 
@@ -2370,14 +2378,29 @@ function renderMessages(shouldRenderLayout = true) {
         return;
     }
 
-    chatMessages.innerHTML = chat.messages.map(m => {
+    chatMessages.innerHTML = '';
+    chat.messages.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `message ${m.role}`;
+
         let imageHtml = '';
         if (m.images && m.images.length > 0) {
             imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
         }
-        return `<div class="message ${m.role}">${imageHtml}${formatMarkdown(m.content)}</div>`;
-    }).join('') + thinkingHtml;
+
+        div.innerHTML = imageHtml + formatMarkdown(m.content);
+        chatMessages.appendChild(div);
+    });
+
+    if (thinkingHtml) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = thinkingHtml;
+        if (tempDiv.firstElementChild) {
+            chatMessages.appendChild(tempDiv.firstElementChild);
+        }
+    }
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
+
 }
 
 function updateThinking(chat, isThinking, status = "", subtext = "") {
@@ -2443,7 +2466,7 @@ async function sendMessage() {
         userMsg.images = [...currentAttachedImages];
     }
     chat.messages.push(userMsg);
-    
+
     // Clear session summary and accumulated changes when user sends new message
     chat.sessionChanges = [];
     const summaryContainer = document.getElementById('session-summary-container');
@@ -2584,7 +2607,7 @@ function buildRefactoredSystemPrompt(taskState) {
     const developerAgentBase = promptsCache.developer_agent || getInternalAgentInstructions();
     const userSystemPrompt = promptsCache.user_system_prompt || state.userSystemPrompt || "";
     const projectInstructions = p.projectPrompt ? `### PROJECT-SPECIFIC INSTRUCTIONS:\n${p.projectPrompt}\n\n` : '';
-    
+
     // Build skills content
     let skillsContent = "";
     const activeChat = getActiveChat();
@@ -2627,7 +2650,7 @@ ${mission}`;
 
 async function performAutomaticValidation(project, chat) {
     if (!state.autoValidation) return;
-    
+
     let taskState = await getTaskState();
     if (taskState.objective === "CONVERSATION") {
         console.log("[VALIDATION] Saltando validación automática por modo CONVERSACIÓN.");
@@ -2642,7 +2665,7 @@ async function performAutomaticValidation(project, chat) {
     chat.validationRetries++;
     console.log(`[VALIDATION] Iniciando ciclo de validación ${chat.validationRetries}/${state.maxValidationRetries}...`);
     adminLog(`🔄 Validando proyecto de <strong>${chat.name}</strong> (Intento ${chat.validationRetries}/${state.maxValidationRetries})`);
-    
+
     updateThinking(chat, true, "Validando proyecto", "Ejecutando run.bat y capturando pantalla...");
 
     try {
@@ -2687,10 +2710,10 @@ Analiza si la aplicación está funcionando como se esperaba según los requisit
 3. Si TODO está perfecto, responde únicamente con "TASK COMPLETE" y una breve explicación.
 4. Si necesitas hacer cambios, usa [WRITE] o [REPLACE] y luego vuelve a validar.`;
 
-        chat.messages.push({ 
-            role: 'system', 
+        chat.messages.push({
+            role: 'system',
             content: systemPrompt,
-            images: imgContent ? [imgContent.data] : [] 
+            images: imgContent ? [imgContent.data] : []
         });
 
         // Mostrar en la UI que se ha enviado una validación
@@ -2782,11 +2805,15 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 stepName: 'user_input',
                 details: { message: lastUserMsg ? lastUserMsg.content : "System trigger" }
             })
-        }).catch(() => {});
+        }).catch(() => { });
+
+        const controller = new AbortController();
+        chat.abortController = controller;
 
         const response = await fetch(`${API_BASE}/agent/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
             body: JSON.stringify({
                 threadId: chat.id,
                 projectId: project.id,
@@ -2795,6 +2822,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 systemPrompt: buildRefactoredSystemPrompt(taskState)
             })
         });
+
 
         if (!response.ok) throw new Error(`Agent API Error: ${response.statusText}`);
 
@@ -2805,15 +2833,15 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
                     const dataStr = line.slice(6).trim();
                     if (!dataStr || dataStr === '[DONE]') continue;
-                    
+
                     try {
                         const data = JSON.parse(dataStr);
                         if (data.type === 'content') {
@@ -2837,28 +2865,108 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         await saveTaskState(taskState);
 
         // 4. Format assistant response for display
-        let displayContent = assistantResponse
-            .replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '') // Hide satisfy comments
-            .replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, (match, toolName, argsJson) => {
-                let parsedArgs = {};
-                try {
-                    let cleanJson = argsJson.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-                    parsedArgs = JSON.parse(cleanJson);
-                } catch(e) {}
-                const path = parsedArgs.path ? ` en <strong>${parsedArgs.path}</strong>` : '';
-                return `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${path}</div>`;
-            });
+        let displayContent = assistantResponse.replace(/\/\/ satisfy \[CALL:.*?\]\r?\n?/g, '');
+        let searchPos = 0;
+        let resultString = "";
+        let lastPos = 0;
+
+        while (true) {
+            const callMarker = "[CALL:";
+            const startIndex = displayContent.indexOf(callMarker, searchPos);
+            if (startIndex === -1) {
+                resultString += displayContent.substring(lastPos);
+                break;
+            }
+
+            resultString += displayContent.substring(lastPos, startIndex);
+
+            const endBracketIndex = displayContent.indexOf("]", startIndex);
+            if (endBracketIndex === -1) {
+                resultString += callMarker;
+                searchPos = startIndex + callMarker.length;
+                lastPos = searchPos;
+                continue;
+            }
+
+            const toolName = displayContent.substring(startIndex + callMarker.length, endBracketIndex).trim();
+
+            const jsonStart = displayContent.indexOf("{", endBracketIndex);
+            if (jsonStart === -1) {
+                resultString += displayContent.substring(startIndex, endBracketIndex + 1);
+                searchPos = endBracketIndex + 1;
+                lastPos = searchPos;
+                continue;
+            }
+
+            let braceCount = 0;
+            let jsonEnd = -1;
+            let stringChar = null;
+            let escape = false;
+
+            for (let i = jsonStart; i < displayContent.length; i++) {
+                const char = displayContent[i];
+                if (escape) { escape = false; continue; }
+                if (char === '\\') { escape = true; continue; }
+
+                if (!stringChar && (char === '"' || char === "'")) {
+                    stringChar = char;
+                    continue;
+                }
+                if (stringChar && char === stringChar) {
+                    stringChar = null;
+                    continue;
+                }
+
+                if (!stringChar) {
+                    if (char === '{') braceCount++;
+                    if (char === '}') braceCount--;
+                    if (braceCount === 0) {
+                        jsonEnd = i + 1;
+                        break;
+                    }
+                }
+            }
+
+
+            if (jsonEnd === -1) {
+                resultString += displayContent.substring(startIndex, jsonStart + 1);
+                searchPos = jsonStart + 1;
+                lastPos = searchPos;
+                continue;
+            }
+
+            const argsText = displayContent.substring(jsonStart, jsonEnd);
+
+            let parsedArgs = {};
+            try {
+                let cleanJson = argsText.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+                parsedArgs = JSON.parse(cleanJson);
+            } catch (e) {
+                const pathM = argsText.match(/"path":\s*"([^"]+)"/);
+                const fileNameM = argsText.match(/"fileName":\s*"([^"]+)"/);
+                if (pathM) parsedArgs.path = pathM[1];
+                else if (fileNameM) parsedArgs.path = fileNameM[1];
+            }
+
+            const pathStr = parsedArgs.path ? ` en <strong>${parsedArgs.path.split('/').pop()}</strong>` : '';
+            const replacement = `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${pathStr}</div>`;
+
+            resultString += replacement;
+            searchPos = jsonEnd;
+            lastPos = searchPos;
+        }
+
 
         // 5. Push agent message to history BEFORE processing actions to maintain logical order
-        chat.messages.push({ 
-            role: 'agent', 
+        chat.messages.push({
+            role: 'agent',
             content: displayContent
         });
         renderMessages();
 
         // 6. Process actions (MCP calls, legacy tags, etc.)
         const actionResult = await processAgentActions(assistantResponse, project, chat);
-        
+
         // Refresh folder to see new files
         if (project.folder) window.scanFolder(project.folder, project.id);
 
@@ -2907,28 +3015,35 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                     existing.added += s.added;
                     existing.removed += s.removed;
                 } else {
-                    chat.sessionChanges.push({...s});
+                    chat.sessionChanges.push({ ...s });
                 }
             });
         }
-        
+
         if (chat.sessionChanges && chat.sessionChanges.length > 0) {
             renderSessionSummary(chat.sessionChanges, project);
+        }
+
+        if (chat.isStopped) {
+            console.log(`[CHAT] Agent execution stopped by user.`);
+            updateThinking(chat, false);
+            return;
         }
 
         // Auto-continue if there were reads or errors (Auto-Healing)
         if (actionResult && actionResult.reads && actionResult.reads.length > 0) {
             const readContext = actionResult.reads.map(r => `📖 Archivo leído: ${r.fileName}`).join('\n');
             chat.messages.push({ role: 'system', content: `Archivos leídos con éxito.\n${readContext}` });
-            triggerAgentLogic(project, chat, 'system');
+            if (!chat.isStopped) triggerAgentLogic(project, chat, 'system');
         } else if (actionResult && actionResult.toolOutputs && actionResult.toolOutputs.length > 0) {
             // After any tool output, we should trigger the agent again so it can process the result
-            triggerAgentLogic(project, chat, 'system');
+            if (!chat.isStopped) triggerAgentLogic(project, chat, 'system');
         } else if (actionResult && actionResult.errors && actionResult.errors.length > 0) {
             const errorMsg = `⚠️ No se pudieron aplicar tus cambios:\n${actionResult.errors.join('\n')}`;
             chat.messages.push({ role: 'system', content: errorMsg });
-            triggerAgentLogic(project, chat, 'system');
+            if (!chat.isStopped) triggerAgentLogic(project, chat, 'system');
         } else {
+
             // Just finished without actions or reads.
             const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
             const text = lastUserMsg ? lastUserMsg.content.toLowerCase() : "";
@@ -2936,11 +3051,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
             const isTechnicalImperative = technicalKeywords.some(kw => text.includes(kw));
 
             if (isTechnicalImperative && taskState.objective !== "CONVERSATION") {
-                const retryMsg = "⚠️ Detecté que había un imperativo previo de crear o modificar archivos, pero no se realizó ninguna acción de escritura. Por favor, explica por qué no se realizaron los cambios o procede a realizarlos ahora usando las etiquetas correctas.";
-                chat.messages.push({ role: 'system', content: retryMsg });
-                console.warn(`🕵️ Imperativo detectado sin acciones. Iniciando reintento de verificación.`);
-                await autoRetry(retryMsg, project, chat);
+                console.warn(`🕵️ Imperativo detectado sin acciones.`);
             } else {
+
                 console.log("✅ El agente terminó sin acciones adicionales (esperado si solo era una consulta o conversación).");
             }
         }
@@ -2949,10 +3062,10 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         // This phase was causing redundant agent loops and hiding the summary bar.
 
         if (assistantResponse.includes("TASK COMPLETE")) {
-             adminLog(`✅ Agente <strong>${chat.name}</strong> ha reportado FINALIZACIÓN de su tarea.`);
-             // Notificar al orquestador para que revise
-             state.adminMessages.push({ role: 'system', content: `📢 NOTIFICACIÓN: El agente **${chat.name}** (Proyecto: ${project.name}) ha marcado su tarea como COMPLETADA. Revisa su estado y decide si hay más pasos.` });
-             triggerAdminAgentLogic();
+            adminLog(`✅ Agente <strong>${chat.name}</strong> ha reportado FINALIZACIÓN de su tarea.`);
+            // Notificar al orquestador para que revise
+            state.adminMessages.push({ role: 'system', content: `📢 NOTIFICACIÓN: El agente **${chat.name}** (Proyecto: ${project.name}) ha marcado su tarea como COMPLETADA. Revisa su estado y decide si hay más pasos.` });
+            triggerAdminAgentLogic();
         }
 
         updateThinking(chat, false);
@@ -2992,7 +3105,7 @@ window.scanFolder = async function (pathInput = null, projectId = null) {
     // If no projectId is provided, we use the active one as fallback
     const targetProjectId = projectId || state.activeProjectId;
     const project = state.projects.find(p => p.id === targetProjectId);
-    
+
     if (!project) {
         console.warn("[SCAN] No target project found for scan.");
         renderFileList();
@@ -3069,10 +3182,10 @@ window.scanFolder = async function (pathInput = null, projectId = null) {
             }
             renderFileList();
         }
-        
+
         saveData();
         if (state.activeProjectId === targetProjectId) renderFileList();
-        
+
     } catch (e) {
         console.error("Fetch error scanning folder:", e);
     } finally {
@@ -3319,7 +3432,8 @@ function renderAdminMessages() {
         `;
     }
 
-    adminChatMessages.innerHTML = state.adminMessages.map(m => {
+    adminChatMessages.innerHTML = '';
+    state.adminMessages.forEach(m => {
         const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
         const timeSpan = time ? `<span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ` : '';
 
@@ -3331,12 +3445,24 @@ function renderAdminMessages() {
             return `<div class="admin-dispatch-pill">📡 Ordenando a <strong>${name}</strong>...</div>`;
         });
 
-        return `<div class="message ${roleClass}">${timeSpan}${formatMarkdown(displayContent)}</div>`;
-    }).join('') + thinkingHtml;
+        const div = document.createElement('div');
+        div.className = `message ${roleClass}`;
+        div.innerHTML = timeSpan + formatMarkdown(displayContent);
+        adminChatMessages.appendChild(div);
+    });
+
+    if (thinkingHtml) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = thinkingHtml;
+        if (tempDiv.firstElementChild) {
+            adminChatMessages.appendChild(tempDiv.firstElementChild);
+        }
+    }
 
     setTimeout(() => {
         adminChatMessages.scrollTop = adminChatMessages.scrollHeight;
     }, 50);
+
 }
 
 window.clearAdminChat = () => {
@@ -3881,17 +4007,17 @@ async function processAgentActions(text, project, chat) {
             if (toolName === 'write_file' || toolName === 'WRITE') {
                 const fileName = toolArgs.path || toolArgs.fileName;
                 const content = toolArgs.content || toolArgs.code || "";
-                
+
                 if (!fileName) {
                     console.warn(`[MCP] Ignorando llamada a ${toolName} por falta de parámetro 'path' o 'fileName'.`);
                     continue;
                 }
-                
+
                 const writeRes = await performWrite(fileName, content, project, chat);
-                result = { 
+                result = {
                     content: [{ type: "text", text: writeRes.success ? `Archivo escrito con éxito: ${fileName}` : `Error al escribir: ${writeRes.error}` }]
                 };
-                
+
                 if (writeRes.success && writeRes.hasChanged) {
                     if (writeRes.isNew) filesCreated.push(fileName);
                     else filesModified.push(fileName);
@@ -3932,7 +4058,7 @@ async function processAgentActions(text, project, chat) {
             } else if (toolName === 'write_file' || toolName === 'WRITE') {
                 const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
                 logs.push({ type: 'success', message: `Escritura MCP exitosa: **${fileName}**` });
-                
+
                 const outputMsg = `✅ MCP ${toolName} ejecutado correctamente.`;
                 chat.messages.push({ role: 'system', content: outputMsg });
                 toolOutputs.push({ toolName, result: resultText });
@@ -3996,10 +4122,10 @@ async function processAgentActions(text, project, chat) {
             if (data.content !== undefined) {
                 reads.push({ fileName, content: data.content });
                 logs.push({ type: 'success', message: `Lectura exitosa de **${fileName}** (${data.content.length} bytes)` });
-                
+
                 const outputMsg = `📖 Archivo **${fileName}** leído con éxito.`;
                 chat.messages.push({ role: 'system', content: outputMsg });
-                
+
                 await recordAction(`[READ:${fileName}]`, `Successfully read ${fileName} (${data.content.length} bytes).`);
             } else {
                 const errorDetail = `El archivo ${fileName} parece no existir o está vacío.`;
@@ -4179,23 +4305,6 @@ async function processAgentActions(text, project, chat) {
                 logs.push({ type: 'error', message: `Error al persistir REPLACE: **${fileName}**`, details: err });
                 await recordAction(`[REPLACE:${fileName}]`, `Error persisting: ${err}`);
             }
-        }
-    }
-
-    // 4. Hallucination & Intent Detection (Critical for models like Qwen)
-    if (actionsPerformed === 0 && reads.length === 0 && errors.length === 0 && taskState.objective !== "CONVERSATION") {
-        const intentKeywords = ["he creado", "creé", "escribí", "aquí tienes", "i have created", "i created", "here is the", "updated", "modificado", "listo", "proyects/", "proyecto_"];
-        const codeKeywords = ["<!DOCTYPE", "function ", "class ", "let ", "const ", "var ", "import "];
-        const lowText = text.toLowerCase();
-
-        const hasIntent = intentKeywords.some(kw => lowText.includes(kw));
-        const hasPotentialCode = codeKeywords.some(kw => text.includes(kw)) && text.length > 300;
-
-        if (hasIntent || hasPotentialCode) {
-            const errorMsg = "🚫 PROTOCOL VIOLATION: Has enviado código o has dicho que has realizado cambios, pero NO has usado las etiquetas obligatorias [CALL:write_file]. El sistema NO ha guardado nada. Debes repetir tu respuesta envolviendo CADA archivo en un bloque [CALL:write_file]{\"path\": \"...\", \"content\": \"...\"}.";
-            errors.push(errorMsg);
-            logs.push({ type: 'error', message: "Violación de Protocolo detectada", details: "El modelo envió texto/código sin etiquetas MCP." });
-            await recordAction(`[PROTOCOL_ERROR]`, `Model hallucinated tool usage without tags.`);
         }
     }
 
@@ -4402,7 +4511,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                     </span>
                 </div>
             `).join('');
-            
+
             summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
         }
 
@@ -4417,11 +4526,11 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
                     existing.added += s.added;
                     existing.removed += s.removed;
                 } else {
-                    chat.sessionChanges.push({...s});
+                    chat.sessionChanges.push({ ...s });
                 }
             });
         }
-        
+
         // Always render if there are accumulated changes in this session
         if (chat.sessionChanges && chat.sessionChanges.length > 0) {
             renderSessionSummary(chat.sessionChanges, project);
@@ -4482,7 +4591,7 @@ async function performWrite(fileName, content, project, chat) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath: sanPath })
         });
-        
+
         if (res.ok) {
             const data = await res.json();
             if (data && data.mtime !== null && data.mtime !== undefined) {
@@ -4583,17 +4692,17 @@ async function performWrite(fileName, content, project, chat) {
             const displayName = fileName.split(/[/\\]/).pop();
             project.openFiles.push({ path: sanPath, name: displayName, content, oldContent, diff });
         }
-        
+
         project.activeTabId = sanPath;
         renderTabs();
         updateViewVisibility();
         window.scanFolder(project.folder, project.id);
         saveData();
 
-        return { 
-            success: writeResult.success, 
-            hasChanged, 
-            isNew, 
+        return {
+            success: writeResult.success,
+            hasChanged,
+            isNew,
             error: writeResult.error,
             addedCount,
             removedCount
@@ -4641,7 +4750,7 @@ window.renameFileUI = (oldPath, oldName) => {
 window.renameFile = async (oldPath, newName) => {
     const dir = oldPath.substring(0, Math.max(oldPath.lastIndexOf('/'), oldPath.lastIndexOf('\\')));
     const newPath = (dir ? dir + '/' : '') + newName;
-    
+
     try {
         const res = await fetch(`${API_BASE}/files/rename`, {
             method: 'POST',
@@ -4714,9 +4823,9 @@ window.saveActiveFile = async () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filePath: sanPath, content })
         });
-        
+
         if (!res.ok) {
-             throw new Error(`HTTP ${res.status}`);
+            throw new Error(`HTTP ${res.status}`);
         }
 
         const result = await res.json();
@@ -4786,7 +4895,7 @@ async function nativePickFolder() {
     } catch (e) {
         console.error("Exception in nativePickFolder:", e);
     }
-    finally { 
+    finally {
         btns.forEach(b => b.innerHTML = '📁');
     }
 }
@@ -5026,7 +5135,7 @@ function setupEventListeners() {
         orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
-        
+
         const maxRetriesInput = document.getElementById('max-validation-retries');
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
@@ -5059,7 +5168,7 @@ function setupEventListeners() {
             });
             promptsCache.improver_agent = state.improverPrompt;
         }
-        
+
         const maxRetriesInput = document.getElementById('max-validation-retries');
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
@@ -5084,12 +5193,12 @@ function setupEventListeners() {
             const preCaretRange = range.cloneRange();
             preCaretRange.selectNodeContents(editorCode);
             preCaretRange.setEnd(range.endContainer, range.endOffset);
-            
+
             const textBefore = preCaretRange.toString();
             const lines = textBefore.split('\n');
             const ln = lines.length;
             const col = lines[lines.length - 1].length + 1;
-            
+
             const cursorSpan = document.getElementById('editor-cursor');
             if (cursorSpan) cursorSpan.textContent = `Ln ${ln}, Col ${col}`;
         }

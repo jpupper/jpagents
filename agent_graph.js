@@ -8,7 +8,10 @@ import fetch from "node-fetch";
 import fs from 'fs/promises';
 import path from 'path';
 import { logAgentTrace } from "./agent_trace_logger.js";
-import { validateCodeSyntax, validateObjective } from "./validator_routines.js";
+import { validateCodeSyntax, validateObjective, validateFilesCreated } from "./validator_routines.js";
+import { getCollection } from "./db.js";
+
+
 
 // --- Tool Definitions (Wrapping MCP Tools) ---
 const MCP_BASE = "http://127.0.0.1:2998";
@@ -47,14 +50,20 @@ async function callMCP(name, args, threadId, projectId = "global") {
 // Helper para resolver y enjaular rutas al proyecto activo
 async function resolveProjectPath(projectId, requestedPath) {
     try {
-        const sessionsPath = path.join(process.cwd(), "sessions.json");
-        const sessionsData = await fs.readFile(sessionsPath, "utf-8");
-        const sessions = JSON.parse(sessionsData);
+        let projectFolder = path.join(process.cwd(), "proyects");
         
-        const project = sessions.projects?.find(p => p.id === projectId);
-        
-        // Si no hay proyecto o es 'global', usamos la carpeta de proyectos por seguridad
-        const projectFolder = project && project.folder ? path.resolve(project.folder) : path.join(process.cwd(), "proyects");
+        try {
+            const collection = getCollection('sessions');
+            const data = await collection.findOne({ _id: 'global_state' });
+            const sessions = data ? data.state : { projects: [] };
+            const project = sessions.projects?.find(p => p.id === projectId);
+            if (project && project.folder) {
+                projectFolder = path.resolve(project.folder);
+            }
+        } catch (dbErr) {
+            console.error("[GRAPH] Error loading sessions from MongoDB, using fallback projects folder:", dbErr.message);
+        }
+
         
         let resolvedPath;
         if (path.isAbsolute(requestedPath)) {
@@ -246,11 +255,103 @@ const callModel = async (state, config) => {
 
     const response = await model.invoke(messages);
     
+    // Fallback para modelos que no usan tool_calls nativos (como Ollama a veces)
+    if (!response.tool_calls || response.tool_calls.length === 0) {
+        const toolCalls = [];
+        let searchPos = 0;
+        const text = response.content || "";
+        
+        while (true) {
+            const callMarker = "[CALL:";
+            const startIndex = text.indexOf(callMarker, searchPos);
+            if (startIndex === -1) break;
+
+            const endBracketIndex = text.indexOf("]", startIndex);
+            if (endBracketIndex === -1) {
+                searchPos = startIndex + callMarker.length;
+                continue;
+            }
+
+            const toolName = text.substring(startIndex + callMarker.length, endBracketIndex).trim();
+
+            const jsonStart = text.indexOf("{", endBracketIndex);
+            if (jsonStart === -1) {
+                searchPos = endBracketIndex + 1;
+                continue;
+            }
+
+            let braceCount = 0;
+            let jsonEnd = -1;
+            let stringChar = null;
+            let escape = false;
+
+            for (let i = jsonStart; i < text.length; i++) {
+                const char = text[i];
+                if (escape) { escape = false; continue; }
+                if (char === '\\') { escape = true; continue; }
+                
+                if (!stringChar && (char === '"' || char === "'")) {
+                    stringChar = char;
+                    continue;
+                }
+                if (stringChar && char === stringChar) {
+                    stringChar = null;
+                    continue;
+                }
+
+                if (!stringChar) {
+                    if (char === '{') braceCount++;
+                    if (char === '}') braceCount--;
+                    if (braceCount === 0) {
+                        jsonEnd = i + 1;
+                        break;
+                    }
+                }
+            }
+
+
+            if (jsonEnd === -1) {
+                searchPos = jsonStart + 1;
+                continue;
+            }
+
+            const argsText = text.substring(jsonStart, jsonEnd);
+            let parsedArgs = {};
+            try {
+                let cleanJson = argsText.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+                parsedArgs = JSON.parse(cleanJson);
+            } catch(e) {
+                // Intentar extraer campos básicos si falla el JSON parse
+                const pathM = argsText.match(/"path":\s*"([^"]+)"/);
+                const contentM = argsText.match(/"content":\s*"([^"]+)"/);
+                const codeM = argsText.match(/"code":\s*"([^"]+)"/);
+                if (pathM) parsedArgs.path = pathM[1];
+                if (contentM) parsedArgs.content = contentM[1];
+                if (codeM) parsedArgs.code = codeM[1];
+            }
+
+            toolCalls.push({
+                name: toolName,
+                args: parsedArgs,
+                id: `call_${Date.now()}_${toolCalls.length}`
+            });
+            
+            searchPos = jsonEnd;
+        }
+        
+        if (toolCalls.length > 0) {
+            response.tool_calls = toolCalls;
+            // Limpiar el contenido del mensaje para no ensuciar el chat con JSON gigante
+            response.content = text.replace(/\[CALL:(.*?)\]({[\s\S]*?})/g, '').trim();
+        }
+    }
+
     if (response.tool_calls?.length) {
         await logAgentTrace(state.projectId || "global", threadId, "decision", { action: "tool_calls", count: response.tool_calls.length });
     } else {
         await logAgentTrace(state.projectId || "global", threadId, "model_response", { content: response.content });
     }
+
 
     return { 
         messages: [response],
@@ -272,7 +373,7 @@ const runValidation = async (state, config) => {
         };
     }
     
-    // 2. Validar Objetivo después
+    // 2. Validar Objetivo
     const objectiveResult = await validateObjective(state, config);
     if (!objectiveResult.isValid) {
         console.log(`[GRAPH] Objective validation failed.`);
@@ -283,9 +384,21 @@ const runValidation = async (state, config) => {
         };
     }
     
+    // 3. Validar Archivos Creados (SOLO si el objetivo se cumplió!)
+    const filesResult = await validateFilesCreated(state, config);
+    if (!filesResult.isValid) {
+        console.log(`[GRAPH] Files creation validation failed.`);
+        return { 
+            messages: [{ role: "system", content: filesResult.feedback }],
+            iterations: (state.iterations || 0) + 1,
+            requiresRetry: true
+        };
+    }
+    
     console.log(`[GRAPH] All validations passed.`);
     return { requiresRetry: false };
 };
+
 
 // Nodo de Reflexión (Auto-Corrección)
 const reflectOnError = async (state, config) => {
@@ -338,15 +451,22 @@ const shouldContinue = (state) => {
         if (reflectionCount < 3) return "reflect";
     }
 
-    // 3. Si no hay herramientas ni errores, validar si el objetivo se cumplió
-    // Pero solo si no acabamos de salir de una validación negativa (para evitar bucle inmediato)
-    const lastIsSystemReminder = lastMessage.role === "system" && lastMessage.content.includes("RECORDATORIO INTERNO");
-    if (lastIsSystemReminder) {
-        return "agent"; // Volver al agente para que responda al recordatorio
+    // 3. Solo validar si el agente parece estar concluyendo la tarea!
+    const content = typeof lastMessage.content === 'string' ? lastMessage.content : '';
+    const isConcluding = content.includes("TASK COMPLETE") || 
+                         content.includes("FINALIZADO") || 
+                         content.includes("COMPLETADO") || 
+                         content.includes("Conclusión") ||
+                         content.includes("Listo");
+
+    if (isConcluding) {
+        return "validate";
     }
 
-    return "validate";
+    // Si no está ejecutando herramientas ni concluyendo, terminar interacción para respuesta al usuario
+    return "__end__";
 };
+
 
 const checkValidation = (state) => {
     if (state.requiresRetry && state.iterations < 10) {
@@ -365,8 +485,10 @@ const workflow = new StateGraph(AgentState)
         "tools": "tools",
         "reflect": "reflect",
         "validate": "validate",
-        "agent": "agent"
+        "agent": "agent",
+        "__end__": "__end__"
     })
+
     .addEdge("tools", "agent")
     .addEdge("reflect", "agent")
     .addConditionalEdges("validate", checkValidation, {

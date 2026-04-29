@@ -250,7 +250,11 @@ app.post('/api/agent/chat', async (req, res) => {
         // Log user input to traces for Requirement 2
         await logAgentTrace(projectIdToUse, threadIdToUse, "user_input", { message: message });
 
-        const config = { configurable: { thread_id: threadIdToUse, projectId: projectIdToUse } };
+        const config = { 
+            configurable: { thread_id: threadIdToUse, projectId: projectIdToUse },
+            recursionLimit: 100
+        };
+
 
         // Buscar carpeta del proyecto para guiar al agente
         const sessions = await loadSessions();
@@ -312,8 +316,12 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 
 } catch (error) {
     console.error('[LANGGRAPH ERROR]', error);
-    res.status(500).json({ error: error.message });
+    try {
+        res.write(`data: ${JSON.stringify({ type: 'error', content: error.message })}\n\n`);
+        res.end();
+    } catch(e) {}
 }
+
 });
 
 // Native Folder Picker using PowerShell (Improved for stability and syntax)

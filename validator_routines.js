@@ -1,6 +1,11 @@
 import { execSync } from 'child_process';
 import { ChatOllama } from "@langchain/ollama";
 import { logAgentTrace } from "./agent_trace_logger.js";
+import fs from 'fs/promises';
+import path from 'path';
+import { getCollection } from './db.js';
+
+
 
 /**
  * Valida la sintaxis de los archivos JavaScript que el agente ha intentado modificar.
@@ -12,6 +17,19 @@ export const validateCodeSyntax = async (state, config) => {
     
     console.log(`[VALIDATOR] Iniciando validación de sintaxis de código...`);
     
+    let projectFolder = process.cwd();
+    try {
+        const collection = getCollection('sessions');
+        const data = await collection.findOne({ _id: 'global_state' });
+        const sessions = data ? data.state : { projects: [] };
+        const project = sessions.projects?.find(p => p.id === projectId);
+        if (project && project.folder) {
+            projectFolder = path.resolve(project.folder);
+        }
+    } catch (e) {
+        console.warn(`[VALIDATOR] No se pudo cargar sesiones de la DB para validar sintaxis, usando cwd.`);
+    }
+
     // 1. Buscar archivos modificados en el historial de mensajes
     const modifiedFiles = new Set();
     
@@ -44,16 +62,22 @@ export const validateCodeSyntax = async (state, config) => {
     for (const filePath of modifiedFiles) {
         // Solo validamos archivos .js por ahora
         if (filePath.endsWith('.js')) {
+            let finalPath = filePath;
+            if (!path.isAbsolute(filePath)) {
+                finalPath = path.resolve(projectFolder, filePath);
+            }
+
             try {
                 // node --check valida la sintaxis sin ejecutar
-                execSync(`node --check "${filePath}"`, { stdio: 'pipe' });
-                console.log(`[VALIDATOR] Sintaxis CORRECTA: ${filePath}`);
+                execSync(`node --check "${finalPath}"`, { stdio: 'pipe' });
+                console.log(`[VALIDATOR] Sintaxis CORRECTA: ${finalPath}`);
             } catch (error) {
                 const errorOutput = error.stderr?.toString() || error.message;
-                console.log(`[VALIDATOR] Sintaxis ROTA en ${filePath}:\n${errorOutput}`);
+                console.log(`[VALIDATOR] Sintaxis ROTA en ${finalPath}:\n${errorOutput}`);
                 syntaxErrors.push({ file: filePath, error: errorOutput });
             }
         }
+
     }
     
     if (syntaxErrors.length > 0) {
@@ -119,3 +143,112 @@ export const validateObjective = async (state, config) => {
         };
     }
 };
+
+/**
+ * Valida si el agente creó todos los archivos que se comprometió a crear/modificar.
+ */
+export const validateFilesCreated = async (state, config) => {
+    const threadId = config.configurable.thread_id;
+    const projectId = config.configurable.projectId || state.projectId || "global";
+    const modelName = state.model || "llama3";
+    
+    console.log(`[VALIDATOR] Iniciando validación de archivos creados...`);
+    
+    const lastMessage = state.messages[state.messages.length - 1];
+    const content = typeof lastMessage.content === 'string' ? lastMessage.content : '';
+    
+    const isConcluding = content.includes("TASK COMPLETE") || 
+                         content.includes("FINALIZADO") || 
+                         content.includes("COMPLETADO") || 
+                         content.includes("Conclusión") ||
+                         content.includes("Listo");
+                         
+    if (!isConcluding) {
+        console.log(`[VALIDATOR] El agente no parece estar concluyendo, omitiendo validación de archivos.`);
+        return { isValid: true };
+    }
+
+    // 1. Obtener la lista de archivos que el agente DIJO que crearía
+
+    const planPrompt = `
+    Analiza los siguientes mensajes del asistente y determina qué archivos (con sus rutas o nombres) se comprometió a CREAR o MODIFICAR para cumplir el objetivo.
+    
+    Mensajes del Asistente:
+    ${state.messages.filter(m => m.role === "assistant" || m._getType?.() === "ai").map(m => m.content).join("\n---\n")}
+    
+    Responde ÚNICAMENTE con una lista de rutas de archivos separadas por comas, sin texto adicional. Si no mencionó archivos, responde vacío.
+    Ejemplo: index.html, style.css, sketch.js
+    `;
+    
+    const model = new ChatOllama({
+        baseUrl: "http://localhost:11434",
+        model: modelName,
+        temperature: 0,
+    });
+    
+    const response = await model.invoke([{ role: "system", content: planPrompt }]);
+    const plannedFilesRaw = response.content.trim();
+    
+    if (!plannedFilesRaw) {
+        return { isValid: true };
+    }
+    
+    const plannedFiles = plannedFilesRaw.split(',')
+        .map(f => f.trim())
+        .filter(f => f.length > 0);
+        
+    if (plannedFiles.length === 0) {
+        return { isValid: true };
+    }
+    
+    console.log(`[VALIDATOR] Archivos planeados según el agente:`, plannedFiles);
+    
+    // 2. Verificar si los archivos existen en el directorio del proyecto
+    let projectFolder = process.cwd();
+    try {
+        const collection = getCollection('sessions');
+        const data = await collection.findOne({ _id: 'global_state' });
+        const sessions = data ? data.state : { projects: [] };
+        const project = sessions.projects?.find(p => p.id === projectId);
+        if (project && project.folder) {
+            projectFolder = path.resolve(project.folder);
+        }
+    } catch (e) {
+        console.warn(`[VALIDATOR] No se pudo cargar sesiones de la DB, usando cwd.`);
+    }
+
+    
+    const missingFiles = [];
+    
+    for (const file of plannedFiles) {
+        let finalPath = file;
+        if (!path.isAbsolute(file)) {
+            finalPath = path.resolve(projectFolder, file);
+        }
+        
+        try {
+            await fs.access(finalPath);
+            console.log(`[VALIDATOR] Archivo ENCONTRADO: ${file}`);
+        } catch (err) {
+            console.log(`[VALIDATOR] Archivo FALTANTE: ${file}`);
+            missingFiles.push(file);
+        }
+    }
+    
+    if (missingFiles.length > 0) {
+        await logAgentTrace(projectId, threadId, "validation_missing_files", { missing: missingFiles.length });
+        
+        return {
+            isValid: false,
+            feedback: `🚨 ARCHIVOS FALTANTES DETECTADOS:
+Mencionaste que crearías/modificarías los siguientes archivos, pero no se encuentran en el disco:
+${missingFiles.map(f => `- ${f}`).join('\n')}
+
+Por favor, asegúrate de ejecutar la herramienta 'write_file' para CADA UNO de ellos antes de dar la tarea por terminada.`
+        };
+    }
+    
+    return { isValid: true };
+};
+
+
