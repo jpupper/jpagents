@@ -43,7 +43,7 @@ export function initMatrix(containerId, svgId) {
             renderTree(data);
         } catch (e) {
             console.error("Matrix update error:", e);
-        }ddqw 5984189 + 12
+        }
     }
 
     function transformTracesToTree(traces, filterProjectId = null) {

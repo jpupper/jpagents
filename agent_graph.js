@@ -5,6 +5,8 @@ import { tool } from "@langchain/core/tools";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { z } from "zod";
 import fetch from "node-fetch";
+import fs from 'fs/promises';
+import path from 'path';
 import { logAgentTrace } from "./agent_trace_logger.js";
 import { validateCodeSyntax, validateObjective } from "./validator_routines.js";
 
@@ -42,8 +44,45 @@ async function callMCP(name, args, threadId, projectId = "global") {
     return result;
 }
 
+// Helper para resolver y enjaular rutas al proyecto activo
+async function resolveProjectPath(projectId, requestedPath) {
+    try {
+        const sessionsPath = path.join(process.cwd(), "sessions.json");
+        const sessionsData = await fs.readFile(sessionsPath, "utf-8");
+        const sessions = JSON.parse(sessionsData);
+        
+        const project = sessions.projects?.find(p => p.id === projectId);
+        
+        // Si no hay proyecto o es 'global', usamos la carpeta de proyectos por seguridad
+        const projectFolder = project && project.folder ? path.resolve(project.folder) : path.join(process.cwd(), "proyects");
+        
+        let resolvedPath;
+        if (path.isAbsolute(requestedPath)) {
+            resolvedPath = path.resolve(requestedPath);
+        } else {
+            resolvedPath = path.resolve(projectFolder, requestedPath);
+        }
+        
+        // Forzar que esté estrictamente dentro de la carpeta del proyecto
+        if (!resolvedPath.toLowerCase().startsWith(projectFolder.toLowerCase())) {
+            throw new Error(`Acceso denegado. La ruta ${resolvedPath} está fuera del directorio del proyecto (${projectFolder}).`);
+        }
+        
+        return resolvedPath;
+    } catch (e) {
+        throw new Error(`Fallo en resolución de ruta: ${e.message}`);
+    }
+}
+
 const listFiles = tool(
-    async ({ path }, config) => await callMCP("list_files", { path }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ path: requestedPath }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("list_files", { path: finalPath }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "list_files",
         description: "Lista archivos en un directorio",
@@ -52,7 +91,14 @@ const listFiles = tool(
 );
 
 const readFile = tool(
-    async ({ path }, config) => await callMCP("read_file", { path }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ path: requestedPath }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("read_file", { path: finalPath }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "read_file",
         description: "Lee el contenido completo de un archivo",
@@ -61,7 +107,14 @@ const readFile = tool(
 );
 
 const writeFile = tool(
-    async ({ path, content }, config) => await callMCP("write_file", { path, content }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ path: requestedPath, content }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("write_file", { path: finalPath, content }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "write_file",
         description: "Escribe o sobreescribe un archivo",
@@ -70,7 +123,14 @@ const writeFile = tool(
 );
 
 const editFile = tool(
-    async ({ path, target, replacement }, config) => await callMCP("edit_file", { path, target, replacement }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ path: requestedPath, target, replacement }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("edit_file", { path: finalPath, target, replacement }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "edit_file",
         description: "Edita quirúrgicamente un archivo reemplazando un fragmento de texto específico (target) por otro (replacement).",
@@ -83,7 +143,14 @@ const editFile = tool(
 );
 
 const executeJs = tool(
-    async ({ code, cwd }, config) => await callMCP("execute_js", { code, cwd }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ code, cwd }, config) => {
+        try {
+            const finalCwd = await resolveProjectPath(config.configurable.projectId, cwd || "./");
+            return await callMCP("execute_js", { code, cwd: finalCwd }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "execute_js",
         description: "Ejecuta un script de Node.js dinámicamente",
@@ -92,7 +159,14 @@ const executeJs = tool(
 );
 
 const summarizeRepo = tool(
-    async ({ path }, config) => await callMCP("summarize_repo", { path }, config.configurable.thread_id, config.configurable.projectId),
+    async ({ path: requestedPath }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("summarize_repo", { path: finalPath }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
     {
         name: "summarize_repo",
         description: "Genera un resumen estructural del repositorio (árbol de directorios)",

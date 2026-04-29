@@ -898,12 +898,18 @@ function setupTerminalEvents() {
     const settingsPanel = document.getElementById('terminal-settings-panel');
     const cmdInput = document.getElementById('terminal-command-input');
     const saveBtn = document.getElementById('save-terminal-settings');
+    
+    const terminalInput = document.getElementById('terminal-input');
+    const clearTerminalBtn = document.getElementById('clear-terminal-btn');
+    const terminalRunBtn = document.getElementById('terminal-run-btn');
+    const terminalStopBtn = document.getElementById('terminal-stop-btn');
+    const terminalOutput = document.getElementById('terminal-output');
 
-    if (settingsBtn) {
+    if (settingsBtn && settingsPanel) {
         settingsBtn.onclick = () => settingsPanel.classList.toggle('hidden');
     }
 
-    if (saveBtn) {
+    if (saveBtn && cmdInput) {
         saveBtn.onclick = () => {
             const project = getActiveProject();
             if (project) {
@@ -915,51 +921,62 @@ function setupTerminalEvents() {
         };
     }
 
-    terminalInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const command = terminalInput.value.trim();
-            if (command) {
-                runTerminalCommand(command);
-                terminalInput.value = '';
+    if (terminalInput) {
+        terminalInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const command = terminalInput.value.trim();
+                if (command) {
+                    runTerminalCommand(command);
+                    terminalInput.value = '';
+                }
             }
-        }
-    });
+        });
+    }
 
-    clearTerminalBtn.addEventListener('click', () => {
-        const project = getActiveProject();
-        if (project) project.terminalLogs = [];
-        terminalOutput.innerHTML = '<div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>';
-    });
+    if (clearTerminalBtn) {
+        clearTerminalBtn.addEventListener('click', () => {
+            const project = getActiveProject();
+            if (project) project.terminalLogs = [];
+            if (terminalOutput) {
+                terminalOutput.innerHTML = '<div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>';
+            }
+        });
+    }
 
-    terminalRunBtn.addEventListener('click', async () => {
-        const project = getActiveProject();
-        if (!project) return;
+    if (terminalRunBtn) {
+        terminalRunBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            if (!project) return;
 
-        let command = project.runCommand;
-        if (!command) {
-            command = await detectRunCommand(project);
-            project.runCommand = command;
-            saveData();
-        }
+            let command = project.runCommand;
+            if (!command) {
+                command = await detectRunCommand(project);
+                project.runCommand = command;
+                saveData();
+            }
 
-        // Asegurar que el input de settings esté al día
-        if (cmdInput) cmdInput.value = command;
+            if (cmdInput) cmdInput.value = command;
 
-        runTerminalCommand(command);
-    });
+            runTerminalCommand(command);
+        });
+    }
 
-    terminalStopBtn.addEventListener('click', async () => {
-        const project = getActiveProject();
-        if (!project) return;
-        try {
-            await fetch(`${API_BASE}/execute/stop`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId: project.id })
-            });
-            updateTerminalStatusUI();
-        } catch (e) { console.error("Error stopping process:", e); }
-    });
+    if (terminalStopBtn) {
+        terminalStopBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            if (!project) return;
+            try {
+                await fetch(`${API_BASE}/execute/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId: project.id })
+                });
+                if (typeof updateTerminalStatusUI === 'function') {
+                    updateTerminalStatusUI();
+                }
+            } catch (e) { console.error("Error stopping process:", e); }
+        });
+    }
 }
 
 function setupOpenFolderExplorer() {
