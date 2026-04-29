@@ -389,7 +389,7 @@ REM Iniciar el servidor en segundo plano
 start /b python -m http.server %PORT%
 
 REM Esperar a que el servidor esté listo (2 segundos)
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 3 >nul
 
 echo Abriendo proyecto en el navegador...
 start http://127.0.0.1:%PORT%
@@ -686,30 +686,6 @@ try {
     }
 });
 
-app.post('/api/execute/command', async (req, res) => {
-    const { command, cwd } = req.body;
-    if (!command) return res.status(400).json({ error: 'No command provided' });
-
-    console.log(`[SHELL] Ejecutando: ${command} en ${cwd || 'root'}`);
-
-    try {
-        const { stdout, stderr } = await execAsync(command, { 
-            cwd: cwd || process.cwd(),
-            timeout: 60000 
-        });
-        res.json({ success: true, stdout, stderr });
-    } catch (error) {
-        res.json({ 
-            success: false, 
-            error: error.message, 
-            stdout: error.stdout, 
-            stderr: error.stderr 
-        });
-    } finally {
-        try { await fs.unlink(tempFilePath); } catch (e) {}
-    }
-});
-
 // --- TERMINAL PROCESS MANAGEMENT ---
 const activeProcesses = new Map(); // projectId -> ChildProcess
 
@@ -721,13 +697,16 @@ app.post('/api/execute/command', (req, res) => {
 
     // Si ya hay un proceso para este proyecto, lo matamos
     if (activeProcesses.has(projectId)) {
-        const oldProc = activeProcesses.get(projectId);
-        oldProc.kill();
+        const oldProc = activeProcesses.get(projectId)?.proc;
+        if (oldProc) oldProc.kill();
         activeProcesses.delete(projectId);
     }
 
     try {
         const isWin = process.platform === 'win32';
+        
+        console.log(`[TERMINAL] [${new Date().toISOString()}] Spawning process...`);
+
         const shellCmd = isWin ? command : 'bash';
         const shellArgs = isWin ? [] : ['-c', command];
 
@@ -736,18 +715,20 @@ app.post('/api/execute/command', (req, res) => {
             env: { 
                 ...process.env, 
                 FORCE_COLOR: 'true',
-                // Forzamos que los logs no se bufeen en node/python para verlos en tiempo real
-                NODE_OPTIONS: '--no-warnings',
                 PYTHONUNBUFFERED: '1'
             },
             shell: true,
-            stdio: ['ignore', 'pipe', 'pipe'] // Capturamos stdout y stderr
+            stdio: ['ignore', 'pipe', 'pipe']
         });
+
+        console.log(`[TERMINAL] [${new Date().toISOString()}] Process spawned with PID: ${proc.pid}`);
 
         const processData = {
             proc,
             command,
-            logs: []
+            logs: [],
+            finished: false,
+            exitCode: null
         };
 
         activeProcesses.set(projectId, processData);
@@ -766,7 +747,8 @@ app.post('/api/execute/command', (req, res) => {
 
         proc.on('exit', (code) => {
             console.log(`[TERMINAL] Proceso ${projectId} terminó con código ${code}`);
-            // No borramos inmediatamente para que el último stream pueda terminar
+            processData.finished = true;
+            processData.exitCode = code;
             setTimeout(() => {
                 if (activeProcesses.get(projectId)?.proc === proc) {
                     activeProcesses.delete(projectId);
@@ -792,7 +774,8 @@ app.post('/api/execute/stop', (req, res) => {
 });
 
 app.get('/api/execute/status/:projectId', (req, res) => {
-    res.json({ running: activeProcesses.has(req.params.projectId) });
+    const data = activeProcesses.get(req.params.projectId);
+    res.json({ running: data ? !data.finished : false });
 });
 
 // SSE for Terminal Output
@@ -819,6 +802,11 @@ app.get('/api/execute/stream/:projectId', (req, res) => {
     data.logs.forEach(log => {
         sendEvent(log.type, log.text);
     });
+
+    if (data.finished) {
+        sendEvent('exit', { code: data.exitCode });
+        return res.end();
+    }
 
     const onStdout = (chunk) => sendEvent('stdout', chunk.toString());
     const onStderr = (chunk) => sendEvent('stderr', chunk.toString());

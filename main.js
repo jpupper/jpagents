@@ -672,6 +672,20 @@ async function init() {
 
     // Periodically check health and external instructions every 1 minute
     setInterval(performPeriodicSync, 60000);
+
+    // Poll Ollama health and models more frequently to update UI automatically
+    setInterval(async () => {
+        const ollamaDot = document.getElementById('ollama-status-dot');
+        const wasDead = ollamaDot && ollamaDot.classList.contains('dead');
+        
+        await checkSystemHealth();
+        
+        const isLive = ollamaDot && ollamaDot.classList.contains('live');
+        if ((wasDead && isLive) || !state.models || state.models.length === 0) {
+            await fetchModels();
+        }
+    }, 5000);
+
 }
 
 
@@ -931,7 +945,6 @@ function setupTerminalEvents() {
         // Asegurar que el input de settings esté al día
         if (cmdInput) cmdInput.value = command;
 
-        appendToTerminal(`$ ${command}`, 'command', project.id);
         runTerminalCommand(command);
     });
 
