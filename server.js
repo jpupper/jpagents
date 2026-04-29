@@ -79,17 +79,17 @@ async function ensureOllamaRunning() {
         }
 
         console.log('\x1b[33m[OLLAMA]\x1b[0m No se detectó Ollama. Intentando iniciar servicio...');
-        
+
         // Iniciar ollama serve de forma independiente
         const ollamaProcess = spawn('ollama', ['serve'], {
             detached: true,
             stdio: 'ignore',
             shell: true
         });
-        
+
         ollamaProcess.unref();
         console.log('\x1b[32m[OLLAMA]\x1b[0m Comando de inicio enviado (ollama serve).');
-        
+
         // Esperar un momento para que el proceso inicialice
         await new Promise(resolve => setTimeout(resolve, 2000));
     } catch (error) {
@@ -118,7 +118,7 @@ async function saveLog(logEntry) {
     try {
         const collection = getCollection('client_logs');
         await collection.insertOne(logEntry);
-        
+
         // Optional: trim collection to 500 entries (instead of 50 for more history)
         const count = await collection.countDocuments();
         if (count > 500) {
@@ -136,7 +136,7 @@ async function saveLog(logEntry) {
 // Routes
 app.post('/api/utils/client-logs', async (req, res) => {
     const { type, messages, timestamp, url } = req.body;
-    
+
     const logEntry = {
         type,
         messages,
@@ -154,7 +154,7 @@ app.post('/api/utils/client-logs', async (req, res) => {
 
     console.log(`${colors[type] || ''}[FRONTEND ${type.toUpperCase()}] [${timestamp}]${colors.reset}`);
     console.log(messages.join(' '));
-    
+
     await saveLog(logEntry);
     res.status(204).send();
 });
@@ -242,7 +242,7 @@ app.post('/api/agent/chat', async (req, res) => {
     }
 
     console.log(`[LANGGRAPH] New message for thread: ${threadId}, Project: ${projectId}, Model requested: ${model}`);
-    
+
     try {
         const threadIdToUse = threadId || "global";
         const projectIdToUse = projectId || "global";
@@ -251,12 +251,13 @@ app.post('/api/agent/chat', async (req, res) => {
         await logAgentTrace(projectIdToUse, threadIdToUse, "user_input", { message: message });
 
         const config = { configurable: { thread_id: threadIdToUse, projectId: projectIdToUse } };
-        
-        const input = {
-            messages: [new HumanMessage(message)],
-            projectId: projectId || "global",
-            model: model || "llama3",
-            systemPrompt: systemPrompt || `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
+
+        // Buscar carpeta del proyecto para guiar al agente
+        const sessions = await loadSessions();
+        const project = sessions.projects?.find(p => p.id === projectIdToUse);
+        const projectFolder = project ? project.folder : process.cwd();
+
+        const basePrompt = systemPrompt || `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
 
 Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
 Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema RECHAZARÁ tus acciones.
@@ -266,52 +267,52 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 2. **REGLA DE HONESTIDAD**: Si una herramienta devuelve un ERROR, NO digas que la tarea está terminada. Informa del error al usuario, analiza por qué falló e intenta corregirlo.
 3. **REGLA DE ALEATORIEDAD**: Si necesitas un número aleatorio, USA SIEMPRE la herramienta RANDOM.
 4. **FORMATO**: Usa siempre las herramientas disponibles. No escribas bloques de código standard si vas a modificar archivos.`
-        };
+    };
 
-        console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
-        const stream = await agentApp.stream(input, config);
-        
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
+    console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
+    const stream = await agentApp.stream(input, config);
 
-        let lastMessageSent = "";
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-        for await (const chunk of stream) {
-            // chunk es un objeto tipo { nodeName: { stateUpdate } }
-            const nodeName = Object.keys(chunk)[0];
-            const stateUpdate = chunk[nodeName];
+    let lastMessageSent = "";
 
-            if (nodeName === 'agent' && stateUpdate.messages) {
-                const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
-                if (lastMsg && lastMsg.content && lastMsg.content !== lastMessageSent) {
-                    lastMessageSent = lastMsg.content;
-                    res.write(`data: ${JSON.stringify({ type: 'content', content: lastMsg.content, node: nodeName })}\n\n`);
-                }
-            } else if (nodeName === 'validate' && stateUpdate.messages) {
-                const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
-                if (lastMsg && lastMsg.content) {
-                    res.write(`data: ${JSON.stringify({ type: 'system', content: lastMsg.content, node: nodeName })}\n\n`);
-                }
-            } else if (nodeName === 'tools') {
-                res.write(`data: ${JSON.stringify({ type: 'system', content: '🛠️ Ejecutando herramientas...', node: nodeName })}\n\n`);
-            } else if (nodeName === 'reflect') {
-                res.write(`data: ${JSON.stringify({ type: 'system', content: '🤔 Reflexionando sobre el error...', node: nodeName })}\n\n`);
+    for await (const chunk of stream) {
+        // chunk es un objeto tipo { nodeName: { stateUpdate } }
+        const nodeName = Object.keys(chunk)[0];
+        const stateUpdate = chunk[nodeName];
+
+        if (nodeName === 'agent' && stateUpdate.messages) {
+            const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
+            if (lastMsg && lastMsg.content && lastMsg.content !== lastMessageSent) {
+                lastMessageSent = lastMsg.content;
+                res.write(`data: ${JSON.stringify({ type: 'content', content: lastMsg.content, node: nodeName })}\n\n`);
             }
+        } else if (nodeName === 'validate' && stateUpdate.messages) {
+            const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
+            if (lastMsg && lastMsg.content) {
+                res.write(`data: ${JSON.stringify({ type: 'system', content: lastMsg.content, node: nodeName })}\n\n`);
+            }
+        } else if (nodeName === 'tools') {
+            res.write(`data: ${JSON.stringify({ type: 'system', content: '🛠️ Ejecutando herramientas...', node: nodeName })}\n\n`);
+        } else if (nodeName === 'reflect') {
+            res.write(`data: ${JSON.stringify({ type: 'system', content: '🤔 Reflexionando sobre el error...', node: nodeName })}\n\n`);
         }
-        res.write('data: [DONE]\n\n');
-        res.end();
-
-    } catch (error) {
-        console.error('[LANGGRAPH ERROR]', error);
-        res.status(500).json({ error: error.message });
     }
+    res.write('data: [DONE]\n\n');
+    res.end();
+
+} catch (error) {
+    console.error('[LANGGRAPH ERROR]', error);
+    res.status(500).json({ error: error.message });
+}
 });
 
 // Native Folder Picker using PowerShell (Improved for stability and syntax)
 app.get('/api/utils/pick-folder', async (req, res) => {
     console.log('[SERVER] Solicitando selector de carpetas (NATIVE)...');
-    
+
     // Ensure statements are separated by semicolons
     const psCommand = `
         Add-Type -AssemblyName System.Windows.Forms | Out-Null;
@@ -327,7 +328,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
             $dialog.SelectedPath
         }
         $form.Dispose();
-    `.trim(); 
+    `.trim();
 
     const args = [
         '-NoProfile',
@@ -340,7 +341,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     try {
         console.log('[SERVER] Ejecutando PowerShell para selector de carpetas...');
         const { stdout, stderr } = await execFileAsync('powershell.exe', args, { timeout: 60000 });
-        
+
         const pickedPath = stdout.trim();
         console.log('[SERVER] PowerShell Result:', pickedPath || '(Cancelado)');
         res.json({ path: pickedPath });
@@ -355,14 +356,14 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
 
     const baseDir = "D:\\Programacion\\jpagents\\proyects";
     let folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
-    
+
     let folderPath = path.join(baseDir, folderName);
     let counter = 1;
 
     // Ensure unique folder name
     try {
         await fs.mkdir(baseDir, { recursive: true });
-        
+
         while (true) {
             try {
                 await fs.access(folderPath);
@@ -376,7 +377,7 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
         }
 
         await fs.mkdir(folderPath, { recursive: true });
-        
+
         // --- Create deterministic run.bat ---
         const randomPort = Math.floor(Math.random() * (60000 - 50000 + 1)) + 50000;
         const runBatContent = `@echo off
@@ -497,14 +498,14 @@ app.delete('/api/skills/:name', async (req, res) => {
 
 app.post('/api/files/list', async (req, res) => {
     let { folderPath } = req.body;
-    
+
     // Explicitly handle cases where folderPath might not be a string
     if (typeof folderPath !== 'string' || !folderPath.trim()) {
         folderPath = process.cwd();
     }
-    
+
     folderPath = path.resolve(folderPath);
-    
+
     try {
         const files = await fs.readdir(folderPath, { withFileTypes: true });
         const result = files.map(file => ({
@@ -516,14 +517,14 @@ app.post('/api/files/list', async (req, res) => {
     } catch (error) {
         if (error.code === 'ENOENT') {
             console.warn(`[SERVER] Directorio no encontrado: ${folderPath}`);
-            return res.status(404).json({ 
-                error: 'Directory not found', 
-                path: folderPath 
+            return res.status(404).json({
+                error: 'Directory not found',
+                path: folderPath
             });
         }
         console.error(`[SERVER] Error en /api/files/list [${folderPath}]:`, error);
-        res.status(500).json({ 
-            error: error.message, 
+        res.status(500).json({
+            error: error.message,
             code: error.code,
             path: folderPath
         });
@@ -544,7 +545,7 @@ app.post('/api/files/read', async (req, res) => {
     } catch (error) {
         if (error.code === 'ENOENT') {
             console.log(`[FILE] Archivo no existe (se asume nuevo): ${filePath}`);
-            return res.json({ content: '', mtime: null, size: 0 }); 
+            return res.json({ content: '', mtime: null, size: 0 });
         }
         console.error(`[FILE] Error leyendo ${filePath}:`, error.message);
         res.status(500).json({ error: error.message });
@@ -553,7 +554,7 @@ app.post('/api/files/read', async (req, res) => {
 
 app.post('/api/files/write', async (req, res) => {
     const { filePath, content } = req.body;
-    
+
     if (!filePath) {
         return res.status(400).json({ error: 'Falta filePath en el cuerpo de la solicitud' });
     }
@@ -561,22 +562,22 @@ app.post('/api/files/write', async (req, res) => {
     try {
         const resolvedPath = path.resolve(filePath);
         const dir = path.dirname(resolvedPath);
-        
+
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(resolvedPath, content || '', 'utf-8');
-        
+
         const stats = await fs.stat(resolvedPath);
         console.log(`\x1b[32m[WRITE SUCCESS]\x1b[0m Archivo escrito: ${resolvedPath} (${stats.size} bytes)`);
-        
-        res.json({ 
-            success: true, 
+
+        res.json({
+            success: true,
             savedAt: resolvedPath,
             mtime: stats.mtime,
             size: stats.size
         });
     } catch (error) {
         console.error(`\x1b[31m[WRITE ERROR]\x1b[0m Fallo al escribir en ${filePath}:`, error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: error.message,
             code: error.code,
             path: filePath
@@ -593,7 +594,7 @@ app.post('/api/files/rename', async (req, res) => {
     try {
         const resolvedOld = path.resolve(oldPath);
         const resolvedNew = path.resolve(newPath);
-        
+
         await fs.rename(resolvedOld, resolvedNew);
         console.log(`[FILE] Renombrado: ${resolvedOld} -> ${resolvedNew}`);
         res.json({ success: true });
@@ -606,12 +607,12 @@ app.post('/api/files/rename', async (req, res) => {
 app.post('/api/utils/run-script', async (req, res) => {
     const { scriptPath, cwd } = req.body;
     if (!scriptPath) return res.status(400).json({ error: 'Missing scriptPath' });
-    
+
     console.log(`[SERVER] Ejecutando script: ${scriptPath} en ${cwd}`);
-    
+
     // Abrimos una nueva terminal para que el proceso sea independiente y el usuario vea la salida
     const command = `start cmd /k "${scriptPath}"`;
-    
+
     try {
         exec(command, { cwd }, (error) => {
             if (error) {
@@ -637,7 +638,7 @@ app.post('/api/execute/node', async (req, res) => {
 
     try {
         await fs.mkdir(path.join(process.cwd(), 'scratch'), { recursive: true });
-        
+
         // Inyectamos utilidades básicas para que el agente no tenga que importar todo
         const wrappedCode = `
 import fs from 'fs';
@@ -664,25 +665,25 @@ try {
 
         await fs.writeFile(tempFilePath, wrappedCode, 'utf-8');
 
-        const { stdout, stderr } = await execFileAsync('node', [tempFilePath], { 
+        const { stdout, stderr } = await execFileAsync('node', [tempFilePath], {
             cwd: cwd || process.cwd(),
-            timeout: 30000 
+            timeout: 30000
         });
 
         res.json({ success: true, stdout, stderr });
 
     } catch (error) {
-        res.json({ 
-            success: false, 
-            error: error.message, 
-            stdout: error.stdout, 
-            stderr: error.stderr 
+        res.json({
+            success: false,
+            error: error.message,
+            stdout: error.stdout,
+            stderr: error.stderr
         });
     } finally {
         // Limpieza del archivo temporal
         try {
             await fs.unlink(tempFilePath);
-        } catch (e) {}
+        } catch (e) { }
     }
 });
 
@@ -704,16 +705,16 @@ app.post('/api/execute/command', (req, res) => {
 
     try {
         const isWin = process.platform === 'win32';
-        
+
         console.log(`[TERMINAL] [${new Date().toISOString()}] Spawning process...`);
 
         const shellCmd = isWin ? command : 'bash';
         const shellArgs = isWin ? [] : ['-c', command];
 
-        const proc = spawn(shellCmd, shellArgs, { 
+        const proc = spawn(shellCmd, shellArgs, {
             cwd: cwd || process.cwd(),
-            env: { 
-                ...process.env, 
+            env: {
+                ...process.env,
                 FORCE_COLOR: 'true',
                 PYTHONUNBUFFERED: '1'
             },
@@ -781,14 +782,14 @@ app.get('/api/execute/status/:projectId', (req, res) => {
 // SSE for Terminal Output
 app.get('/api/execute/stream/:projectId', (req, res) => {
     const { projectId } = req.params;
-    
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
     const data = activeProcesses.get(projectId);
-    
+
     const sendEvent = (type, content) => {
         res.write(`event: ${type}\ndata: ${JSON.stringify(content)}\n\n`);
     };
@@ -878,7 +879,7 @@ app.post('/api/utils/git-commit', async (req, res) => {
     try {
         // 1. Add all
         await execAsync('git add .', { cwd: folderPath });
-        
+
         // 2. Commit
         try {
             await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: folderPath });
@@ -893,14 +894,14 @@ app.post('/api/utils/git-commit', async (req, res) => {
 
         // 3. Push
         const { stdout, stderr } = await execAsync('git push', { cwd: folderPath });
-        
+
         res.json({ success: true, stdout, stderr });
     } catch (error) {
         console.error('[SERVER] Git Error:', error.message);
-        res.status(500).json({ 
-            error: error.message, 
-            stdout: error.stdout, 
-            stderr: error.stderr 
+        res.status(500).json({
+            error: error.message,
+            stdout: error.stdout,
+            stderr: error.stderr
         });
     }
 });
@@ -908,9 +909,9 @@ app.post('/api/utils/git-commit', async (req, res) => {
 app.post('/api/utils/git-reset', async (req, res) => {
     const { folderPath, target } = req.body; // target could be 'origin/main'
     if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
-    
+
     console.log(`[SERVER] Git Hard Reset en: ${folderPath} a ${target || 'HEAD'}`);
-    
+
     try {
         await execAsync('git fetch', { cwd: folderPath });
         const { stdout, stderr } = await execAsync(`git reset --hard ${target || 'HEAD'}`, { cwd: folderPath });
@@ -942,10 +943,10 @@ app.post('/api/utils/search', async (req, res) => {
             }
         });
 
-        res.json({ 
-            success: true, 
+        res.json({
+            success: true,
             matches: matches.slice(0, 10), // Limit to 10 matches to avoid overwhelming
-            totalMatches: matches.length 
+            totalMatches: matches.length
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -960,7 +961,7 @@ app.get('/api/admin/stats', async (req, res) => {
         const sessions = await loadSessions();
         const projectsCount = sessions.projects ? sessions.projects.length : 0;
         let runningAgentsCount = 0;
-        
+
         if (sessions.projects) {
             sessions.projects.forEach(p => {
                 if (p.chats) {
@@ -970,7 +971,7 @@ app.get('/api/admin/stats', async (req, res) => {
                 }
             });
         }
-        
+
         res.json({
             projectsCount,
             runningAgentsCount,
@@ -991,7 +992,7 @@ app.post('/api/admin/communicate/agent', async (req, res) => {
         const data = await loadSessions();
         const project = data.projects.find(p => p.id === projectId);
         if (!project) return res.status(404).json({ error: 'Project not found' });
-        
+
         const chat = project.chats.find(c => c.id === chatId);
         if (!chat) return res.status(404).json({ error: 'Chat/Agent not found' });
 
@@ -1001,7 +1002,7 @@ app.post('/api/admin/communicate/agent', async (req, res) => {
             timestamp: Date.now(),
             isExternal: true // Flag to identify API-sent messages
         });
-        
+
         // We set isThinking to false just in case, but we want the frontend to pick it up.
         // Mark as having a pending instruction
         chat.pendingExternalInstruction = true;
@@ -1020,14 +1021,14 @@ app.post('/api/admin/communicate/admin', async (req, res) => {
     try {
         const data = await loadSessions();
         if (!data.adminMessages) data.adminMessages = [];
-        
+
         data.adminMessages.push({
             role: 'user',
             content: message,
             timestamp: Date.now(),
             isExternal: true
         });
-        
+
         data.pendingAdminInstruction = true;
 
         await saveSessions(data);
@@ -1053,7 +1054,7 @@ app.post('/api/task/state', async (req, res) => {
     try {
         const newState = req.body;
         const collection = getCollection('task_state');
-        
+
         let history = await collection.findOne({ _id: 'current_task' });
         if (!history) history = { objective: '', steps: [], currentStep: 0 };
 
@@ -1097,7 +1098,7 @@ app.post('/api/system/status', (req, res) => {
     const { busy } = req.body;
     isAgentBusy = !!busy;
     console.log(`[SYSTEM] Agent status changed: ${isAgentBusy ? 'BUSY' : 'READY'}`);
-    
+
     // Auto-restart DISABLED as per user request
     /*
     if (!isAgentBusy && needsRestart) {
@@ -1105,7 +1106,7 @@ app.post('/api/system/status', (req, res) => {
         triggerRestart(1000);
     }
     */
-    
+
     res.json({ success: true, isAgentBusy, needsRestart });
 });
 
@@ -1117,7 +1118,7 @@ app.post('/api/system/restart', (req, res) => {
 
 function triggerRestart(delay = 2000) {
     if (restartTimer) clearTimeout(restartTimer);
-    
+
     if (isAgentBusy) {
         console.log('[SYSTEM] Restart requested but AGENT IS BUSY. Queuing restart...');
         needsRestart = true;
@@ -1127,7 +1128,7 @@ function triggerRestart(delay = 2000) {
     needsRestart = false;
     restartTimer = setTimeout(() => {
         console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
-        
+
         // Attempt graceful close before exit
         if (serverInstance) {
             serverInstance.close(() => {
@@ -1149,7 +1150,7 @@ app.post('/api/utils/open-folder', async (req, res) => {
     if (!folderPath) return res.status(400).json({ error: 'No folder path provided' });
 
     console.log(`[SYSTEM] Abriendo carpeta: ${folderPath}`);
-    
+
     try {
         const command = process.platform === 'win32' ? `explorer "${folderPath}"` : `open "${folderPath}"`;
         exec(command);

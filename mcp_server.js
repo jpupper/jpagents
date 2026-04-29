@@ -205,6 +205,19 @@ function createMCPServer() {
           await fs.mkdir(dir, { recursive: true });
           await fs.writeFile(filePath, args.content, "utf-8");
           console.log(`\x1b[32m[MCP] <<< SUCCESS:\x1b[0m write_file (${filePath})`);
+          
+          // VALIDACIÓN DE SINTAXIS
+          if (filePath.endsWith('.js')) {
+            try {
+              await execAsync(`node --check "${filePath}"`);
+              console.log(`\x1b[32m[MCP VALIDATOR] Sintaxis correcta:\x1b[0m ${filePath}`);
+            } catch (syntaxError) {
+              const errorOutput = syntaxError.stderr?.toString() || syntaxError.message;
+              console.error(`\x1b[31m[MCP VALIDATOR] Error de sintaxis en ${filePath}:\x1b[0m\n${errorOutput}`);
+              throw new Error(`SINTAXIS INVÁLIDA en ${filePath}:\n${errorOutput}`);
+            }
+          }
+
           return { content: [{ type: "text", text: `Archivo escrito con éxito en: ${filePath}` }] };
         }
         case "execute_js": {
@@ -273,6 +286,19 @@ function createMCPServer() {
             
             await fs.writeFile(filePath, newContent, "utf-8");
             console.log(`\x1b[32m[MCP] <<< SUCCESS:\x1b[0m edit_file (${filePath})`);
+            
+            // VALIDACIÓN DE SINTAXIS
+            if (filePath.endsWith('.js')) {
+              try {
+                await execAsync(`node --check "${filePath}"`);
+                console.log(`\x1b[32m[MCP VALIDATOR] Sintaxis correcta:\x1b[0m ${filePath}`);
+              } catch (syntaxError) {
+                const errorOutput = syntaxError.stderr?.toString() || syntaxError.message;
+                console.error(`\x1b[31m[MCP VALIDATOR] Error de sintaxis en ${filePath}:\x1b[0m\n${errorOutput}`);
+                throw new Error(`SINTAXIS INVÁLIDA en ${filePath}:\n${errorOutput}`);
+              }
+            }
+
             return { content: [{ type: "text", text: `Archivo editado quirúrgicamente con éxito en: ${filePath}` }] };
           } catch (err) {
             throw new Error(`No se pudo editar el archivo: ${err.message}`);
