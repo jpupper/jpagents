@@ -269,7 +269,14 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 4. **FORMATO**: Usa siempre las herramientas disponibles. No escribas bloques de código standard si vas a modificar archivos.`
     ;
 
-    console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
+        const input = {
+            messages: [{ role: "user", content: message }],
+            projectId: projectIdToUse,
+            model: model || 'llama3',
+            systemPrompt: basePrompt
+        };
+
+        console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
     const stream = await agentApp.stream(input, config);
 
     res.setHeader('Content-Type', 'text/event-stream');
