@@ -2900,8 +2900,39 @@ pre code.hljs {
 
 .chat-header-actions {
     display: flex;
-    gap: 0.5rem;
     align-items: center;
+    gap: 12px;
+}
+
+.chat-model-selector-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.chat-model-selector-container label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.model-select-compact {
+    padding: 2px 4px !important;
+    font-size: 0.75rem !important;
+    height: 28px !important;
+    min-height: unset !important;
+    border-radius: 6px !important;
+    background: transparent !important;
+    border: none !important;
+}
+
+.model-select-compact:hover {
+    box-shadow: none !important;
 }
 
 .session-summary-item .stats {
@@ -3616,4 +3647,120 @@ pre code.hljs {
 .action-group {
     animation: fadeInSlide 0.3s ease-out;
 }
+
+/* History List Styles */
+.history-list-container {
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 500px;
+    overflow-y: auto;
+    padding-right: 5px;
+}
+
+.history-item {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s ease;
+}
+
+.history-item:hover {
+    border-color: var(--primary-color);
+    transform: translateY(-2px);
+}
+
+.history-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.history-name {
+    font-weight: 600;
+    color: var(--text-color);
+    font-size: 0.95rem;
+}
+
+.history-meta {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.history-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-restore {
+    background: rgba(35, 134, 54, 0.1);
+    color: #3fb950;
+    border: 1px solid rgba(63, 185, 80, 0.3);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-restore:hover {
+    background: #238636;
+    color: white;
+}
+
+.btn-permanently-delete {
+    background: rgba(248, 81, 73, 0.1);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.3);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-permanently-delete:hover {
+    background: #da3633;
+    color: white;
+}
+
+/* --- New Delete Confirmation Styles --- */
+.btn-confirm-delete {
+    background-color: #3fb950 !important;
+    color: white !important;
+    font-weight: bold;
+    padding: 2px 8px !important;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.btn-cancel-delete {
+    background-color: #f85149 !important;
+    color: white !important;
+    font-weight: bold;
+    padding: 2px 8px !important;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.btn-delete-all.pending-delete {
+    background-color: rgba(248, 81, 73, 0.1) !important;
+    border-color: #f85149 !important;
+    color: #f85149 !important;
+}
+
+.chat-item-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+
 

@@ -28,7 +28,7 @@
           <button id="new-chat" class="btn-primary" title="Nuevo Proyecto">+</button>
           <button id="scan-folder-sidebar" class="btn-icon-sidebar"
             title="Abrir Carpeta de Proyecto Existente">📁</button>
-          <button onclick="window.deleteAllProjects()" class="btn-danger-outline" title="Borrar todos los proyectos">🗑️
+          <button onclick="window.handleDeleteAllClick(event)" class="btn-danger-outline btn-delete-all" title="Borrar todos los proyectos">🗑️
             Todo</button>
         </div>
       </div>
@@ -56,7 +56,7 @@
       <!-- VENTANA DE PROYECTO (Header) -->
       <header class="top-nav" id="ventana-de-proyecto">
         <div class="config-group">
-          <label>Modelo:</label>
+          <label>Modelo del Proyecto:</label>
           <select id="model-select">
             <option value="">Cargando modelos...</option>
           </select>
@@ -332,6 +332,12 @@
               </div>
             </div>
             <div class="chat-header-actions">
+                <div class="chat-model-selector-container">
+                    <label>Modelo:</label>
+                    <select id="agent-model-select" class="model-select-compact">
+                        <option value="">Default</option>
+                    </select>
+                </div>
                 <select id="agent-skill-select" class="skill-select">
                     <option value="">Cargar Skill...</option>
                 </select>
@@ -442,6 +448,9 @@
               </button>
               <button class="modal-side-tab" data-modal-tab="validation-loop">
                 <span>🔄 Bucle de Validación</span>
+              </button>
+              <button class="modal-side-tab" data-modal-tab="project-history">
+                <span>📜 Historial de Proyectos</span>
               </button>
             </aside>
 
@@ -573,6 +582,14 @@
                 </div>
 
                 <div class="config-field">
+                  <label>Modelo del Administrador (Orquestador)</label>
+                  <p class="field-help">Modelo que se utilizará para el chat de administración y supervisión.</p>
+                  <select id="admin-model-select" class="config-input">
+                    <option value="">Cargando modelos...</option>
+                  </select>
+                </div>
+
+                <div class="config-field">
                   <label>Modelos Recomendados</label>
                   <div class="model-quick-select" style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
                     <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-v4-pro')" style="width: auto; padding: 5px 10px;">V4 Pro ✨</button>
@@ -601,6 +618,21 @@
                       <span>Activar validación automática</span>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Project History Tab -->
+            <div id="modal-tab-project-history" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                  <h3 style="margin: 0;">📜 Historial de Proyectos</h3>
+                  <button class="btn-danger-outline" onclick="window.clearAllArchivedProjects()" style="padding: 4px 8px; font-size: 0.7rem;">Borrar Todo el Historial 🗑️</button>
+                </div>
+                <p class="field-help">Aquí puedes recuperar proyectos que eliminaste del panel principal o borrarlos permanentemente.</p>
+                <div id="history-list" class="history-list-container">
+                  <!-- Archived projects will appear here -->
+                  <p class="empty-state">Cargando historial...</p>
                 </div>
               </div>
             </div>

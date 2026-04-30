@@ -53,9 +53,15 @@ app.post('/api/admin/traces', async (req, res) => {
 app.delete('/api/admin/traces', async (req, res) => {
     try {
         const { projectId } = req.query;
+        if (projectId) {
+            console.log(`[TRACES] Eliminando trazas del proyecto: ${projectId}`);
+        } else {
+            console.log('[TRACES] Eliminando TODAS las trazas');
+        }
         await clearTraces(projectId);
         res.json({ success: true });
     } catch (e) {
+        console.error('[TRACES] Error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -212,6 +218,8 @@ app.get('/api/sessions', async (req, res) => {
 
 app.post('/api/sessions/save', async (req, res) => {
     try {
+        const projectCount = req.body.projects ? req.body.projects.length : 0;
+        console.log(`[STATE] Guardando estado: ${projectCount} proyectos`);
         await saveSessions(req.body);
         res.json({ success: true });
     } catch (e) {
@@ -222,12 +230,72 @@ app.post('/api/sessions/save', async (req, res) => {
 app.post('/api/sessions/archive', async (req, res) => {
     try {
         const { projectId, projectData } = req.body;
+        console.log(`[ARCHIVE] Archivando proyecto: ${projectId} (${projectData?.name})`);
         const collection = getCollection('archived_sessions');
+        
+        // Ensure we don't have duplicates in archive
+        await collection.deleteOne({ projectId });
+        
         await collection.insertOne({
             projectId,
             ...projectData,
             archivedAt: new Date()
         });
+        res.json({ success: true });
+    } catch (e) {
+        console.error('[ARCHIVE] Error al archivar:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/sessions/archived', async (req, res) => {
+    try {
+        const collection = getCollection('archived_sessions');
+        const archived = await collection.find({}).sort({ archivedAt: -1 }).toArray();
+        res.json(archived);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/sessions/restore', async (req, res) => {
+    try {
+        const { projectId } = req.body;
+        console.log(`[RESTORE] Restaurando proyecto: ${projectId}`);
+        const collection = getCollection('archived_sessions');
+        const project = await collection.findOne({ projectId });
+        
+        if (!project) {
+            return res.status(404).json({ error: 'Project not found in archive' });
+        }
+
+        // We return the data to the frontend so it can add it back to the active list
+        // and then we remove it from archive
+        await collection.deleteOne({ projectId });
+        
+        res.json({ success: true, project });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/sessions/archive/all', async (req, res) => {
+    try {
+        console.log(`[ARCHIVE] Borrando TODO el historial`);
+        const collection = getCollection('archived_sessions');
+        await collection.deleteMany({});
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/sessions/archive/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log(`[ARCHIVE] Eliminando permanentemente: ${id}`);
+        const collection = getCollection('archived_sessions');
+        await collection.deleteOne({ projectId: id });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });

@@ -541,22 +541,22 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 - Si el error es de JSON, asegúrate de que el campo "content" tenga los saltos de línea como \\n y las comillas escapadas.`;
 
 const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
-Tu objetivo es gestionar de principio a fin las peticiones del usuario.
+Tu objetivo es gestionar de principio a fin las peticiones del usuario, delegando tareas a agentes específicos cuando sea necesario.
 
-FLUJO PROACTIVO (REGLA DE ORO):
-Si el usuario pide "Crea un proyecto para X", NO preguntes. DEBES hacer todo en un solo paso:
-1. Crear el proyecto: [CREATE_PROJECT: Nombre]
-2. Crear al menos un agente: [CREATE_AGENT: Nombre : NombreAgente]
-3. Darle la orden de trabajo: [@NombreAgente: "Instrucción detallada para empezar"]
-
-INSTRUCCIONES DE COMANDO:
-1. Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
-2. Administración: [CREATE_PROJECT: Nombre], [CREATE_AGENT: Proyecto: Agente], [DELETE_PROJECT: ID]
+FLUJO DE TRABAJO:
+1. Analiza la petición del usuario.
+2. Si requiere un nuevo proyecto o agente, créalos.
+3. Delega la tarea al agente correspondiente.
+4. Si recibes una notificación de que un agente terminó, revisa su resultado y decide si la tarea global está completa o si se requiere otro paso.
 
 REGLAS CRÍTICAS:
-1. Sé PROACTIVO. Si falta un agente para una tarea, créalo. Si falta un proyecto, créalo.
-2. Monitorización: Mantente atento al ESTADO de los agentes. Si uno termina, revisa su trabajo y decide el siguiente paso.
-3. No te detengas hasta que el objetivo global del usuario esté CUMPLIDO.`;
+1. NO crees proyectos ni agentes de forma aleatoria. Solo hazlo si la petición del usuario lo requiere explícitamente.
+2. Ante notificaciones de "TASK COMPLETE", verifica si realmente se cumplió el objetivo antes de dar por terminada la sesión administrativa.
+3. Si el usuario te habla directamente en este chat, él manda. Si recibes una notificación del sistema, actúa como supervisor, no como ejecutor.
+
+INSTRUCCIONES DE COMANDO:
+- Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
+- Administración: [CREATE_PROJECT: Nombre], [CREATE_AGENT: Proyecto: Agente], [DELETE_PROJECT: ID]`;
 
 
 let state = {
@@ -564,6 +564,7 @@ let state = {
     activeProjectId: null,
     models: [],
     selectedModel: '',
+    selectedAdminModel: '', // Dedicated model for Admin
     mode: 'auto', // 'auto' or 'supervised'
     userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
@@ -585,6 +586,10 @@ let state = {
     },
     skillsMetadata: {} // Maps skill name to metadata object { isDefault: boolean }
 };
+
+let pendingDeletes = new Set();
+let pendingDeleteAll = false;
+let pendingDeleteAllTimeout = null;
 
 
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -738,6 +743,8 @@ async function loadData() {
             state.openrouterApiKey = data.openrouterApiKey || '';
             state.customApiBase = data.customApiBase || '';
             state.deepseekThinking = data.deepseekThinking !== undefined ? data.deepseekThinking : true;
+            state.selectedModel = data.selectedModel || '';
+            state.selectedAdminModel = data.selectedAdminModel || '';
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -1086,7 +1093,18 @@ function sanitizeProject(p) {
     };
 }
 
+let isSaving = false;
+let savePending = false;
+
 async function saveData() {
+    if (isSaving) {
+        savePending = true;
+        return;
+    }
+
+    isSaving = true;
+    savePending = false;
+
     try {
         const payload = {
             projects: state.projects,
@@ -1101,14 +1119,30 @@ async function saveData() {
             openaiApiKey: state.openaiApiKey,
             openrouterApiKey: state.openrouterApiKey,
             customApiBase: state.customApiBase,
-            deepseekThinking: state.deepseekThinking
+            deepseekThinking: state.deepseekThinking,
+            selectedModel: state.selectedModel,
+            selectedAdminModel: state.selectedAdminModel,
+            skillsMetadata: state.skillsMetadata
         };
-        await fetchWithLog(`${API_BASE}/sessions/save`, {
+        
+        console.log(`[STATE] Guardando estado... (${state.projects.length} proyectos)`);
+        const res = await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-    } catch (e) { }
+        
+        if (!res.ok) {
+            console.error("[STATE] Error al guardar el estado:", res.statusText);
+        }
+    } catch (e) {
+        console.error("[STATE] Excepción al guardar datos:", e);
+    } finally {
+        isSaving = false;
+        if (savePending) {
+            saveData();
+        }
+    }
 }
 
 async function clearClientLogs() {
@@ -1655,12 +1689,18 @@ function renderModelSelects() {
         projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
     }
 
-    const chatModelSelect = document.getElementById('chat-model-select');
-    if (chatModelSelect) {
-        chatModelSelect.innerHTML = '<option value="">Usar Proyecto</option>' + html;
+    const agentModelSelect = document.getElementById('agent-model-select');
+    if (agentModelSelect) {
+        agentModelSelect.innerHTML = '<option value="">Default (Proyecto/Global)</option>' + html;
     }
 
-    // Restore selected value if exists
+    const adminModelSelect = document.getElementById('admin-model-select');
+    if (adminModelSelect) {
+        adminModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
+        if (state.selectedAdminModel) adminModelSelect.value = state.selectedAdminModel;
+    }
+
+    // Restore selected values if exist
     if (state.selectedModel) {
         modelSelect.value = state.selectedModel;
     }
@@ -1689,6 +1729,12 @@ function renderProjectList() {
         const summonedClass = p.isNew ? 'summoned-anim' : '';
         if (p.isNew) setTimeout(() => { p.isNew = false; }, 3000); // Clear after animation
 
+        const isPending = pendingDeletes.has(p.id);
+        const deleteBtnHtml = isPending 
+            ? `<button class="btn-item-action btn-confirm-delete" title="Confirmar borrado" onclick="window.handleDeleteClick('${p.id}', event)">SI</button>
+               <button class="btn-item-action btn-cancel-delete" title="Cancelar" onclick="window.cancelDelete('${p.id}', event)">NO</button>`
+            : `<button class="btn-item-action btn-delete" title="Eliminar proyecto" onclick="window.handleDeleteClick('${p.id}', event)">🗑️</button>`;
+
         return `
             <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
                  data-id="${p.id}" 
@@ -1702,7 +1748,7 @@ function renderProjectList() {
                     <div class="dot ${isThinking ? 'busy' : ''} ${p.isCorrupted ? 'error' : ''}"></div>
                 </div>
                 <div class="chat-item-actions">
-                    <button class="btn-item-action delete" title="Eliminar proyecto" onclick="event.stopPropagation(); window.deleteProject('${p.id}')">🗑️</button>
+                    ${deleteBtnHtml}
                 </div>
             </div>
         `;
@@ -2373,60 +2419,243 @@ window.switchProject = (id, event = null) => {
     saveData();
 };
 
-window.deleteProject = async (id) => {
-    const project = state.projects.find(p => p.id === id);
-    if (!project) return;
+window.handleDeleteClick = (id, event) => {
+    if (event) event.stopPropagation();
+    if (pendingDeletes.has(id)) {
+        pendingDeletes.delete(id);
+        window.deleteProject(id);
+    } else {
+        pendingDeletes.add(id);
+        renderProjectList();
+        // Reset after 5 seconds if not clicked again
+        setTimeout(() => {
+            if (pendingDeletes.has(id)) {
+                pendingDeletes.delete(id);
+                renderProjectList();
+            }
+        }, 5000);
+    }
+};
 
-    if (!confirm(`¿Eliminar proyecto "${project.name}"? Se guardará en el historial.`)) return;
+window.cancelDelete = (id, event) => {
+    if (event) event.stopPropagation();
+    pendingDeletes.delete(id);
+    renderProjectList();
+};
+
+window.deleteProject = async (id) => {
+    try {
+        console.log(`[ARCHIVE] Iniciando proceso de archivado para proyecto: ${id}`);
+        const project = state.projects.find(p => p.id === id);
+        if (!project) {
+            console.error(`[ARCHIVE] No se encontró el proyecto con ID: ${id}`);
+            return;
+        }
+
+        // --- OPTIMISTIC UI: Remove from active list immediately ---
+        const projectIndex = state.projects.findIndex(p => p.id === id);
+        if (projectIndex !== -1) {
+            state.projects.splice(projectIndex, 1);
+        }
+
+        if (state.activeProjectId === id) {
+            state.activeProjectId = state.projects.length > 0 ? state.projects[0].id : null;
+            if (state.activeProjectId) {
+                switchProject(state.activeProjectId);
+            } else {
+                renderProjectList();
+                renderTabs();
+            }
+        } else {
+            renderProjectList();
+        }
+
+        adminLog(`⏳ Borrando proyecto <strong>${project.name}</strong>...`);
+
+        // --- SERVER SYNC ---
+        try {
+            // 1. Send to archive collection in DB
+            console.log(`[DELETE] Enviando a archivar proyecto: ${id}`);
+            const archiveRes = await fetch(`${API_BASE}/sessions/archive`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: id, projectData: project })
+            });
+            console.log(`[DELETE] Resultado archivo: ${archiveRes.status}`);
+
+            // 2. Clear traces
+            await fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
+            
+            // 3. Save the new global state (without this project)
+            await saveData();
+            adminLog(`✅ Proyecto <strong>${project.name}</strong> eliminado correctamente.`);
+        } catch (serverError) {
+            console.error("[DELETE] Error en la sincronización con el servidor:", serverError);
+            adminLog(`⚠️ Error al sincronizar borrado con el servidor.`);
+        }
+
+    } catch (e) {
+        console.error("[DELETE] Error crítico en deleteProject:", e);
+    }
+};
+
+window.renderHistoryList = async () => {
+    const historyContainer = document.getElementById('history-list');
+    if (!historyContainer) return;
+
+    historyContainer.innerHTML = '<p class="empty-state">Cargando historial...</p>';
 
     try {
-        // Archive on server before removing locally
-        await fetch(`${API_BASE}/sessions/archive`, {
+        const res = await fetch(`${API_BASE}/sessions/archived`);
+        const archivedProjects = await res.json();
+
+        if (!archivedProjects || archivedProjects.length === 0) {
+            historyContainer.innerHTML = '<p class="empty-state">El historial está vacío.</p>';
+            return;
+        }
+
+        historyContainer.innerHTML = archivedProjects.map(p => {
+            const date = p.archivedAt ? new Date(p.archivedAt).toLocaleString() : 'Fecha desconocida';
+            return `
+                <div class="history-item">
+                    <div class="history-info">
+                        <span class="history-name">📁 ${p.name}</span>
+                        <span class="history-meta">Archivado el: ${date} | ID: ${p.projectId}</span>
+                        <span class="history-meta">Folder: ${p.folder || 'N/A'}</span>
+                    </div>
+                    <div class="history-actions">
+                        <button class="btn-restore" onclick="window.restoreProject('${p.projectId}')">Restaurar 🔄</button>
+                        <button class="btn-permanently-delete" onclick="window.permanentlyDeleteProject('${p.projectId}')">Eliminar permanentemente 🗑️</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        console.error("Error loading history:", e);
+        historyContainer.innerHTML = '<p class="empty-state error">Error al cargar el historial.</p>';
+    }
+};
+
+window.restoreProject = async (id) => {
+    try {
+        console.log(`[RESTORE] Restaurando proyecto: ${id}`);
+        const res = await fetch(`${API_BASE}/sessions/restore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId: id, projectData: project })
+            body: JSON.stringify({ projectId: id })
         });
+        const data = await res.json();
 
-        // Clear traces on backend
-        fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
-    } catch (e) {
-        console.error("Error archiving project on backend, proceeding with local deletion:", e);
-    }
-
-    // Always delete locally even if backend fails
-    state.projects = state.projects.filter(p => p.id !== id);
-    if (state.activeProjectId === id) {
-        if (state.projects.length > 0) {
-            switchProject(state.projects[0].id);
-        } else {
-            state.activeProjectId = null;
+        if (data.success && data.project) {
+            // Add back to projects
+            state.projects.push(sanitizeProject(data.project));
+            state.activeProjectId = id;
+            
+            await saveData();
             renderProjectList();
-            renderTabs();
+            switchProject(id);
+            window.renderHistoryList(); // Refresh the list in the modal
+            adminLog(`✅ Proyecto <strong>${data.project.name}</strong> restaurado con éxito.`);
+        } else {
+            alert("Error al restaurar: " + (data.error || "Desconocido"));
         }
-    } else {
-        renderProjectList();
+    } catch (e) {
+        console.error("Error restoring project:", e);
+        alert("Error crítico al restaurar proyecto.");
     }
-    saveData();
-    adminLog(`🗑️ Proyecto <strong>${project.name}</strong> movido al historial.`);
+};
+
+window.permanentlyDeleteProject = async (id) => {
+    if (!confirm("¿Estás seguro de que quieres eliminar este proyecto permanentemente? Esta acción NO se puede deshacer.")) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/sessions/archive/${id}`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            window.renderHistoryList();
+            adminLog(`🗑️ Proyecto eliminado permanentemente del historial.`);
+        }
+    } catch (e) {
+        console.error("Error permanently deleting project:", e);
+    }
 };
 
 
-window.deleteAllProjects = async () => {
-    if (!confirm('¿Estás seguro de que quieres borrar TODOS los proyectos? Esta acción no se puede deshacer.')) return;
+window.handleDeleteAllClick = (event) => {
+    if (event) event.stopPropagation();
+    const btn = document.querySelector('.btn-delete-all');
+    
+    if (pendingDeleteAll) {
+        window.deleteAllProjects();
+        pendingDeleteAll = false;
+        if (btn) btn.innerHTML = '🗑️ Todo';
+        if (pendingDeleteAllTimeout) clearTimeout(pendingDeleteAllTimeout);
+    } else {
+        pendingDeleteAll = true;
+        if (btn) {
+            btn.innerHTML = '<span style="color:#ff4d4d; font-weight:bold;">SI?</span>';
+            btn.classList.add('pending-delete');
+        }
+        pendingDeleteAllTimeout = setTimeout(() => {
+            pendingDeleteAll = false;
+            if (btn) {
+                btn.innerHTML = '🗑️ Todo';
+                btn.classList.remove('pending-delete');
+            }
+        }, 5000);
+    }
+};
 
-    // Clear all traces on backend
-    fetch(`${API_BASE}/admin/traces`, { method: 'DELETE' }).catch(e => console.error(e));
+window.deleteAllProjects = async () => {
+    adminLog(`⏳ Borrando todos los proyectos (${state.projects.length})...`);
+
+    // Archive each project
+    for (const project of state.projects) {
+        try {
+            await fetch(`${API_BASE}/sessions/archive`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: project.id, projectData: project })
+            });
+            await fetch(`${API_BASE}/admin/traces?projectId=${project.id}`, { method: 'DELETE' }).catch(() => {});
+        } catch (e) {
+            console.error(`Error archiving project ${project.id}:`, e);
+        }
+    }
 
     state.projects = [];
     state.activeProjectId = null;
     renderProjectList();
     renderTabs();
-    saveData();
+    await saveData();
+    adminLog(`🗑️ Todos los proyectos han sido eliminados del panel principal.`);
+};
+
+window.clearAllArchivedProjects = async () => {
+    // No alert as requested, but maybe a double-click on the button in UI
+    try {
+        const res = await fetch(`${API_BASE}/sessions/archive/all`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            window.renderHistoryList();
+            adminLog(`🗑️ Todo el historial ha sido borrado definitivamente.`);
+        }
+    } catch (e) {
+        console.error("Error clearing all history:", e);
+    }
 };
 
 function renderMessages(shouldRenderLayout = true) {
     const chat = getActiveChat();
     if (!chat) return;
+
+    // Sync agent-specific model selector
+    const agentModelSelect = document.getElementById('agent-model-select');
+    if (agentModelSelect) {
+        agentModelSelect.value = chat.model || "";
+    }
 
     let thinkingHtml = '';
     if (chat.isThinking) {
@@ -2850,7 +3079,17 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     await setAgentActive(true);
     await clearClientLogs();
 
-    updateThinking(chat, true, "Esperando respuesta", "Ollama está procesando...");
+    const thinkingPhrases = [
+        "Analizando solicitud...",
+        "Consultando redes neuronales...",
+        "Diseñando solución...",
+        "Reflexionando...",
+        "Evaluando posibilidades...",
+        "Sintetizando respuesta...",
+        "Pensando profundamente..."
+    ];
+    const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
+    updateThinking(chat, true, "Esperando respuesta", randomPhrase);
     chat.isStopped = false;
     renderMessages();
 
@@ -3708,7 +3947,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         const response = await fetch(`${OLLAMA_BASE}/chat`, {
             method: 'POST',
             body: JSON.stringify({
-                model: modelSelect.value,
+                model: state.selectedAdminModel || modelSelect.value,
                 messages: messages,
                 stream: true
             })
@@ -5283,6 +5522,13 @@ function setupEventListeners() {
         saveData();
         checkVisionCapability();
         
+        // Sync with active chat so the selection is used immediately
+        const chat = getActiveChat();
+        if (chat) {
+            chat.model = e.target.value;
+            saveData();
+        }
+
         // Mostrar/ocultar toggle de thinking según el modelo
         if (thinkingToggleChat) {
             const container = document.getElementById('thinking-toggle-container');
@@ -5305,7 +5551,7 @@ function setupEventListeners() {
         };
     }
 
-    const chatModelSelect = document.getElementById('chat-model-select');
+    const chatModelSelect = document.getElementById('agent-model-select');
     if (chatModelSelect) {
         chatModelSelect.onchange = (e) => {
             const chat = getActiveChat();
@@ -5313,6 +5559,14 @@ function setupEventListeners() {
                 chat.model = e.target.value;
                 saveData();
             }
+        };
+    }
+
+    const adminModelSelect = document.getElementById('admin-model-select');
+    if (adminModelSelect) {
+        adminModelSelect.onchange = (e) => {
+            state.selectedAdminModel = e.target.value;
+            saveData();
         };
     }
 
@@ -5439,6 +5693,10 @@ function setupEventListeners() {
             document.querySelectorAll('.modal-tab-content').forEach(pane => pane.classList.add('hidden'));
             const targetPane = document.getElementById(`modal-tab-${target}`);
             if (targetPane) targetPane.classList.remove('hidden');
+
+            if (target === 'project-history') {
+                window.renderHistoryList();
+            }
         };
     });
 
@@ -5475,6 +5733,12 @@ function setupEventListeners() {
         if (orKeyInput) orKeyInput.value = state.openrouterApiKey || '';
         if (customBaseInput) customBaseInput.value = state.customApiBase || '';
         if (dsThinkingToggle) dsThinkingToggle.checked = state.deepseekThinking;
+
+        // If History tab is active, refresh it
+        const activeTab = document.querySelector('.modal-side-tab.active');
+        if (activeTab && activeTab.dataset.modalTab === 'project-history') {
+            window.renderHistoryList();
+        }
 
         globalSettingsModal.classList.remove('hidden');
     };
