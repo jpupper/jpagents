@@ -283,7 +283,7 @@ app.post('/api/session-changes/clear', async (req, res) => {
 // --- LangGraph Chat Endpoint ---
 
 app.post('/api/agent/chat', async (req, res) => {
-    const { threadId, projectId, message, model, systemPrompt } = req.body;
+    const { threadId, projectId, message, model, systemPrompt, apiKey, baseUrl, useThinking, history } = req.body;
     if (!threadId || !message) {
         return res.status(400).json({ error: 'Missing threadId or message' });
     }
@@ -321,10 +321,13 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
     ;
 
         const input = {
-            messages: [{ role: "user", content: message }],
+            messages: history && history.length > 0 ? history : [{ role: "user", content: message }],
             projectId: projectIdToUse,
             model: model || 'llama3',
-            systemPrompt: basePrompt
+            systemPrompt: basePrompt,
+            apiKey: apiKey,
+            baseUrl: baseUrl,
+            useThinking: useThinking === true
         };
 
         console.log(`[LANGGRAPH] Invoking graph with model: ${input.model}`);
@@ -343,9 +346,18 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 
         if (nodeName === 'agent' && stateUpdate.messages) {
             const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];
-            if (lastMsg && lastMsg.content && lastMsg.content !== lastMessageSent) {
-                lastMessageSent = lastMsg.content;
-                res.write(`data: ${JSON.stringify({ type: 'content', content: lastMsg.content, node: nodeName })}\n\n`);
+            const content = lastMsg.content;
+            const toolCalls = lastMsg.tool_calls;
+            const reasoning = lastMsg.additional_kwargs ? lastMsg.additional_kwargs.reasoning_content : null;
+            
+            if (reasoning) {
+                res.write(`data: ${JSON.stringify({ type: 'reasoning', content: reasoning, node: nodeName })}\n\n`);
+            }
+
+            if ((content && content !== lastMessageSent) || (toolCalls && toolCalls.length > 0)) {
+                if (content) lastMessageSent = content;
+                const contentText = typeof content === 'string' ? content : (content ? JSON.stringify(content) : "[EJECUTANDO HERRAMIENTAS...]");
+                res.write(`data: ${JSON.stringify({ type: 'content', content: contentText, node: nodeName })}\n\n`);
             }
         } else if (nodeName === 'validate' && stateUpdate.messages) {
             const lastMsg = stateUpdate.messages[stateUpdate.messages.length - 1];

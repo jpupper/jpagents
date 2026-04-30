@@ -111,9 +111,10 @@ export const validateObjective = async (state, config) => {
 
     const lastMessage = state.messages[state.messages.length - 1];
     
+    const lastContent = typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content);
     const validationPrompt = `
     OBJETIVO DEL USUARIO: "${state.objective}"
-    ÚLTIMA RESPUESTA DEL AGENTE: "${lastMessage.content}"
+    ÚLTIMA RESPUESTA DEL AGENTE: "${lastContent}"
     
     ¿Se ha cumplido el OBJETIVO PRINCIPAL del usuario de forma completa? 
     Responde ÚNICAMENTE con 'SÍ' o 'NO'. 
@@ -174,7 +175,10 @@ export const validateFilesCreated = async (state, config) => {
     Analiza los siguientes mensajes del asistente y determina qué archivos (con sus rutas o nombres) se comprometió a CREAR o MODIFICAR para cumplir el objetivo.
     
     Mensajes del Asistente:
-    ${state.messages.filter(m => m.role === "assistant" || m._getType?.() === "ai").map(m => m.content).join("\n---\n")}
+    ${state.messages.filter(m => m.role === "assistant" || m._getType?.() === "ai").map(m => {
+        if (typeof m.content === 'string') return m.content;
+        return JSON.stringify(m.content);
+    }).join("\n---\n")}
     
     Responde ÚNICAMENTE con una lista de rutas de archivos separadas por comas, sin texto adicional. Si no mencionó archivos, responde vacío.
     Ejemplo: index.html, style.css, sketch.js

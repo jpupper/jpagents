@@ -60,6 +60,11 @@
           <select id="model-select">
             <option value="">Cargando modelos...</option>
           </select>
+          
+          <div id="thinking-toggle-container" class="thinking-toggle-chat" title="Activa el razonamiento profundo (solo modelos DeepSeek V4/R1)">
+            <input type="checkbox" id="deepseek-thinking-toggle-chat" checked />
+            <label for="deepseek-thinking-toggle-chat">🧠 Thinking</label>
+          </div>
         </div>
         <div class="config-group folder-selector">
           <label>Directorio:</label>
@@ -432,6 +437,9 @@
               <button class="modal-side-tab" data-modal-tab="skills">
                 <span>🧠 Skills / Habilidades</span>
               </button>
+              <button class="modal-side-tab" data-modal-tab="models-api">
+                <span>🤖 Modelos / API</span>
+              </button>
               <button class="modal-side-tab" data-modal-tab="validation-loop">
                 <span>🔄 Bucle de Validación</span>
               </button>
@@ -532,6 +540,47 @@
                       <p>Selecciona un skill o crea uno nuevo.</p>
                     </div>
                   </main>
+                </div>
+              </div>
+            </div>
+
+            <div id="modal-tab-models-api" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <h3>🤖 Configuración de Modelos y APIs</h3>
+                <p class="field-help">Configura las llaves de API para usar modelos externos como DeepSeek o OpenAI.</p>
+                
+                <div class="config-field">
+                  <label>DeepSeek API Key</label>
+                  <input type="password" id="deepseek-api-key" class="config-input" placeholder="sk-..." />
+                  <p class="field-help">Obtén tu llave en <a href="https://platform.deepseek.com/" target="_blank">platform.deepseek.com</a></p>
+                </div>
+
+                <div class="config-field">
+                  <label>OpenRouter API Key (Recomendado)</label>
+                  <input type="password" id="openrouter-api-key" class="config-input" placeholder="sk-or-v1-..." />
+                  <p class="field-help">Acceso a Claude 3.5, Llama 3.1 y más. <a href="https://openrouter.ai/" target="_blank">openrouter.ai</a></p>
+                </div>
+
+                <div class="config-field">
+                    <label>OpenAI API Key (Opcional)</label>
+                    <input type="password" id="openai-api-key" class="config-input" placeholder="sk-..." />
+                </div>
+
+                <div class="config-field">
+                    <label>Custom OpenAI-Compatible API Base URL (Opcional)</label>
+                    <input type="text" id="custom-api-base" class="config-input" placeholder="https://api.yourprovider.com/v1" />
+                    <p class="field-help">Si usas un proveedor diferente a DeepSeek u OpenAI.</p>
+                </div>
+
+                <div class="config-field">
+                  <label>Modelos Recomendados</label>
+                  <div class="model-quick-select" style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-v4-pro')" style="width: auto; padding: 5px 10px;">V4 Pro ✨</button>
+                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-v4-flash')" style="width: auto; padding: 5px 10px;">V4 Flash ⚡</button>
+                    <button class="btn-primary-sm" onclick="window.addModelToSelect('anthropic/claude-3.5-sonnet')" style="width: auto; padding: 5px 10px;">Claude 3.5 🧠</button>
+                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-chat')" style="width: auto; padding: 5px 10px;">Chat (V3)</button>
+                    <button class="btn-primary-sm" onclick="window.addModelToSelect('gpt-4o')" style="width: auto; padding: 5px 10px;">GPT-4o</button>
+                  </div>
                 </div>
               </div>
             </div>

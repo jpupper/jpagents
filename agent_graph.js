@@ -1,5 +1,6 @@
 import { StateGraph, Annotation, MessagesAnnotation } from "@langchain/langgraph";
 import { ChatOllama } from "@langchain/ollama";
+import { ChatOpenAI } from "@langchain/openai";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { tool } from "@langchain/core/tools";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
@@ -38,9 +39,16 @@ async function callMCP(name, args, threadId, projectId = "global") {
     if (data.error) {
         result = `ERROR: ${data.error.message}`;
     } else if (data.result.isError) {
-        result = `ERROR DE HERRAMIENTA: ${data.result.content.map(c => c.text).join("\n")}`;
+        const contentText = data.result.content.map(c => {
+            if (typeof c.text === 'object') return JSON.stringify(c.text, null, 2);
+            return String(c.text || "");
+        }).join("\n");
+        result = `ERROR DE HERRAMIENTA: ${contentText}`;
     } else {
-        result = data.result.content.map(c => c.text).join("\n");
+        result = data.result.content.map(c => {
+            if (typeof c.text === 'object') return JSON.stringify(c.text, null, 2);
+            return String(c.text || "");
+        }).join("\n");
     }
 
     // Log trace for tool result
@@ -102,18 +110,42 @@ const listFiles = tool(
 );
 
 const readFile = tool(
-    async ({ path: requestedPath }, config) => {
+    async ({ path: requestedPath, startLine, endLine }, config) => {
         try {
             const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
-            return await callMCP("read_file", { path: finalPath }, config.configurable.thread_id, config.configurable.projectId);
+            return await callMCP("read_file", { path: finalPath, startLine, endLine }, config.configurable.thread_id, config.configurable.projectId);
         } catch (err) {
             return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
         }
     },
     {
         name: "read_file",
-        description: "Lee el contenido completo de un archivo",
-        schema: z.object({ path: z.string() }),
+        description: "Lee el contenido de un archivo (total o parcial)",
+        schema: z.object({ 
+            path: z.string(),
+            startLine: z.number().optional().describe("Línea inicial (1-indexed)"),
+            endLine: z.number().optional().describe("Línea final (1-indexed)")
+        }),
+    }
+);
+
+const searchFiles = tool(
+    async ({ path: requestedPath, query, extensions }, config) => {
+        try {
+            const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
+            return await callMCP("search_files", { path: finalPath, query, extensions }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "search_files",
+        description: "Busca un término en todos los archivos del proyecto",
+        schema: z.object({ 
+            path: z.string().describe("Directorio base (usar './' para raíz)"), 
+            query: z.string().describe("Término a buscar"),
+            extensions: z.array(z.string()).optional().describe("Extensiones opcionales")
+        }),
     }
 );
 
@@ -258,7 +290,7 @@ const summarizeRepo = tool(
     }
 );
 
-const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo];
+const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles];
 const toolNode = new ToolNode(tools);
 
 // Define el esquema de estado del grafo
@@ -269,6 +301,15 @@ const AgentState = Annotation.Root({
   }),
   model: Annotation({
     reducer: (x, y) => y ?? x ?? "llama3",
+  }),
+  apiKey: Annotation({
+    reducer: (x, y) => y ?? x ?? null,
+  }),
+  baseUrl: Annotation({
+    reducer: (x, y) => y ?? x ?? null,
+  }),
+  useThinking: Annotation({
+    reducer: (x, y) => y ?? x ?? false,
   }),
   systemPrompt: Annotation({
     reducer: (x, y) => y ?? x ?? "Eres un asistente de programación experto.",
@@ -317,18 +358,59 @@ const callModel = async (state, config) => {
 
     let systemPrompt = state.systemPrompt || "Eres un asistente de programación experto.";
     
-    const model = new ChatOllama({
-        baseUrl: "http://localhost:11434",
-        model: modelName,
-        temperature: 0,
-    }).bindTools(tools);
+    let model;
+    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+        const url = state.baseUrl || (modelName.startsWith("deepseek") ? "https://api.deepseek.com" : undefined);
+        console.log(`[GRAPH] Instantiating ChatOpenAI: Model=${modelName}, BaseURL=${url}, KeyLength=${state.apiKey ? state.apiKey.length : 0}`);
+        
+        model = new ChatOpenAI({
+            apiKey: state.apiKey,
+            configuration: {
+                baseURL: url,
+            },
+            modelName: modelName,
+            temperature: 0,
+            model_kwargs: modelName.startsWith("deepseek") ? {
+                extra_body: {
+                    thinking: { type: state.useThinking ? "enabled" : "disabled" }
+                }
+            } : {}
+        }).bindTools(tools);
+    } else {
+        console.log(`[GRAPH] Instantiating ChatOllama: Model=${modelName}`);
+        model = new ChatOllama({
+            baseUrl: "http://localhost:11434",
+            model: modelName,
+            temperature: 0,
+        }).bindTools(tools);
+    }
 
+    // Pre-procesar mensajes para DeepSeek: asegurar que reasoning_content se envíe de vuelta
     const messages = [
         { role: "system", content: systemPrompt },
-        ...state.messages
+        ...state.messages.map(m => {
+            const msg = { role: m.role || (m._getContent ? "assistant" : "user"), content: m.content };
+            // Si es un mensaje de asistente con razonamiento previo, incluirlo
+            if (m.additional_kwargs && m.additional_kwargs.reasoning_content) {
+                msg.reasoning_content = m.additional_kwargs.reasoning_content;
+            }
+            if (m.tool_calls) msg.tool_calls = m.tool_calls;
+            return msg;
+        })
     ];
 
-    const response = await model.invoke(messages);
+    let response;
+    try {
+        response = await model.invoke(messages);
+    } catch (error) {
+        console.error(`[GRAPH ERROR] Error invoking model ${modelName}:`, error);
+        return { 
+            messages: [{ 
+                role: "assistant", 
+                content: `❌ Error al llamar al modelo ${modelName}: ${error.message}. Por favor, verifica tu API Key y configuración de red.` 
+            }] 
+        };
+    }
     
     // Fallback para modelos que no usan tool_calls nativos (como Ollama a veces)
     if (!response.tool_calls || response.tool_calls.length === 0) {
@@ -493,11 +575,28 @@ const reflectOnError = async (state, config) => {
     Si el error es de JSON, asegúrate de escapar correctamente los caracteres especiales.
     SIEMPRE reporta el error al usuario si no puedes solucionarlo tras 2 intentos.`;
 
-    const model = new ChatOllama({
-        baseUrl: "http://localhost:11434",
-        model: modelName,
-        temperature: 0.1,
-    });
+    let model;
+    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+        model = new ChatOpenAI({
+            apiKey: state.apiKey,
+            configuration: {
+                baseURL: state.baseUrl || (modelName.startsWith("deepseek") ? "https://api.deepseek.com" : undefined),
+            },
+            modelName: modelName,
+            temperature: 0.1,
+            model_kwargs: modelName.startsWith("deepseek") ? {
+                extra_body: {
+                    thinking: { type: "disabled" }
+                }
+            } : {}
+        });
+    } else {
+        model = new ChatOllama({
+            baseUrl: "http://localhost:11434",
+            model: modelName,
+            temperature: 0.1,
+        });
+    }
 
     const response = await model.invoke([
         { role: "system", content: "Eres un experto en debugging. Tu tarea es analizar errores y dar instrucciones precisas al agente para corregirlos. Sé breve y directo." },

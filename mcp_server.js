@@ -50,8 +50,16 @@ function createMCPServer() {
         },
         {
           name: "read_file",
-          description: "Lee el contenido completo de un archivo",
-          inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          description: "Lee el contenido de un archivo. Puede leer el archivo completo o un fragmento específico por líneas.",
+          inputSchema: { 
+            type: "object", 
+            properties: { 
+              path: { type: "string", description: "Ruta del archivo" },
+              startLine: { type: "number", description: "Línea inicial (1-indexed)" },
+              endLine: { type: "number", description: "Línea final (1-indexed)" }
+            }, 
+            required: ["path"] 
+          },
         },
         {
           name: "write_file",
@@ -100,6 +108,19 @@ function createMCPServer() {
               replacement: { type: "string", description: "El nuevo texto que reemplazará al target" }
             }, 
             required: ["path", "target", "replacement"] 
+          },
+        },
+        {
+          name: "search_files",
+          description: "Busca un término o palabra clave en todos los archivos de un directorio y subdirectorios.",
+          inputSchema: { 
+            type: "object", 
+            properties: { 
+              path: { type: "string", description: "Directorio base para la búsqueda" },
+              query: { type: "string", description: "Término de búsqueda" },
+              extensions: { type: "array", items: { type: "string" }, description: "Extensiones de archivo a incluir (ej: ['.js', '.css'])" }
+            }, 
+            required: ["path", "query"] 
           },
         }
       ],
@@ -192,10 +213,69 @@ function createMCPServer() {
           const filePath = await validatePath(args.path);
           try {
             const content = await fs.readFile(filePath, "utf-8");
+            const lines = content.split(/\r?\n/);
+            
+            if (args.startLine !== undefined || args.endLine !== undefined) {
+              const start = (args.startLine || 1) - 1;
+              const end = args.endLine || lines.length;
+              const fragment = lines.slice(start, end).join("\n");
+              const totalLines = lines.length;
+              return { 
+                content: [{ 
+                  type: "text", 
+                  text: `[Líneas ${start + 1}-${Math.min(end, totalLines)} de ${totalLines}]\n${fragment}` 
+                }] 
+              };
+            }
+            
             return { content: [{ type: "text", text: content }] };
           } catch (err) {
             throw new Error(`No se pudo leer el archivo: ${err.message}`);
           }
+        }
+        case "search_files": {
+          if (!args.path) throw new Error("Parámetro 'path' es obligatorio para search_files.");
+          if (!args.query) throw new Error("Parámetro 'query' es obligatorio para search_files.");
+          
+          const basePath = await validatePath(args.path);
+          const results = [];
+          
+          const searchInDir = async (dir) => {
+            const files = await fs.readdir(dir, { withFileTypes: true });
+            for (const file of files) {
+              const fullPath = path.join(dir, file.name);
+              if (file.isDirectory()) {
+                if (file.name === 'node_modules' || file.name.startsWith('.') || file.name === 'dist') continue;
+                await searchInDir(fullPath);
+              } else {
+                if (args.extensions && !args.extensions.some(ext => file.name.endsWith(ext))) continue;
+                
+                try {
+                  const content = await fs.readFile(fullPath, "utf-8");
+                  const lines = content.split(/\r?\n/);
+                  lines.forEach((line, index) => {
+                    if (line.toLowerCase().includes(args.query.toLowerCase())) {
+                      results.push({
+                        file: path.relative(basePath, fullPath),
+                        line: index + 1,
+                        content: line.trim()
+                      });
+                    }
+                  });
+                } catch (e) { /* Saltar archivos binarios o ilegibles */ }
+              }
+              if (results.length > 50) break; // Límite de resultados
+            }
+          };
+          
+          await searchInDir(basePath);
+          
+          if (results.length === 0) {
+            return { content: [{ type: "text", text: `No se encontraron coincidencias para "${args.query}" en ${basePath}` }] };
+          }
+          
+          const output = results.map(r => `${r.file}:${r.line}: ${r.content}`).join("\n");
+          return { content: [{ type: "text", text: `Resultados de búsqueda para "${args.query}":\n\n${output}` }] };
         }
         case "write_file": {
           if (!args.path) throw new Error("Parámetro 'path' es obligatorio para write_file.");

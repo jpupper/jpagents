@@ -72,7 +72,29 @@ let activeMatrix = null;
 // -------------------------------
 
 // Configure marked
+const renderer = new marked.Renderer();
+renderer.code = function(code, language) {
+    // Robustness: ensure language and code are strings
+    const langStr = (typeof language === 'string') ? language : (typeof language === 'object' ? JSON.stringify(language) : '');
+    const codeStr = (typeof code === 'string') ? code : (typeof code === 'object' ? JSON.stringify(code, null, 2) : String(code));
+
+    const filename = (langStr && langStr.includes('.')) ? langStr : '';
+    const displayLang = filename ? filename : (langStr || 'text');
+    const escapedCode = escapeHtml(codeStr);
+    
+    return `
+        <details class="file-collapsible" ${filename ? '' : 'open'}>
+            <summary>
+                ${filename ? `<strong>${filename}</strong>` : `Código (${displayLang})`}
+                <span class="expand-icon">▶</span>
+            </summary>
+            <pre><code class="language-${displayLang}">${escapedCode}</code></pre>
+        </details>
+    `;
+};
+
 marked.setOptions({
+    renderer: renderer,
     breaks: true,
     gfm: true,
     mangle: false,
@@ -546,6 +568,11 @@ let state = {
     userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
     improverPrompt: "",
+    deepseekApiKey: '',
+    openaiApiKey: '',
+    openrouterApiKey: '',
+    customApiBase: '',
+    deepseekThinking: true,
     adminMessages: [],
     adminIsThinking: false,
     adminIsStopped: false,
@@ -706,6 +733,11 @@ async function loadData() {
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
             state.skillsMetadata = data.skillsMetadata || {};
+            state.deepseekApiKey = data.deepseekApiKey || '';
+            state.openaiApiKey = data.openaiApiKey || '';
+            state.openrouterApiKey = data.openrouterApiKey || '';
+            state.customApiBase = data.customApiBase || '';
+            state.deepseekThinking = data.deepseekThinking !== undefined ? data.deepseekThinking : true;
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -1064,7 +1096,12 @@ async function saveData() {
             activeProjectId: state.activeProjectId,
             adminMessages: state.adminMessages,
             maxValidationRetries: state.maxValidationRetries,
-            autoValidation: state.autoValidation
+            autoValidation: state.autoValidation,
+            deepseekApiKey: state.deepseekApiKey,
+            openaiApiKey: state.openaiApiKey,
+            openrouterApiKey: state.openrouterApiKey,
+            customApiBase: state.customApiBase,
+            deepseekThinking: state.deepseekThinking
         };
         await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
@@ -1568,27 +1605,67 @@ async function fetchModels() {
         const res = await fetchWithLog(`${API_BASE}/models`);
         const data = await res.json();
 
-        state.models = data.models || [];
-        const modelOptions = state.models.map(m => {
-            const isVision = m.details && m.details.families && m.details.families.includes('clip');
-            return `<option value="${m.name}" data-vision="${isVision}">${m.name} ${isVision ? '👁️' : ''}</option>`;
-        }).join('');
+        // Local Ollama models
+        state.ollamaModels = data.models || [];
+        
+        renderModelSelects();
+    } catch (e) {
+        console.error("Error fetching Ollama models:", e);
+        renderModelSelects(); // Render even if Ollama fails (to show cloud models)
+    }
+}
 
-        modelSelect.innerHTML = modelOptions;
+function renderModelSelects() {
+    const cloudModels = [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro ✨', type: 'cloud', provider: 'deepseek' },
+        { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash ⚡', type: 'cloud', provider: 'deepseek' },
+        { id: 'deepseek-chat', name: 'DeepSeek Chat (V3) ☁️', type: 'cloud', provider: 'deepseek' },
+        { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner (R1) ☁️', type: 'cloud', provider: 'deepseek' },
+        { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet 🧠', type: 'cloud', provider: 'openrouter' },
+        { id: 'gpt-4o', name: 'GPT-4o ☁️', type: 'cloud', provider: 'openai' },
+        { id: 'gpt-4o-mini', name: 'GPT-4o Mini ☁️', type: 'cloud', provider: 'openai' }
+    ];
 
-        const projectModelSelect = document.getElementById('project-model-select');
-        if (projectModelSelect) {
-            projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + modelOptions;
-        }
+    const localModels = (state.ollamaModels || []).map(m => ({
+        id: m.name,
+        name: `${m.name} 🏠`,
+        type: 'local',
+        vision: m.details?.families?.includes('clip')
+    }));
 
-        const chatModelSelect = document.getElementById('chat-model-select');
-        if (chatModelSelect) {
-            chatModelSelect.innerHTML = '<option value="">Usar Proyecto</option>' + modelOptions;
-        }
+    const createOptions = (models) => models.map(m => 
+        `<option value="${m.id}" data-type="${m.type}" data-vision="${m.vision || false}" class="model-opt-${m.type}">
+            ${m.name} ${m.vision ? '👁️' : ''}
+        </option>`
+    ).join('');
 
-        // Initial vision check
-        checkVisionCapability();
-    } catch (e) { }
+    const html = `
+        <optgroup label="☁️ MODELOS CLOUD (API)">
+            ${createOptions(cloudModels)}
+        </optgroup>
+        <optgroup label="🏠 MODELOS LOCALES (Ollama)">
+            ${createOptions(localModels)}
+        </optgroup>
+    `;
+
+    modelSelect.innerHTML = html;
+
+    const projectModelSelect = document.getElementById('project-model-select');
+    if (projectModelSelect) {
+        projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
+    }
+
+    const chatModelSelect = document.getElementById('chat-model-select');
+    if (chatModelSelect) {
+        chatModelSelect.innerHTML = '<option value="">Usar Proyecto</option>' + html;
+    }
+
+    // Restore selected value if exists
+    if (state.selectedModel) {
+        modelSelect.value = state.selectedModel;
+    }
+
+    checkVisionCapability();
 }
 
 function checkVisionCapability() {
@@ -2399,9 +2476,24 @@ function renderMessages(shouldRenderLayout = true) {
             chatMessages.appendChild(tempDiv.firstElementChild);
         }
     }
+    
+    // Highlight code blocks
+    if (window.hljs) {
+        chatMessages.querySelectorAll('pre code').forEach((block) => {
+            window.hljs.highlightElement(block);
+        });
+    }
+
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
 
 }
+
+window.toggleActionGroup = (header) => {
+    const group = header.closest('.action-group');
+    if (group) {
+        group.classList.toggle('expanded');
+    }
+};
 
 function updateThinking(chat, isThinking, status = "", subtext = "") {
     if (!chat) return;
@@ -2448,8 +2540,9 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
 
 function formatMarkdown(text) {
     try {
+        const str = (typeof text === 'string') ? text : (typeof text === 'object' ? JSON.stringify(text, null, 2) : String(text || ""));
         if (marked && marked.parse) {
-            return marked.parse(text, { gfm: true, breaks: true });
+            return marked.parse(str, { gfm: true, breaks: true });
         }
         return text.replace(/\n/g, '<br>');
     } catch (e) {
@@ -2706,7 +2799,10 @@ async function performAutomaticValidation(project, chat) {
         // 3. Get Console Logs
         console.log("[VALIDATION] Obteniendo logs...");
         const logsResult = await mcpClient.callTool('get_console_logs', {});
-        const logsText = logsResult.content.map(c => c.text).join('\n');
+        const logsText = logsResult.content.map(c => {
+            if (typeof c.text === 'object') return JSON.stringify(c.text, null, 2);
+            return String(c.text || "");
+        }).join('\n');
 
         // 4. Send to Agent
         const systemPrompt = `### 🔄 BUCLE DE VALIDACIÓN (Intento ${chat.validationRetries}/${state.maxValidationRetries})
@@ -2799,11 +2895,19 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     // 2. Build Refactored Prompt
     const systemMsg = { role: 'system', content: buildRefactoredSystemPrompt(taskState) };
 
-    const history = chat.messages.slice(-5).map(m => ({
-        role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
-        content: m.content,
-        images: m.images || undefined
-    }));
+    // Use the full message history to ensure reasoning_content is preserved
+    const history = chat.messages.map(m => {
+        const msg = {
+            role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
+            content: m.content,
+            images: m.images || undefined
+        };
+        // EXTREMELY IMPORTANT: Preserve the raw reasoning for the API turns
+        if (m.reasoning) {
+            msg.reasoning = m.reasoning;
+        }
+        return msg;
+    });
 
     const messages = [systemMsg, ...history];
 
@@ -2835,7 +2939,11 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 projectId: project.id,
                 message: origin === 'system' ? chat.messages[chat.messages.length - 1].content : (lastUserMsg ? lastUserMsg.content : ""),
                 model: selectedModel,
-                systemPrompt: buildRefactoredSystemPrompt(taskState)
+                systemPrompt: buildRefactoredSystemPrompt(taskState),
+                apiKey: selectedModel.includes('/') ? state.openrouterApiKey : (selectedModel.startsWith('deepseek') ? state.deepseekApiKey : (selectedModel.startsWith('gpt') ? state.openaiApiKey : null)),
+                baseUrl: selectedModel.includes('/') ? "https://openrouter.ai/api/v1" : (selectedModel.startsWith('deepseek') ? "https://api.deepseek.com" : (selectedModel.startsWith('gpt') ? null : state.customApiBase)),
+                useThinking: state.deepseekThinking,
+                history: history
             })
         });
 
@@ -2845,6 +2953,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let assistantResponse = "";
+        let reasoningContent = "";
 
         while (true) {
             const { done, value } = await reader.read();
@@ -2862,6 +2971,8 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                         const data = JSON.parse(dataStr);
                         if (data.type === 'content') {
                             assistantResponse = data.content; // Sobrescribir con el último estado
+                        } else if (data.type === 'reasoning') {
+                            reasoningContent = data.content;
                         } else if (data.type === 'system') {
                             // Actualizar el indicador de "pensando" con el estado actual
                             updateThinking(chat, true, data.content, "LangGraph en progreso...");
@@ -2964,8 +3075,29 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 else if (fileNameM) parsedArgs.path = fileNameM[1];
             }
 
-            const pathStr = parsedArgs.path ? ` en <strong>${parsedArgs.path.split('/').pop()}</strong>` : '';
-            const replacement = `<div class="file-action-link mcp-call">🛠️ Herramienta: <strong>${toolName}</strong>${pathStr}</div>`;
+            // --- REFACTORED COMPACT UI ---
+            let icon = "🛠️";
+            let actionLabel = toolName;
+            let detailLabel = parsedArgs.path ? parsedArgs.path.split(/[/\\]/).pop() : (parsedArgs.query || "");
+
+            if (toolName === "list_files") { icon = "📁"; actionLabel = "Listando archivos"; }
+            if (toolName === "read_file") { icon = "📄"; actionLabel = "Leyendo"; }
+            if (toolName === "write_file") { icon = "📝"; actionLabel = "Escribiendo"; }
+            if (toolName === "edit_file") { icon = "✂️"; actionLabel = "Editando"; }
+            if (toolName === "execute_js") { icon = "⚡"; actionLabel = "Ejecutando JS"; }
+            if (toolName === "search_files") { icon = "🔍"; actionLabel = "Buscando"; }
+
+            const replacement = `
+                <div class="action-group">
+                    <div class="action-group-header" onclick="window.toggleActionGroup(this)">
+                        <div class="action-group-title">
+                            <span>${icon}</span>
+                            <span>${actionLabel} <strong>${detailLabel}</strong></span>
+                        </div>
+                        <div class="action-group-icon">▶</div>
+                    </div>
+                </div>
+            `;
 
             resultString += replacement;
             searchPos = jsonEnd;
@@ -2974,9 +3106,11 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
 
         // 5. Push agent message to history BEFORE processing actions to maintain logical order
+        const finalDisplayContent = reasoningContent ? `<div class="thought-block">${reasoningContent}</div>\n\n${displayContent}` : displayContent;
         chat.messages.push({
             role: 'agent',
-            content: displayContent
+            content: finalDisplayContent,
+            reasoning: reasoningContent || undefined
         });
         renderMessages();
 
@@ -3010,6 +3144,29 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 </div>
             `).join('');
             summaryHtml = `<div class="agent-change-summary"><h4>📂 Archivos Modificados:</h4>${items}</div>`;
+        }
+
+        // --- NEW: Exploration Summary (Antigravity Style) ---
+        if (actionResult && actionResult.exploreStats) {
+            const { reads, searches, listings } = actionResult.exploreStats;
+            if (reads > 0 || searches > 0 || listings > 0) {
+                let parts = [];
+                if (listings > 0) parts.push(`${listings} carpetas`);
+                if (reads > 0) parts.push(`${reads} archivos`);
+                if (searches > 0) parts.push(`${searches} búsquedas`);
+                
+                const exploreMsg = `
+                    <div class="action-group">
+                        <div class="action-group-header">
+                            <div class="action-group-title">
+                                <span>🔍</span>
+                                <span>Explorado: <strong>${parts.join(', ')}</strong></span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                summaryHtml = exploreMsg + summaryHtml;
+            }
         }
 
         if (summaryHtml || logsHtml) {
@@ -3879,6 +4036,7 @@ async function processAgentActions(text, project, chat) {
     const filesCreated = [];
     const filesModified = [];
     const changeStats = []; // Array to store { fileName, added, removed }
+    const exploreStats = { reads: 0, searches: 0, listings: 0, folders: 0 };
     let match;
 
     let taskState = await getTaskState();
@@ -4002,7 +4160,6 @@ async function processAgentActions(text, project, chat) {
             }
 
             const isAbsolute = (p) => p.startsWith('/') || /^[a-zA-Z]:/.test(p);
-            const pathJoin = (...parts) => parts.map(p => p.replace(/\/+$/, '')).join('/').replace(/\/+/g, '/');
 
             // Adjust paths to be relative to project root if they aren't absolute
             if (toolArgs.path && !isAbsolute(toolArgs.path)) {
@@ -4124,7 +4281,10 @@ async function processAgentActions(text, project, chat) {
 
 
             actionsPerformed++;
-            const resultText = result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+            const resultText = result.content.filter(c => c.type === 'text').map(c => {
+                if (typeof c.text === 'object') return JSON.stringify(c.text, null, 2);
+                return String(c.text || "");
+            }).join('\n');
             const resultImages = result.content.filter(c => c.type === 'image');
 
             if (toolName === 'read_file' || toolName === 'READ') {
@@ -4140,6 +4300,7 @@ async function processAgentActions(text, project, chat) {
                 const outputMsg = `📖 Archivo **${fileName}** leído con éxito. El agente ha analizado su contenido.`;
                 chat.messages.push({ role: 'system', content: outputMsg });
                 toolOutputs.push({ toolName, result: resultText });
+                exploreStats.reads++;
                 await recordAction(`[MCP:${toolName}]`, `Read ${fileName}`);
 
                 // Sync local state if file is open
@@ -4159,7 +4320,12 @@ async function processAgentActions(text, project, chat) {
                 // performWrite already handled the local state sync and diffs
             } else if (toolName === 'execute_js') {
                 logs.push({ type: 'success', message: `Ejecución MCP exitosa: **${toolName}**` });
-                const outputMsg = `✅ MCP ${toolName} ejecutado.\n\nResultado:\n\`\`\`text\n${resultText}\n\`\`\``;
+                const outputMsg = `
+                    <details class="tool-output-collapsed">
+                        <summary>⚡ MCP ${toolName} ejecutado</summary>
+                        <pre><code>${resultText}</code></pre>
+                    </details>
+                `;
                 chat.messages.push({
                     role: 'system',
                     content: outputMsg
@@ -4170,9 +4336,15 @@ async function processAgentActions(text, project, chat) {
                 const outputMsg = `📂 Herramienta **${toolName}** ejecutada con éxito. El agente ahora conoce la estructura del proyecto.`;
                 chat.messages.push({ role: 'system', content: outputMsg });
                 toolOutputs.push({ toolName, result: resultText });
+                exploreStats.listings++;
                 await recordAction(`[MCP:${toolName}]`, `Success`);
             } else {
-                const outputMsg = `🛠️ Herramienta MCP **${toolName}** ejecutada.\n\nResultado:\n\`\`\`text\n${resultText}\n\`\`\``;
+                const outputMsg = `
+                    <details class="tool-output-collapsed">
+                        <summary>🛠️ Herramienta MCP **${toolName}** ejecutada</summary>
+                        <pre><code>${resultText}</code></pre>
+                    </details>
+                `;
                 chat.messages.push({
                     role: 'system',
                     content: outputMsg
@@ -4188,6 +4360,9 @@ async function processAgentActions(text, project, chat) {
             if (toolName !== 'read_file' && project.folder) {
                 console.log(`🔄 Refreshing file list after MCP ${toolName}...`);
                 window.scanFolder(project.folder);
+            }
+            if (toolName === 'search_files') {
+                exploreStats.searches++;
             }
         } catch (e) {
             errors.push(`- Error en herramienta MCP ${toolName}: ${e.message}`);
@@ -4258,7 +4433,12 @@ async function processAgentActions(text, project, chat) {
                 const output = `STDOUT:\n${data.stdout || '(Sin salida)'}\n\nSTDERR:\n${data.stderr || '(Sin errores)'}`;
                 chat.messages.push({
                     role: 'system',
-                    content: `✅ Script ejecutado correctamente.\n\nResultado:\n\`\`\`text\n${output}\n\`\`\``
+                    content: `
+                        <details class="tool-output-collapsed">
+                            <summary>✅ Script ejecutado correctamente</summary>
+                            <pre><code>${output}</code></pre>
+                        </details>
+                    `
                 });
                 logs.push({ type: 'success', message: `Ejecución exitosa del script.` });
                 await recordAction(`[EXECUTE_JS]`, `Code block executed. Output length: ${data.stdout.length} chars.`);
@@ -4579,15 +4759,31 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
 
         let logsHtml = formatLogs(actionResult.logs);
 
-        // Clean display text
+        // Clean display text (Legacy tags)
         const displayContent = assistantResponse
-            .replace(/\[WRITE:(.*?)\][\s\S]*?\[\/WRITE\]/g, (match, fileName) => {
+            .replace(/\[WRITE:(.*?)\]([\s\S]*?)\[\/WRITE\]/g, (match, fileName, code) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
-                return `<div class="file-action-link" onclick="window.openFile('${path}')">📄 Crear/Escribir en <strong>${fileName}</strong></div>`;
+                return `
+                    <details class="file-collapsible">
+                        <summary><strong>${fileName}</strong> <span class="expand-icon">▶</span></summary>
+                        <pre><code class="language-${fileName.split('.').pop()}">${escapeHtml(code.trim())}</code></pre>
+                        <div class="file-action-footer">
+                            <button class="btn-primary-sm" onclick="window.openFile('${path}')">Abrir en Editor ↗</button>
+                        </div>
+                    </details>
+                `;
             })
-            .replace(/\[REPLACE:(.*?)\][\s\S]*?\[\/REPLACE\]/g, (match, fileName) => {
+            .replace(/\[REPLACE:(.*?)\]([\s\S]*?)\[\/REPLACE\]/g, (match, fileName, code) => {
                 const path = pathJoin(project.folder, fileName).replace(/\\/g, '/');
-                return `<div class="file-action-link" onclick="window.openFile('${path}')">📝 Modificar <strong>${fileName}</strong></div>`;
+                return `
+                    <details class="file-collapsible">
+                        <summary><strong>${fileName}</strong> (Modificación) <span class="expand-icon">▶</span></summary>
+                        <pre><code class="language-${fileName.split('.').pop()}">${escapeHtml(code.trim())}</code></pre>
+                        <div class="file-action-footer">
+                            <button class="btn-primary-sm" onclick="window.openFile('${path}')">Abrir en Editor ↗</button>
+                        </div>
+                    </details>
+                `;
             })
             .replace(/\[READ:(.*?)\]/g, (match, fileName) => {
                 return `<div class="file-action-link" onclick="window.openFile('${pathJoin(project.folder, fileName).replace(/\\/g, '/')}')">🔍 Leyendo <strong>${fileName}</strong>...</div>`;
@@ -5072,10 +5268,30 @@ function setupEventListeners() {
     if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
+    const thinkingToggleChat = document.getElementById('deepseek-thinking-toggle-chat');
+    if (thinkingToggleChat) {
+        thinkingToggleChat.checked = state.deepseekThinking;
+        thinkingToggleChat.onchange = (e) => {
+            state.deepseekThinking = e.target.value; // Wait, checkbox uses .checked
+            state.deepseekThinking = e.target.checked;
+            saveData();
+        };
+    }
+
     modelSelect.onchange = (e) => {
+        state.selectedModel = e.target.value;
+        saveData();
         checkVisionCapability();
-        // If we are in global settings, maybe we want to save this as a global fallback? 
-        // For now, it's just the global selector.
+        
+        // Mostrar/ocultar toggle de thinking según el modelo
+        if (thinkingToggleChat) {
+            const container = document.getElementById('thinking-toggle-container');
+            if (e.target.value.startsWith('deepseek')) {
+                container.classList.remove('hidden');
+            } else {
+                container.classList.add('hidden');
+            }
+        }
     };
 
     const projectModelSelect = document.getElementById('project-model-select');
@@ -5249,6 +5465,17 @@ function setupEventListeners() {
         if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
         if (autoValToggle) autoValToggle.checked = state.autoValidation;
 
+        const dsKeyInput = document.getElementById('deepseek-api-key');
+        const oaKeyInput = document.getElementById('openai-api-key');
+        const orKeyInput = document.getElementById('openrouter-api-key');
+        const customBaseInput = document.getElementById('custom-api-base');
+        const dsThinkingToggle = document.getElementById('deepseek-thinking-toggle');
+        if (dsKeyInput) dsKeyInput.value = state.deepseekApiKey || '';
+        if (oaKeyInput) oaKeyInput.value = state.openaiApiKey || '';
+        if (orKeyInput) orKeyInput.value = state.openrouterApiKey || '';
+        if (customBaseInput) customBaseInput.value = state.customApiBase || '';
+        if (dsThinkingToggle) dsThinkingToggle.checked = state.deepseekThinking;
+
         globalSettingsModal.classList.remove('hidden');
     };
 
@@ -5282,8 +5509,20 @@ function setupEventListeners() {
         if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
         if (autoValToggle) state.autoValidation = autoValToggle.checked;
 
+        const dsKeyInput = document.getElementById('deepseek-api-key');
+        const oaKeyInput = document.getElementById('openai-api-key');
+        const orKeyInput = document.getElementById('openrouter-api-key');
+        const customBaseInput = document.getElementById('custom-api-base');
+        const dsThinkingToggle = document.getElementById('deepseek-thinking-toggle');
+        if (dsKeyInput) state.deepseekApiKey = dsKeyInput.value;
+        if (oaKeyInput) state.openaiApiKey = oaKeyInput.value;
+        if (orKeyInput) state.openrouterApiKey = orKeyInput.value;
+        if (customBaseInput) state.customApiBase = customBaseInput.value;
+        if (dsThinkingToggle) state.deepseekThinking = dsThinkingToggle.checked;
+        
         saveData();
         globalSettingsModal.classList.add('hidden');
+        alert("Configuración guardada correctamente.");
     };
 
     // System Restart Button
@@ -5380,23 +5619,9 @@ function syncModeUI(mode) {
 }
 
 function formatLogs(logs) {
-    if (!logs || logs.length === 0) return '';
-
-    let html = '<details class="execution-log"><summary>Pasos de ejecución del Agente</summary><div class="log-steps">';
-
-    logs.forEach(log => {
-        let icon = 'ℹ️';
-        if (log.type === 'success') icon = '✅';
-        if (log.type === 'error') icon = '❌';
-
-        html += `<div class="log-step ${log.type}"><span>${icon}</span> <span>${log.message}</span></div>`;
-        if (log.details) {
-            html += `<div class="failed-search">Intento de búsqueda fallido:\n${escapeHtml(log.details)}</div>`;
-        }
-    });
-
-    html += '</div></details>';
-    return html;
+    // El usuario pidió sacar los "pasos del agente" al final de la conversación.
+    // Se mantiene la lógica interna por si se necesita para debug, pero no retorna HTML.
+    return '';
 }
 
 window.handleGitPush = async () => {
@@ -5448,6 +5673,17 @@ window.handleGitPush = async () => {
         updateThinking(chat, false);
         renderMessages();
     }
+};
+
+window.addModelToSelect = (modelName) => {
+    // Just select it if it's already in the cloud list or Ollama list
+    modelSelect.value = modelName;
+    const project = getActiveProject();
+    if (project) {
+        project.model = modelName;
+        saveData();
+    }
+    alert(`Modelo ${modelName} seleccionado.`);
 };
 
 init();
