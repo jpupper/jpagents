@@ -234,7 +234,54 @@ app.post('/api/sessions/archive', async (req, res) => {
     }
 });
 
+// Memory store for session changes (added/removed lines)
+const sessionChangesMap = new Map();
+
+app.post('/api/internal/session-changes', async (req, res) => {
+    try {
+        const { projectId, chatId, fileName, added, removed } = req.body;
+        const key = `${projectId}_${chatId}`;
+        if (!sessionChangesMap.has(key)) {
+            sessionChangesMap.set(key, []);
+        }
+        const list = sessionChangesMap.get(key);
+        const existing = list.find(c => c.fileName === fileName);
+        if (existing) {
+            existing.added += added;
+            existing.removed += removed;
+        } else {
+            list.push({ fileName, added, removed });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/session-changes', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.query;
+        const key = `${projectId}_${chatId}`;
+        const changes = sessionChangesMap.get(key) || [];
+        res.json(changes);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/session-changes/clear', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.body;
+        const key = `${projectId}_${chatId}`;
+        sessionChangesMap.delete(key);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- LangGraph Chat Endpoint ---
+
 app.post('/api/agent/chat', async (req, res) => {
     const { threadId, projectId, message, model, systemPrompt } = req.body;
     if (!threadId || !message) {

@@ -10,6 +10,8 @@ import path from 'path';
 import { logAgentTrace } from "./agent_trace_logger.js";
 import { validateCodeSyntax, validateObjective, validateFilesCreated } from "./validator_routines.js";
 import { getCollection } from "./db.js";
+import * as Diff from 'diff';
+
 
 
 
@@ -119,7 +121,40 @@ const writeFile = tool(
     async ({ path: requestedPath, content }, config) => {
         try {
             const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
-            return await callMCP("write_file", { path: finalPath, content }, config.configurable.thread_id, config.configurable.projectId);
+            
+            let oldContent = "";
+            try {
+                oldContent = await fs.readFile(finalPath, 'utf-8');
+            } catch (e) { /* Nuevo archivo */ }
+
+            const result = await callMCP("write_file", { path: finalPath, content }, config.configurable.thread_id, config.configurable.projectId);
+            
+            if (result && !result.includes("ERROR")) {
+                let added = 0;
+                let removed = 0;
+                const changes = Diff.diffLines(oldContent, content);
+                changes.forEach(part => {
+                    if (part.added) added += part.count;
+                    if (part.removed) removed += part.count;
+                });
+                
+                const fileName = path.basename(finalPath);
+                try {
+                    await fetch(`http://127.0.0.1:3001/api/internal/session-changes`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            projectId: config.configurable.projectId,
+                            chatId: config.configurable.thread_id,
+                            fileName,
+                            added,
+                            removed
+                        })
+                    });
+                } catch (e) { console.error("Error reporting session changes:", e.message); }
+            }
+            
+            return result;
         } catch (err) {
             return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
         }
@@ -131,11 +166,50 @@ const writeFile = tool(
     }
 );
 
+
 const editFile = tool(
     async ({ path: requestedPath, target, replacement }, config) => {
         try {
             const finalPath = await resolveProjectPath(config.configurable.projectId, requestedPath);
-            return await callMCP("edit_file", { path: finalPath, target, replacement }, config.configurable.thread_id, config.configurable.projectId);
+            
+            let oldContent = "";
+            try {
+                oldContent = await fs.readFile(finalPath, 'utf-8');
+            } catch (e) { /* Archivo no existe */ }
+
+            const result = await callMCP("edit_file", { path: finalPath, target, replacement }, config.configurable.thread_id, config.configurable.projectId);
+            
+            if (result && !result.includes("ERROR")) {
+                let newContent = "";
+                try {
+                    newContent = await fs.readFile(finalPath, 'utf-8');
+                } catch (e) { /* Error al leer */ }
+                
+                let added = 0;
+                let removed = 0;
+                const changes = Diff.diffLines(oldContent, newContent);
+                changes.forEach(part => {
+                    if (part.added) added += part.count;
+                    if (part.removed) removed += part.count;
+                });
+                
+                const fileName = path.basename(finalPath);
+                try {
+                    await fetch(`http://127.0.0.1:3001/api/internal/session-changes`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            projectId: config.configurable.projectId,
+                            chatId: config.configurable.thread_id,
+                            fileName,
+                            added,
+                            removed
+                        })
+                    });
+                } catch (e) { console.error("Error reporting session changes:", e.message); }
+            }
+            
+            return result;
         } catch (err) {
             return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
         }
@@ -150,6 +224,7 @@ const editFile = tool(
         }),
     }
 );
+
 
 const executeJs = tool(
     async ({ code, cwd }, config) => {

@@ -2411,6 +2411,10 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
 
     if (!isThinking) {
         chat.isStopped = false; // Reset stop state when finished
+        if (typeof triggerAdminAgentLogic === 'function') {
+            console.log(`[ADMIN REINFORCEMENT] Agent ${chat.name} finished. Re-triggering admin logic...`);
+            triggerAdminAgentLogic();
+        }
     }
 
     // Update main chat header if this is the active chat
@@ -2469,7 +2473,16 @@ async function sendMessage() {
 
     // Clear session summary and accumulated changes when user sends new message
     chat.sessionChanges = [];
+    try {
+        fetch(`${API_BASE}/session-changes/clear`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: project.id, chatId: chat.id })
+        }).catch(() => {});
+    } catch (e) {}
+
     const summaryContainer = document.getElementById('session-summary-container');
+
     if (summaryContainer) {
         summaryContainer.innerHTML = '';
         summaryContainer.classList.add('hidden');
@@ -2482,7 +2495,7 @@ async function sendMessage() {
     await triggerAgentLogic(project, chat);
 }
 
-async function improvePrompt(targetElementId) {
+async function improvePrompt(targetElementId, e) {
     const target = document.getElementById(targetElementId);
     if (!target) return;
 
@@ -2490,11 +2503,11 @@ async function improvePrompt(targetElementId) {
     if (!content) return;
 
     const originalText = target.value;
-    const btn = event?.currentTarget; // Get the button that triggered the improvement
+    const btn = e?.currentTarget || (e ? e.target : null);
     const originalBtnText = btn ? btn.innerText : null;
 
     if (btn) {
-        btn.innerText = "✨ Mejorando...";
+        btn.innerText = "⏳...";
         btn.disabled = true;
     }
     target.disabled = true;
@@ -2511,14 +2524,10 @@ async function improvePrompt(targetElementId) {
 
         const data = await res.json();
         if (data.improvedContent && data.improvedContent !== originalText) {
-            // If it's a skill or global prompt, show diff
-            if (targetElementId === 'skill-content-textarea' || targetElementId === 'global-prompt' || targetElementId === 'orchestrator-prompt' || targetElementId === 'improver-prompt') {
-                showPromptDiffUI(targetElementId, originalText, data.improvedContent);
-            } else {
-                target.value = data.improvedContent;
-            }
+            // Consistent behavior: Always show Diff UI so user can review and apply/discard
+            showPromptDiffUI(targetElementId, originalText, data.improvedContent);
         } else {
-            target.value = originalText;
+            console.log("[IMPROVE] El contenido ya es óptimo o no hubo cambios.");
         }
     } catch (e) {
         console.error("Error improvePrompt:", e);
@@ -2561,11 +2570,18 @@ function showPromptDiffUI(targetId, original, improved) {
     diffContainer.querySelector('.btn-accept-prompt').onclick = () => {
         target.value = improved;
         diffContainer.remove();
-        // Trigger save if needed
+        
+        // Sync with state where appropriate
         if (targetId === 'global-prompt') state.userSystemPrompt = improved;
         if (targetId === 'orchestrator-prompt') state.orchestratorPrompt = improved;
         if (targetId === 'improver-prompt') state.improverPrompt = improved;
-        // Skills are saved manually via the Save button, but we could trigger it
+        if (targetId === 'project-prompt') {
+            const project = getActiveProject();
+            if (project) project.projectPrompt = improved;
+        }
+        
+        saveData(); // Persistent save
+        target.focus();
     };
 
     // Insert after the textarea or before depending on preference
@@ -3006,23 +3022,21 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         renderMessages();
         saveData();
 
-        // Accumulate and Update Session Summary Bar
-        if (actionResult && actionResult.changeStats && actionResult.changeStats.length > 0) {
-            if (!chat.sessionChanges) chat.sessionChanges = [];
-            actionResult.changeStats.forEach(s => {
-                const existing = chat.sessionChanges.find(c => c.fileName === s.fileName);
-                if (existing) {
-                    existing.added += s.added;
-                    existing.removed += s.removed;
-                } else {
-                    chat.sessionChanges.push({ ...s });
+        // Fetch session changes from backend (New LangGraph/MCP flow)
+        try {
+            const changesRes = await fetch(`${API_BASE}/session-changes?projectId=${project.id}&chatId=${chat.id}`);
+            if (changesRes.ok) {
+                const backendChanges = await changesRes.json();
+                if (backendChanges && backendChanges.length > 0) {
+                    chat.sessionChanges = backendChanges;
                 }
-            });
-        }
+            }
+        } catch (e) { console.error("Error fetching session changes:", e); }
 
         if (chat.sessionChanges && chat.sessionChanges.length > 0) {
             renderSessionSummary(chat.sessionChanges, project);
         }
+
 
         if (chat.isStopped) {
             console.log(`[CHAT] Agent execution stopped by user.`);
@@ -3496,9 +3510,10 @@ ESTADO ACTUAL DE LA RED DE AGENTES:
 ${agentsTable}
 
 INSTRUCCIONES ADICIONALES:
-- Si un agente está "OCIOSO" y ha terminado su tarea ("TASK COMPLETE" en su último mensaje), evalúa si el proyecto está listo.
+- Si un agente está "OCIOSO", evalúa su último mensaje. Si ha terminado exitosamente, revisa si el objetivo general del usuario se ha cumplido.
+- NO des por finalizada la tarea global hasta que TODOS los subagentes asignados hayan completado sus partes exitosamente. Si alguno falló o está atascado, envíale instrucciones correctivas con [@Agente: "Tu instrucción..."].
 - Si el usuario pide algo complejo, puedes encadenar comandos: [CREATE_PROJECT] [CREATE_AGENT] [@Agente: "Instrucción"] todo en una sola respuesta.
-- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro.`;
+- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro y sigue checkeando iterativamente hasta que todos confirmen el éxito completo.` ;
     return prompt;
 }
 
@@ -3594,12 +3609,17 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         }
 
         // --- NEW ADMIN TOOLS ---
+        let anyFailed = false;
+        let failedTargets = [];
+        
+        const cleanStr = (str) => str.replace(/["'“”]/g, '').trim();
+
         const createProjectRegex = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
         const createAgentRegex = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
         const deleteProjectRegex = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
 
         while ((m = createProjectRegex.exec(assistantResponse)) !== null) {
-            const name = m[1].trim();
+            const name = cleanStr(m[1]);
             adminLog(`🛠️ Orquestador creando proyecto: <strong>${name}</strong>`);
             try {
                 await createNewProject(name);
@@ -3611,8 +3631,8 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         }
 
         while ((m = createAgentRegex.exec(assistantResponse)) !== null) {
-            const pId = m[1].trim();
-            const aName = m[2].trim();
+            const pId = cleanStr(m[1]);
+            const aName = cleanStr(m[2]);
             const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
             if (project) {
                 adminLog(`🛠️ Orquestador creando agente <strong>${aName}</strong> en proyecto <strong>${project.name}</strong>`);
@@ -3642,7 +3662,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         }
 
         while ((m = deleteProjectRegex.exec(assistantResponse)) !== null) {
-            const pId = m[1].trim();
+            const pId = cleanStr(m[1]);
             const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
             if (project) {
                 if (confirm(`⚠️ El Orquestador solicita eliminar el proyecto "${project.name}". ¿Confirmar?`)) {
@@ -3660,8 +3680,7 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         }
         // -----------------------
 
-        let anyFailed = false;
-        let failedTargets = [];
+
 
         for (const dispatch of dispatches) {
             let rawTarget = dispatch.rawTarget;
@@ -5109,17 +5128,22 @@ function setupEventListeners() {
 
     const improveAdminPromptBtn = document.getElementById('improve-admin-prompt-btn');
     if (improveAdminPromptBtn) {
-        improveAdminPromptBtn.onclick = () => improvePrompt('admin-global-input');
+        improveAdminPromptBtn.onclick = (e) => improvePrompt('admin-global-input', e);
     }
 
     const improveChatPromptBtn = document.getElementById('improve-chat-prompt-btn');
     if (improveChatPromptBtn) {
-        improveChatPromptBtn.onclick = () => improvePrompt('chat-input');
+        improveChatPromptBtn.onclick = (e) => improvePrompt('chat-input', e);
     }
 
     const improveSkillBtn = document.getElementById('improve-skill-btn');
     if (improveSkillBtn) {
-        improveSkillBtn.onclick = () => improvePrompt('skill-content-textarea');
+        improveSkillBtn.onclick = (e) => improvePrompt('skill-content-textarea', e);
+    }
+
+    const improveProjectBtn = document.getElementById('improve-project-prompt-btn');
+    if (improveProjectBtn) {
+        improveProjectBtn.onclick = (e) => improvePrompt('project-prompt', e);
     }
 
     acceptBtn.onclick = window.acceptChange;
@@ -5176,6 +5200,16 @@ function setupEventListeners() {
     const improverPromptTextarea = document.getElementById('improver-prompt');
     const internalAgentDisplay = document.getElementById('internal-agent-display');
 
+    // Prompt Improvement Buttons for Global Settings
+    const improveGlobalBtn = document.getElementById('improve-global-prompt-btn');
+    if (improveGlobalBtn) improveGlobalBtn.onclick = (e) => improvePrompt('global-prompt', e);
+
+    const improveOrchBtn = document.getElementById('improve-orchestrator-prompt-btn');
+    if (improveOrchBtn) improveOrchBtn.onclick = (e) => improvePrompt('orchestrator-prompt', e);
+
+    const improveImproverBtn = document.getElementById('improve-improver-prompt-btn');
+    if (improveImproverBtn) improveImproverBtn.onclick = (e) => improvePrompt('improver-prompt', e);
+
     // Tab Switching Logic for Modal
     const modalSideTabs = document.querySelectorAll('.modal-side-tab');
     const modalSubTabs = document.querySelectorAll('.modal-sub-tab');
@@ -5205,9 +5239,9 @@ function setupEventListeners() {
     });
 
     globalSettingsBtn.onclick = () => {
-        userPromptTextarea.value = state.userSystemPrompt || '';
-        orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
-        improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
+        if (userPromptTextarea) userPromptTextarea.value = state.userSystemPrompt || '';
+        if (orchestratorPromptTextarea) orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
+        if (improverPromptTextarea) improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
 
         const maxRetriesInput = document.getElementById('max-validation-retries');
@@ -5229,9 +5263,9 @@ function setupEventListeners() {
     };
 
     saveGlobalBtn.onclick = () => {
-        state.userSystemPrompt = userPromptTextarea.value;
-        state.orchestratorPrompt = orchestratorPromptTextarea.value;
-        state.improverPrompt = improverPromptTextarea.value;
+        if (userPromptTextarea) state.userSystemPrompt = userPromptTextarea.value;
+        if (orchestratorPromptTextarea) state.orchestratorPrompt = orchestratorPromptTextarea.value;
+        if (improverPromptTextarea) state.improverPrompt = improverPromptTextarea.value;
 
         // Save improver prompt to file as well
         if (state.improverPrompt) {

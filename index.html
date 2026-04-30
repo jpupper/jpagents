@@ -164,10 +164,10 @@
 
             <!-- Project Settings Section -->
             <div class="project-config-section">
-              <div class="section-header">
-                <h3>🎯 Skill / Instrucciones del Proyecto</h3>
-                <span id="skill-source-indicator" class="skill-indicator hidden">Cargado desde skill.md</span>
-              </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                  <h3>🎯 Skill / Instrucciones del Proyecto</h3>
+                  <button id="improve-project-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                </div>
               <p class="config-help">Estas instrucciones se envían al agente además del prompt global. Puedes crear un
                 archivo <code class="language-bash">skill.md</code> en la carpeta del proyecto para cargarlas
                 automáticamente.</p>
@@ -245,6 +245,7 @@
               <div class="admin-input-area">
                 <textarea id="admin-global-input" placeholder="Enviar comando global a todos los agentes..."
                   rows="2"></textarea>
+                <button id="improve-admin-prompt-btn" class="send-btn" title="Mejorar Prompt con IA" style="background: var(--primary-color); margin-right: 5px;">✨</button>
                 <button id="admin-send-btn" class="send-btn">🚀</button>
                 <button id="stop-admin-btn" class="btn-stop hidden" onclick="window.stopAdminAgent()"
                   title="Detener Orquestador">
@@ -345,6 +346,7 @@
             <div class="input-wrapper">
               <div class="input-actions-left">
                 <button id="attach-img" class="btn-icon-subtle" title="Adjuntar imagen">📷</button>
+                <button id="improve-chat-prompt-btn" class="btn-icon-subtle" title="Mejorar Prompt con IA">✨</button>
                 <input type="file" id="image-input" accept="image/*" class="hidden" />
               </div>
               <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="2"></textarea>
@@ -441,17 +443,19 @@
               <!-- Sub-tabs for System Prompts -->
               <div class="modal-sub-nav">
                 <button class="modal-sub-tab active" data-modal-sub-tab="global">User System Prompt</button>
-                <button class="modal-sub-tab" data-modal-sub-tab="orchestrator">System Prompt del Orquestador
-                  (Admin)</button>
-                <button class="modal-sub-tab" data-modal-sub-tab="internal">Instrucciones de Agente (Solo
-                  Lectura)</button>
+                <button class="modal-sub-tab" data-modal-sub-tab="orchestrator">System Prompt del Orquestador (Admin)</button>
+                <button class="modal-sub-tab" data-modal-sub-tab="improver">Prompt del Improver (IA ✨)</button>
+                <button class="modal-sub-tab" data-modal-sub-tab="internal">Instrucciones de Agente (Solo Lectura)</button>
               </div>
 
               <div class="modal-body-content">
                 <!-- Global Prompt Pane -->
                 <div id="sub-tab-global" class="sub-tab-pane">
                   <div class="config-field">
-                    <label>User System Prompt</label>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <label>User System Prompt</label>
+                        <button id="improve-global-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                    </div>
                     <p class="field-help">Este prompt se aplicará a todos los AGENTES de proyecto (no afecta al
                       orquestador).</p>
                     <textarea id="global-prompt" class="config-textarea" rows="12"
@@ -462,11 +466,27 @@
                 <!-- Orchestrator Prompt Pane -->
                 <div id="sub-tab-orchestrator" class="sub-tab-pane hidden">
                   <div class="config-field">
-                    <label>System Prompt del Orquestador (Admin)</label>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <label>System Prompt del Orquestador (Admin)</label>
+                        <button id="improve-orchestrator-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                    </div>
                     <p class="field-help">Define el comportamiento del Agente Administrador que gestiona a los demás
                       agentes.</p>
                     <textarea id="orchestrator-prompt" class="config-textarea" rows="12"
                       placeholder="Eres el AGENTE ADMINISTRADOR y ORQUESTADOR..."></textarea>
+                  </div>
+                </div>
+
+                <!-- Improver Prompt Pane -->
+                <div id="sub-tab-improver" class="sub-tab-pane hidden">
+                  <div class="config-field">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <label>Prompt del Agente Improver (Mejorador de Prompts)</label>
+                        <button id="improve-improver-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                    </div>
+                    <p class="field-help">Este es el prompt que usa la IA para mejorar tus propios textos cuando pulsas el botón ✨.</p>
+                    <textarea id="improver-prompt" class="config-textarea" rows="12"
+                      placeholder="Eres un experto en ingeniería de prompts..."></textarea>
                   </div>
                 </div>
 
@@ -501,6 +521,7 @@
                       <div class="skill-editor-header">
                         <input type="text" id="skill-name-input" placeholder="Nombre..." />
                         <div class="skill-actions">
+                          <button id="improve-skill-btn" class="btn-primary" title="Mejorar con IA" style="background: var(--accent-color); border: 1px solid rgba(255,255,255,0.2);">✨ Mejorar</button>
                           <button id="save-skill-btn" class="btn-primary">Guardar 💾</button>
                           <button id="delete-skill-btn" class="btn-danger-outline">🗑️</button>
                         </div>
