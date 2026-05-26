@@ -3258,6 +3258,10 @@ pre code.hljs {
     overflow-y: auto;
 }
 
+.matrix-tooltip .tooltip-section {
+    margin-top: 0.5rem;
+}
+
 /* --- Terminal View Styles --- */
 .terminal-view {
     display: flex;

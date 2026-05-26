@@ -26,3 +26,10 @@ dist-ssr
 # Project files
 proyects/
 
+# Large binary / generated files
+checkpoints.db
+checkpoints.db-shm
+checkpoints.db-wal
+vector_store/
+rag_uploads/
+

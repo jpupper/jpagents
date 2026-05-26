@@ -37,6 +37,7 @@
       </div>
       <div class="sidebar-monitor">
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
+        <button id="hermes-panel-btn" class="btn-monitor" title="Panel de Control Hermes" style="margin-top: 6px;">⚡ Hermes Control</button>
       </div>
       <div class="sidebar-footer">
         <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración Global</button>
@@ -81,6 +82,7 @@
           <div class="run-actions">
             <button id="run-project-btn" class="btn-run" title="Ejecutar run.bat">RUN</button>
             <button id="open-web-btn" class="btn-icon" title="Abrir Web" style="background: var(--primary-color); color: white;">🌐</button>
+            <button id="hermes-start-btn" class="btn-icon" title="Abrir Hermes para este proyecto" style="background: linear-gradient(135deg, #22d3ee, #a78bfa); color: #020617;">⚡</button>
           </div>
         </div>
         <div id="git-controls-container" class="config-group hidden">
@@ -645,6 +647,40 @@
       </div>
     </div>
   </div>
+
+  <!-- HERMES CONTROL PANEL MODAL -->
+  <div id="hermes-panel-modal" class="modal-overlay hidden">
+    <div class="modal-content" style="max-width: 800px;">
+      <div class="modal-header">
+        <h2>⚡ Hermes Control</h2>
+        <button class="modal-close" id="hermes-panel-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <button id="hermes-refresh-btn" class="btn-primary" style="padding: 8px 16px; font-size: 0.8rem;">🔄 Refrescar</button>
+          <button id="hermes-stop-all-btn" class="btn-danger-outline" style="padding: 8px 16px; font-size: 0.8rem;">⏹ Detener Todas</button>
+        </div>
+
+        <!-- Broadcast Section -->
+        <div style="margin-bottom: 16px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid var(--border-color);">
+          <label style="font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; display: block;">📢 Broadcast a TODAS las instancias</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="hermes-broadcast-input" placeholder="Escribí un mensaje para todas las instancias..." style="flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-family: inherit;">
+            <button id="hermes-broadcast-btn" class="btn-primary" style="padding: 8px 18px;">Enviar</button>
+          </div>
+        </div>
+
+        <!-- Instances List -->
+        <div id="hermes-instances-container">
+          <p class="empty-state" style="text-align: center; padding: 40px 0; color: var(--text-muted);">
+            No hay instancias de Hermes activas.<br>
+            <span style="font-size: 0.8rem;">Seleccioná un proyecto y abrí Hermes desde el botón en la cabecera.</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/main.js"></script>
 </body>
 

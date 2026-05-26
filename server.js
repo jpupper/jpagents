@@ -6,12 +6,17 @@ import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 import { connectDB, getCollection } from './db.js';
 
 // LangGraph Integration
 import { agentApp } from './agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
 import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger.js';
+
+// Hermes Bridge
+import hermesBridge from './hermes-bridge.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -1318,7 +1323,94 @@ function spawnNewProcess() {
     }
 }
 
+// ──────────────────────────────────────────────
+// HERMES BRIDGE ROUTES
+// ──────────────────────────────────────────────
+
+app.get('/api/hermes/instances', (req, res) => {
+    try {
+        const instances = hermesBridge.listInstances();
+        res.json({ instances });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/hermes/start', async (req, res) => {
+    try {
+        const { projectId, workdir, model } = req.body;
+        if (!projectId || !workdir) {
+            return res.status(400).json({ error: 'projectId y workdir son requeridos' });
+        }
+        const instance = await hermesBridge.startInstance(projectId, workdir, model || null);
+        res.json({ instance });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/hermes/message', async (req, res) => {
+    try {
+        const { projectId, message } = req.body;
+        if (!projectId || !message) {
+            return res.status(400).json({ error: 'projectId y message son requeridos' });
+        }
+        const response = await hermesBridge.sendMessage(projectId, message);
+        res.json({ response });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/hermes/broadcast', async (req, res) => {
+    try {
+        const { message } = req.body;
+        if (!message) {
+            return res.status(400).json({ error: 'message es requerido' });
+        }
+        const results = await hermesBridge.broadcast(message);
+        res.json({ results });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/hermes/stop', async (req, res) => {
+    try {
+        const { projectId } = req.body;
+        if (!projectId) {
+            return res.status(400).json({ error: 'projectId es requerido' });
+        }
+        const result = await hermesBridge.stopInstance(projectId);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/hermes/stop/all', async (req, res) => {
+    try {
+        const results = await hermesBridge.stopAll();
+        res.json({ stopped: results });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/hermes/logs/:projectId', (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const limit = parseInt(req.query.limit) || 100;
+        const logs = hermesBridge.getLogs(projectId, limit);
+        res.json({ logs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ──────────────────────────────────────────────
 // 404 Handler for API
+// ──────────────────────────────────────────────
 app.use('/api', (req, res) => {
     res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found` });
 });
@@ -1353,8 +1445,21 @@ async function startServer() {
         console.error('CRITICAL: Could not connect to MongoDB. Persistence will fail.');
     }
 
-    serverInstance = app.listen(port, () => {
+    // Use HTTP server instead of app.listen for WebSocket support
+    const httpServer = createServer(app);
+
+    // WebSocket Server for Hermes live logs
+    const wss = new WebSocketServer({ server: httpServer, path: '/ws/hermes' });
+    wss.on('connection', (ws) => {
+        console.log('[WS] Cliente WebSocket conectado a Hermes Bridge');
+        hermesBridge.registerWSClient(ws);
+        ws.send(JSON.stringify({ event: 'hermes:connected', message: 'Conectado a Hermes Bridge' }));
+    });
+
+    serverInstance = httpServer.listen(port, () => {
         console.log(`Server running at http://localhost:${port}`);
+        console.log(`[HERMES] WebSocket en ws://localhost:${port}/ws/hermes`);
+        console.log(`[HERMES] API endpoints en http://localhost:${port}/api/hermes/*`);
     });
 }
 

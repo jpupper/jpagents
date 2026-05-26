@@ -5951,3 +5951,230 @@ window.addModelToSelect = (modelName) => {
 };
 
 init();
+
+// ──────────────────────────────────────────────
+// HERMES CONTROL PANEL MODULE
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:3001/api';
+    const panelBtn = document.getElementById('hermes-panel-btn');
+    const panelModal = document.getElementById('hermes-panel-modal');
+    const panelClose = document.getElementById('hermes-panel-close');
+    const refreshBtn = document.getElementById('hermes-refresh-btn');
+    const stopAllBtn = document.getElementById('hermes-stop-all-btn');
+    const instancesContainer = document.getElementById('hermes-instances-container');
+    const broadcastInput = document.getElementById('hermes-broadcast-input');
+    const broadcastBtn = document.getElementById('hermes-broadcast-btn');
+    const hermesStartBtn = document.getElementById('hermes-start-btn');
+
+    // WebSocket connection for live logs
+    let ws = null;
+
+    function connectWS() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        try {
+            ws = new WebSocket(`ws://localhost:3001/ws/hermes`);
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.event === 'hermes:log' || data.event === 'hermes:status') {
+                        refreshInstances();
+                    }
+                } catch {}
+            };
+            ws.onclose = () => {
+                setTimeout(connectWS, 3000);
+            };
+        } catch {}
+    }
+
+    if (panelBtn) {
+        panelBtn.addEventListener('click', () => {
+            panelModal.classList.remove('hidden');
+            connectWS();
+            refreshInstances();
+        });
+    }
+    if (panelClose) {
+        panelClose.addEventListener('click', () => {
+            panelModal.classList.add('hidden');
+        });
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', refreshInstances);
+    }
+
+    if (stopAllBtn) {
+        stopAllBtn.addEventListener('click', async () => {
+            if (!confirm('¿Detener TODAS las instancias de Hermes?')) return;
+            try {
+                const res = await fetch(`${API}/hermes/stop/all`, { method: 'POST' });
+                await res.json();
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        });
+    }
+
+    if (broadcastBtn && broadcastInput) {
+        broadcastBtn.addEventListener('click', async () => {
+            const message = broadcastInput.value.trim();
+            if (!message) return;
+            broadcastBtn.disabled = true;
+            broadcastBtn.textContent = 'Enviando...';
+            try {
+                await fetch(`${API}/hermes/broadcast`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                broadcastInput.value = '';
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                broadcastBtn.disabled = false;
+                broadcastBtn.textContent = 'Enviar';
+            }
+        });
+        broadcastInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') broadcastBtn.click();
+        });
+    }
+
+    if (hermesStartBtn) {
+        hermesStartBtn.addEventListener('click', async () => {
+            const project = window.getActiveProject ? window.getActiveProject() : null;
+            if (!project) {
+                alert('Seleccioná un proyecto primero');
+                return;
+            }
+            const projectId = project.id || project.name || 'proyecto-' + Date.now();
+            const workdir = project.folderPath || project.path || '';
+            if (!workdir) {
+                alert('El proyecto no tiene directorio asignado');
+                return;
+            }
+            try {
+                const res = await fetch(`${API}/hermes/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId, workdir })
+                });
+                const data = await res.json();
+                if (data.instance) {
+                    console.log(`[HERMES] Instancia iniciada para ${project.name}`);
+                    panelModal.classList.remove('hidden');
+                    refreshInstances();
+                } else {
+                    alert('Error: ' + (data.error || 'No se pudo iniciar'));
+                }
+            } catch (e) {
+                alert('Error iniciando Hermes: ' + e.message);
+            }
+        });
+    }
+
+    window.stopHermesInstance = async function(projectId) {
+        if (!confirm(`¿Detener instancia ${projectId}?`)) return;
+        try {
+            await fetch(`${API}/hermes/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId })
+            });
+            refreshInstances();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    window.sendHermesMessage = async function(projectId) {
+        const message = prompt(`Mensaje para ${projectId}:`);
+        if (!message) return;
+        try {
+            const res = await fetch(`${API}/hermes/message`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, message })
+            });
+            const data = await res.json();
+            if (data.response) {
+                alert(`Respuesta de ${projectId}:\n\n${data.response.slice(0, 500)}`);
+                refreshInstances();
+            }
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    async function refreshInstances() {
+        if (!instancesContainer) return;
+        try {
+            const res = await fetch(`${API}/hermes/instances`);
+            const data = await res.json();
+            renderInstances(data.instances || []);
+        } catch (e) {
+            instancesContainer.innerHTML = `
+                <p class="empty-state" style="text-align: center; padding: 20px; color: #ef4444;">
+                    ❌ Error de conexión<br>
+                    <span style="font-size: 0.8rem;">Backend en localhost:3001</span>
+                </p>
+            `;
+        }
+    }
+
+    function renderInstances(instances) {
+        if (!instances || instances.length === 0) {
+            instancesContainer.innerHTML = `
+                <p class="empty-state" style="text-align: center; padding: 40px 0; color: var(--text-muted);">
+                    ⚡ No hay instancias de Hermes activas.<br>
+                    <span style="font-size: 0.8rem;">Seleccioná un proyecto y toca ⚡ en la cabecera.</span>
+                </p>
+            `;
+            return;
+        }
+
+        let html = '';
+        for (const inst of instances) {
+            const statusColor = inst.status === 'running' ? '#22d3ee' :
+                               inst.status === 'starting' ? '#fbbf24' :
+                               inst.status === 'error' ? '#ef4444' : '#64748b';
+            const statusLabel = inst.status === 'running' ? '● Activo' :
+                               inst.status === 'starting' ? '◐ Iniciando' :
+                               inst.status === 'exited' ? '○ Detenido' :
+                               inst.status === 'error' ? '● Error' : '○ ' + inst.status;
+            const recentLogs = (inst.logs || []).slice(-5).map(l =>
+                `<div style="color: ${l.type === 'stderr' ? '#ef4444' : '#94a3b8'};">${escapeHtml(l.text)}</div>`
+            ).join('');
+
+            html += `
+                <div style="margin-bottom: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.02);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div>
+                            <strong style="color: var(--text-primary);">${escapeHtml(inst.id)}</strong>
+                            <span style="margin-left: 8px; font-size: 0.7rem; color: ${statusColor};">${statusLabel}</span>
+                        </div>
+                        <div style="display: flex; gap: 6px;">
+                            <button onclick="sendHermesMessage('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer;">💬</button>
+                            <button onclick="stopHermesInstance('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid #ef4444; border-radius: 4px; background: transparent; color: #ef4444; cursor: pointer;">⏹</button>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">📁 ${escapeHtml(inst.workdir || '—')}</div>
+                    <div style="font-size: 0.65rem; color: var(--text-muted);">🕐 ${new Date(inst.createdAt).toLocaleString()}</div>
+                    ${recentLogs ? `<div style="margin-top: 6px; padding: 6px; background: rgba(0,0,0,0.3); border-radius: 4px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 0.6rem; line-height: 1.4;">${recentLogs}</div>` : ''}
+                </div>
+            `;
+        }
+        instancesContainer.innerHTML = html;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    console.log('[HERMES] Panel de control cargado.');
+})();
