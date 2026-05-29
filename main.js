@@ -101,6 +101,26 @@ marked.setOptions({
     headerIds: false
 });
 
+// ── ANSI Escape Code Stripper (comprehensive) ──
+// Hermes emite secuencias ANSI (colores, cursor, erase, scroll) que se ven como basura en HTML.
+function stripAnsi(text) {
+    if (typeof text !== 'string') return text;
+    // Order matters: strip OSC first (they contain [ chars that could confuse CSI)
+    return text
+        // OSC sequences: ESC ] <n> ; <text> BEL/ST
+        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+        // Other escape sequences (APC, SOS, etc.)
+        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
+        // CSI sequences: ESC [ <params> <final> — SGR, cursor, erase, scroll, etc.
+        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
+        // Remaining stray escape chars
+        .replace(/\x1b[\[\(].{0,3}/g, '')
+        .replace(/\x1b./g, '')
+        // Carriage returns
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+}
+window.stripAnsi = stripAnsi;
 
 const API_BASE = 'http://localhost:3001/api';
 window.API_BASE = API_BASE;
@@ -705,7 +725,9 @@ async function init() {
     // Periodically check health and external instructions every 1 minute
     setInterval(performPeriodicSync, 60000);
 
-    // Poll Ollama health and models more frequently to update UI automatically
+    // Poll Ollama health and models (reducido de 5s a 30s para evitar tildes)
+    let ollamaCheckCounter = 0;
+    const OLLAMA_CHECK_INTERVAL = 30000; // 30s
     setInterval(async () => {
         const ollamaDot = document.getElementById('ollama-status-dot');
         const wasDead = ollamaDot && ollamaDot.classList.contains('dead');
@@ -713,10 +735,12 @@ async function init() {
         await checkSystemHealth();
 
         const isLive = ollamaDot && ollamaDot.classList.contains('live');
-        if ((wasDead && isLive) || !state.models || state.models.length === 0) {
+        ollamaCheckCounter++;
+        // Solo refrescar modelos cada 2 minutos o si recién se conectó
+        if ((wasDead && isLive) || ollamaCheckCounter % 4 === 0 || !state.models || state.models.length === 0) {
             await fetchModels();
         }
-    }, 5000);
+    }, OLLAMA_CHECK_INTERVAL);
 
 }
 
@@ -1689,6 +1713,11 @@ function renderModelSelects() {
         projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
     }
 
+    const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+    if (projectModelHeaderSelect) {
+        projectModelHeaderSelect.innerHTML = '<option value="">Usar Global</option>' + html;
+    }
+
     const agentModelSelect = document.getElementById('agent-model-select');
     if (agentModelSelect) {
         agentModelSelect.innerHTML = '<option value="">Default (Proyecto/Global)</option>' + html;
@@ -1829,7 +1858,17 @@ function renderTabs() {
         </div>
     `;
 
-    // 5. Matrix Agentic Tree (Global/Project Context)
+    // 5. Hermes Tab (si está visible)
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
+        tabsHtml += `
+            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
+                <span>⚡ Hermes</span>
+            </div>
+        `;
+    }
+
+    // 6. Matrix Agentic Tree (Global/Project Context)
     tabsHtml += `
         <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
             <span>🕸️ Matrix</span>
@@ -2004,6 +2043,8 @@ function updateViewVisibility() {
     if (skillsTabContent) skillsTabContent.classList.add('hidden');
     if (matrixTabContent) matrixTabContent.classList.add('hidden');
     if (terminalTabContent) terminalTabContent.classList.add('hidden');
+    const hermesTabContent = document.getElementById('hermes-tab-content');
+    if (hermesTabContent) hermesTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -2014,6 +2055,14 @@ function updateViewVisibility() {
             refreshTerminalUI();
         }
         terminalInput.focus();
+        return;
+    }
+
+    if (project && project.activeTabId === 'hermes') {
+        saveFileBtn.classList.add('hidden');
+        if (hermesTabContent) {
+            hermesTabContent.classList.remove('hidden');
+        }
         return;
     }
 
@@ -2092,9 +2141,27 @@ function updateViewVisibility() {
         if (chat) {
             syncModeUI(chat.mode);
 
-            // Sync chat header
-            const agentNameSpan = document.getElementById('chat-agent-name');
-            if (agentNameSpan) agentNameSpan.textContent = `🤖 ${chat.name}`;
+            // Sync chat header — nombre editable
+            const agentNameInput = document.getElementById('chat-agent-name-input');
+            if (agentNameInput) {
+                if (!agentNameInput.hasAttribute('data-manual')) {
+                    agentNameInput.value = chat.name || 'Agente';
+                }
+            }
+
+            // Sync toggle Hermes
+            const hermesBtn = document.getElementById('hermes-toggle-btn');
+            if (hermesBtn) {
+                if (chat.useHermes) {
+                    hermesBtn.classList.add('on');
+                    hermesBtn.classList.remove('off');
+                    hermesBtn.querySelector('.toggle-label').textContent = 'Hermes';
+                } else {
+                    hermesBtn.classList.remove('on');
+                    hermesBtn.classList.add('off');
+                    hermesBtn.querySelector('.toggle-label').textContent = 'Local';
+                }
+            }
 
             // Update STOP button and thinking indicator based on current state
             const stopBtn = document.getElementById('stop-btn');
@@ -2104,6 +2171,34 @@ function updateViewVisibility() {
             if (stopBtn) stopBtn.classList.toggle('hidden', !chat.isThinking);
             if (thinkingInd) thinkingInd.classList.toggle('hidden', !chat.isThinking);
             if (statusSpan && chat.thinkingStatus) statusSpan.textContent = chat.thinkingStatus;
+
+            // Verificar estado de Hermes si el toggle está activo
+            if (chat.useHermes && project && project.folder) {
+                const hermesPlayBtn = document.getElementById('hermes-play-btn');
+                const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+                const hermesStatusDot = document.getElementById('hermes-status-dot');
+                // Hacer el check asíncrono sin bloquear
+                fetch(`${API_BASE}/hermes/instances`).then(r => r.json()).then(data => {
+                    const inst = (data.instances || []).find(i => i.chatId === chat.id && i.projectId === project.id);
+                    if (inst && inst.status !== 'stopped') {
+                        if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
+                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot online';
+                    } else {
+                        if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+                    }
+                }).catch(() => {});
+            } else {
+                // Si no usa Hermes, ocultar botones
+                const hermesPlayBtn = document.getElementById('hermes-play-btn');
+                const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+                const hermesStatusDot = document.getElementById('hermes-status-dot');
+                if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            }
 
             // Sync chat model select
             const chatModelSelect = document.getElementById('chat-model-select');
@@ -2157,6 +2252,10 @@ function updateViewVisibility() {
         const projectModelSelect = document.getElementById('project-model-select');
         if (projectModelSelect) {
             projectModelSelect.value = project.model || '';
+        }
+        const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+        if (projectModelHeaderSelect) {
+            projectModelHeaderSelect.value = project.model || '';
         }
 
         // Sync project prompt UI
@@ -2340,6 +2439,7 @@ window.addChat = async () => {
         mode: 'auto',
         lastProgress: Date.now(),
         isStopped: false,
+        useHermes: true, // Por defecto crea agente Hermes
         skills: [...(p.skills || [])] // Inherit project skills
     };
     p.chats.push(newChat);
@@ -2686,6 +2786,9 @@ function renderMessages(shouldRenderLayout = true) {
 
     chatMessages.innerHTML = '';
     chat.messages.forEach(m => {
+        // Saltar mensajes de progreso ya finalizados — se ocultan completamente
+        if (m.isProgress && m.finished) return;
+
         const div = document.createElement('div');
         div.className = `message ${m.role}`;
 
@@ -2694,7 +2797,36 @@ function renderMessages(shouldRenderLayout = true) {
             imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
         }
 
-        div.innerHTML = imageHtml + formatMarkdown(m.content);
+        // Si es un mensaje de progreso ACTIVO de Hermes
+        if (m.isProgress && !m.finished) {
+            const isMinimized = m.minimized === true;
+            const progressLines = m.content.split('\n').filter(l => l.trim());
+            const summary = progressLines[0] || '⚡ Procesando...';
+            const detailContent = progressLines.slice(1).join('\n');
+            div.className = 'message system hermes-progress';
+            div.innerHTML = `
+                <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="toggleProgress(this)">
+                    <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
+                    <span class="progress-summary">${escapeHtml(summary)}</span>
+                </div>
+                <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
+                    <pre>${escapeHtml(detailContent)}</pre>
+                </div>
+            `;
+        } else {
+            div.innerHTML = imageHtml + formatMarkdown(m.content);
+        }
+
+        // Si hay cambios de archivo y es assistant
+        if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
+            const changesDiv = document.createElement('div');
+            changesDiv.className = 'file-changes';
+            m.fileChanges.forEach(change => {
+                changesDiv.innerHTML += `<span class="file-change ${change.type}">${change.type === 'add' ? '+' : '-'} ${change.file}</span>`;
+            });
+            div.appendChild(changesDiv);
+        }
+
         chatMessages.appendChild(div);
     });
 
@@ -2716,6 +2848,24 @@ function renderMessages(shouldRenderLayout = true) {
     setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
 
 }
+
+// Función para toggle del progreso de Hermes
+window.toggleProgress = function(el) {
+    const container = el.closest('.hermes-progress');
+    const detail = container.querySelector('.hermes-progress-detail');
+    const arrow = el.querySelector('.progress-arrow');
+    if (detail.style.display === 'none') {
+        detail.style.display = 'block';
+        arrow.textContent = '▼';
+        el.classList.remove('minimized');
+        el.classList.add('maximized');
+    } else {
+        detail.style.display = 'none';
+        arrow.textContent = '▶';
+        el.classList.remove('maximized');
+        el.classList.add('minimized');
+    }
+};
 
 window.toggleActionGroup = (header) => {
     const group = header.closest('.action-group');
@@ -2769,7 +2919,9 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
 
 function formatMarkdown(text) {
     try {
-        const str = (typeof text === 'string') ? text : (typeof text === 'object' ? JSON.stringify(text, null, 2) : String(text || ""));
+        // Strip ANSI escape codes first (Hermes emits terminal colors)
+        const clean = stripAnsi(text);
+        const str = (typeof clean === 'string') ? clean : (typeof clean === 'object' ? JSON.stringify(clean, null, 2) : String(clean || ""));
         if (marked && marked.parse) {
             return marked.parse(str, { gfm: true, breaks: true });
         }
@@ -2815,49 +2967,125 @@ async function sendMessage() {
     renderMessages();
 
     await triggerAgentLogic(project, chat);
+    
+    // Broadcast a Agents Room (otras pestañas) que el estado cambió
+    try {
+        const bc = new BroadcastChannel('jp-agents-room');
+        bc.postMessage({ type: 'agents-updated', timestamp: Date.now() });
+        bc.close();
+    } catch(e) {}
 }
+
+// ─── Toast / Notification System ───
+function showToast(message, type = 'info', duration = 4000) {
+    const existing = document.querySelector('.toast-notification');
+    if (existing) existing.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification toast-${type}`;
+    
+    const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
+    toast.innerHTML = `<span class="toast-icon">${icons[type] || 'ℹ️'}</span><span class="toast-text">${escapeHtml(message)}</span>`;
+    
+    document.body.appendChild(toast);
+    
+    // Animate in
+    requestAnimationFrame(() => toast.classList.add('show'));
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        toast.classList.add('hide');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+window.showToast = showToast;
 
 async function improvePrompt(targetElementId, e) {
     const target = document.getElementById(targetElementId);
     if (!target) return;
 
     const content = target.value.trim();
-    if (!content) return;
+    if (!content) {
+        showToast('Escribí algo primero para mejorar el prompt.', 'warning');
+        return;
+    }
 
     const originalText = target.value;
     const btn = e?.currentTarget || (e ? e.target : null);
     const originalBtnText = btn ? btn.innerText : null;
 
     if (btn) {
-        btn.innerText = "⏳...";
+        btn.innerText = "⏳";
         btn.disabled = true;
     }
     target.disabled = true;
 
     try {
-        const selectedModel = state.selectedModel || modelSelect.value || 'llama3';
+        // Usar el modelo del agente/chat activo si mejoramos el chat-input
+        let selectedModel;
+        let apiKey = null;
+        let baseUrl = null;
+        
+        if (targetElementId === 'chat-input') {
+            const chat = getActiveChat();
+            const project = getActiveProject();
+            const agentModelSelect = document.getElementById('agent-model-select');
+            selectedModel = chat?.model || project?.model || (agentModelSelect ? agentModelSelect.value : '') || state.selectedModel || modelSelect.value || '';
+        } else {
+            selectedModel = state.selectedModel || modelSelect.value || '';
+        }
+        
+        // Detectar API según el modelo (misma lógica que en agent chat)
+        // Si el modelo está vacío, forzar Ollama local
+        if (selectedModel) {
+            if (selectedModel.includes('/')) {
+                apiKey = state.openrouterApiKey;
+                baseUrl = "https://openrouter.ai/api/v1";
+            } else if (selectedModel.startsWith('deepseek')) {
+                apiKey = state.deepseekApiKey;
+                baseUrl = "https://api.deepseek.com";
+            } else if (selectedModel.startsWith('gpt') || selectedModel.startsWith('o1') || selectedModel.startsWith('o3')) {
+                apiKey = state.openaiApiKey;
+            } else if (state.customApiBase) {
+                baseUrl = state.customApiBase;
+            }
+        }
+        
+        // Si no hay API key y el modelo es remoto, advertir y forzar Ollama
+        if (selectedModel && !apiKey && baseUrl && baseUrl !== 'http://localhost:11434') {
+            console.warn(`[IMPROVE] No hay API key configurada para ${selectedModel}, redirigiendo a Ollama.`);
+            apiKey = null;
+            baseUrl = null;
+            selectedModel = ''; // Forzar a que el servidor use su default
+        }
+        
+        showToast('✨ Mejorando prompt...', 'info');
+        
         const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, model: selectedModel })
+            body: JSON.stringify({ content, model: selectedModel, apiKey, baseUrl })
         });
 
-        if (!res.ok) throw new Error("Error al mejorar el prompt");
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            throw new Error(errData.error || `Error ${res.status}`);
+        }
 
         const data = await res.json();
         if (data.improvedContent && data.improvedContent !== originalText) {
-            // Consistent behavior: Always show Diff UI so user can review and apply/discard
+            showToast('✅ Prompt mejorado. Revisá los cambios.', 'success');
             showPromptDiffUI(targetElementId, originalText, data.improvedContent);
         } else {
-            console.log("[IMPROVE] El contenido ya es óptimo o no hubo cambios.");
+            showToast('El prompt ya está óptimo, no se necesitaron cambios.', 'info');
         }
     } catch (e) {
         console.error("Error improvePrompt:", e);
-        alert("No se pudo mejorar el prompt: " + e.message);
+        showToast('No se pudo mejorar el prompt: ' + e.message, 'error');
         target.value = originalText;
     } finally {
         if (btn) {
-            btn.innerText = originalBtnText || "🪄";
+            btn.innerText = originalBtnText || "✨";
             btn.disabled = false;
         }
         target.disabled = false;
@@ -3075,6 +3303,40 @@ Analiza si la aplicación está funcionando como se esperaba según los requisit
 
 async function triggerAgentLogic(project, chat, origin = 'user') {
     if (chat.isThinking) return;
+
+    // Verificar si el toggle Hermes está activo para este chat
+    const hermesBtn = document.getElementById('hermes-toggle-btn');
+    const useHermes = hermesBtn && hermesBtn.classList.contains('on');
+
+    if (useHermes) {
+        // Auto-start Hermes si no hay instancia activa
+        if (project && project.folder) {
+            try {
+                const instRes = await fetch(`${API_BASE}/hermes/instances`);
+                const instData = await instRes.json();
+                const exists = (instData.instances || []).find(i => i.chatId === chat.id && i.projectId === project.id && i.status !== 'stopped');
+                if (!exists) {
+                    console.log('[HERMES] Auto-starting Hermes for chat:', chat.id);
+                    const model = chat.model || project.model || '';
+                    await fetch(`${API_BASE}/hermes/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            projectId: project.id,
+                            chatId: chat.id,
+                            workdir: project.folder,
+                            model: model || null,
+                            name: chat.name || 'Hermes Agent'
+                        })
+                    });
+                }
+            } catch(e) {
+                console.warn('[HERMES] Auto-start failed:', e.message);
+                // Continue anyway — triggerHermesLogic will show error
+            }
+        }
+        return await triggerHermesLogic(project, chat, origin);
+    }
 
     await setAgentActive(true);
     await clearClientLogs();
@@ -5440,6 +5702,14 @@ function setupEventListeners() {
         updateViewVisibility();
     };
 
+    // Agents Room button — abre en nueva pestaña
+    const agentsRoomBtn = document.getElementById('agents-room-btn');
+    if (agentsRoomBtn) {
+        agentsRoomBtn.onclick = () => {
+            window.open('http://localhost:3001/static/agents-room.html?_=' + Date.now(), '_blank');
+        };
+    }
+
     // Sub-tab switching for Admin Monitor
     document.querySelectorAll('.admin-sub-tab').forEach(btn => {
         btn.onclick = (e) => {
@@ -5503,6 +5773,172 @@ function setupEventListeners() {
     saveFileBtn.onclick = () => window.saveActiveFile();
     sendBtn.onclick = sendMessage;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+
+    // ─── HERMES TOGGLE + PLAY/STOP ───
+    const hermesToggleBtn = document.getElementById('hermes-toggle-btn');
+    const hermesPlayBtn = document.getElementById('hermes-play-btn');
+    const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+    const hermesStatusDot = document.getElementById('hermes-status-dot');
+
+    // Función para verificar si una instancia Hermes existe para este chat
+    async function checkHermesInstance(projectId, chatId) {
+        try {
+            const res = await fetch(`${API_BASE}/hermes/instances`);
+            const data = await res.json();
+            if (!chatId) return null;
+            const inst = (data.instances || []).find(i => i.chatId === chatId && i.projectId === projectId);
+            return inst || null;
+        } catch { return null; }
+    }
+
+    // Actualizar UI de botones Hermes según estado
+    async function updateHermesUI(projectId, chatId) {
+        const inst = await checkHermesInstance(projectId, chatId);
+        if (inst && inst.status !== 'stopped') {
+            // Existe — mostrar stop, ocultar play
+            if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
+            if (hermesStatusDot) { hermesStatusDot.className = 'hermes-status-dot online'; }
+        } else {
+            // No existe — mostrar play, ocultar stop
+            if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+            if (hermesStatusDot) { hermesStatusDot.className = 'hermes-status-dot offline'; }
+        }
+    }
+
+    // Función para iniciar Hermes (async, espera resultado)
+    async function startHermesForChat(projectId, chatId, workdir, model, agentName) {
+        if (hermesPlayBtn) hermesPlayBtn.disabled = true;
+        if (hermesPlayBtn) hermesPlayBtn.innerHTML = '⏳';
+        try {
+            const res = await fetch(`${API_BASE}/hermes/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, chatId, workdir, model, name: agentName })
+            });
+            const data = await res.json();
+            if (data.instance) {
+                await updateHermesUI(projectId, chatId);
+            } else {
+                console.warn('[HERMES] Error al iniciar:', data.error);
+            }
+        } catch(e) {
+            console.warn('[HERMES] Error al iniciar:', e.message);
+        } finally {
+            if (hermesPlayBtn) { hermesPlayBtn.disabled = false; hermesPlayBtn.innerHTML = '▶'; }
+        }
+    }
+
+    // Toggle Hermes / Local
+    if (hermesToggleBtn) {
+        hermesToggleBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!chat) return;
+
+            const isOn = hermesToggleBtn.classList.contains('on');
+            if (isOn) {
+                // Cambiar a Local
+                hermesToggleBtn.classList.remove('on');
+                hermesToggleBtn.classList.add('off');
+                hermesToggleBtn.querySelector('.toggle-label').textContent = 'Local';
+                chat.useHermes = false;
+                if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            } else {
+                // Cambiar a Hermes
+                hermesToggleBtn.classList.add('on');
+                hermesToggleBtn.classList.remove('off');
+                hermesToggleBtn.querySelector('.toggle-label').textContent = 'Hermes';
+                chat.useHermes = true;
+
+                // Mostrar botón play y verificar estado
+                if (project && project.folder) {
+                    await updateHermesUI(project.id, chat.id);
+                }
+            }
+            saveData();
+        });
+    }
+
+    // Botón PLAY ▶ — inicia Hermes
+    if (hermesPlayBtn) {
+        hermesPlayBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!project || !chat || !project.folder) return;
+
+            const model = chat.model || project.model || '';
+            const agentName = chat.name || 'Hermes Agent';
+            await startHermesForChat(project.id, chat.id, project.folder, model, agentName);
+        });
+    }
+
+    // Botón STOP ⏹ — detiene Hermes
+    if (hermesStopChatBtn) {
+        hermesStopChatBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!project || !chat) return;
+            try {
+                await fetch(`${API_BASE}/hermes/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId: project.id, chatId: chat.id })
+                });
+                await updateHermesUI(project.id, chat.id);
+            } catch(e) {
+                console.warn('[HERMES] Error al detener:', e.message);
+            }
+        });
+    }
+
+    // ─── GEAR CONFIG BUTTON (toggle config panel) ───
+    // ─── CONFIG DROPDOWN (Modelo + Skill en ruedita) ───
+    const configTrigger = document.getElementById('agent-config-trigger');
+    const configMenu = document.getElementById('agent-config-menu');
+    if (configTrigger && configMenu) {
+        configTrigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isHidden = configMenu.classList.contains('hidden');
+            // Cerrar todos los demás dropdowns
+            document.querySelectorAll('.agent-config-menu').forEach(m => m.classList.add('hidden'));
+            configMenu.classList.toggle('hidden', !isHidden);
+            configTrigger.classList.toggle('active', isHidden);
+        });
+        // Cerrar al hacer clic afuera
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.agent-config-dropdown')) {
+                configMenu.classList.add('hidden');
+                configTrigger.classList.remove('active');
+            }
+        });
+        // Cerrar al cambiar de agente o proyecto
+        document.addEventListener('agentChanged', () => {
+            configMenu.classList.add('hidden');
+            configTrigger.classList.remove('active');
+        });
+    }
+
+    // ─── NOMBRE EDITABLE DEL AGENTE ───
+    const chatNameInput = document.getElementById('chat-agent-name-input');
+    if (chatNameInput) {
+        chatNameInput.addEventListener('input', () => {
+            const chat = getActiveChat();
+            if (chat) {
+                chatNameInput.setAttribute('data-manual', 'true');
+                chat.name = chatNameInput.value || 'Agente';
+                saveData();
+                // Actualizar nombre en sidebar
+                if (window.renderProjectList) window.renderProjectList();
+            }
+        });
+        chatNameInput.addEventListener('blur', () => {
+            chatNameInput.removeAttribute('data-manual');
+        });
+    }
     scanFolderBtn.onclick = nativePickFolder;
     if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
@@ -5547,6 +5983,23 @@ function setupEventListeners() {
             if (project) {
                 project.model = e.target.value;
                 saveData();
+                // Sync header select
+                const headerSelect = document.getElementById('project-model-select-header');
+                if (headerSelect) headerSelect.value = e.target.value;
+            }
+        };
+    }
+
+    const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+    if (projectModelHeaderSelect) {
+        projectModelHeaderSelect.onchange = (e) => {
+            const project = getActiveProject();
+            if (project) {
+                project.model = e.target.value;
+                saveData();
+                // Sync dashboard select
+                const dashSelect = document.getElementById('project-model-select');
+                if (dashSelect) dashSelect.value = e.target.value;
             }
         };
     }
@@ -6046,33 +6499,22 @@ init();
 
     if (hermesStartBtn) {
         hermesStartBtn.addEventListener('click', async () => {
-            const project = window.getActiveProject ? window.getActiveProject() : null;
+            const project = getActiveProject();
             if (!project) {
                 alert('Seleccioná un proyecto primero');
                 return;
             }
             const projectId = project.id || project.name || 'proyecto-' + Date.now();
-            const workdir = project.folderPath || project.path || '';
+            const workdir = project.folder || '';
             if (!workdir) {
                 alert('El proyecto no tiene directorio asignado');
                 return;
             }
-            try {
-                const res = await fetch(`${API}/hermes/start`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ projectId, workdir })
-                });
-                const data = await res.json();
-                if (data.instance) {
-                    console.log(`[HERMES] Instancia iniciada para ${project.name}`);
-                    panelModal.classList.remove('hidden');
-                    refreshInstances();
-                } else {
-                    alert('Error: ' + (data.error || 'No se pudo iniciar'));
-                }
-            } catch (e) {
-                alert('Error iniciando Hermes: ' + e.message);
+            // Tomar el modelo del proyecto si eligió uno, sino el global
+            const model = project.model || state.selectedModel || '';
+            // Mostrar el tab Hermes (lo inicia si no está corriendo)
+            if (window.showHermesTab) {
+                window.showHermesTab(projectId);
             }
         });
     }
@@ -6177,4 +6619,569 @@ init();
     }
 
     console.log('[HERMES] Panel de control cargado.');
+})();
+
+// ──────────────────────────────────────────────
+// HERMES TAB MODULE — Pestaña interactiva de Hermes
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:3001/api';
+    const hermesOutput = document.getElementById('hermes-output');
+    const hermesInput = document.getElementById('hermes-input');
+    const hermesInputArea = document.getElementById('hermes-input-area');
+    const hermesStatus = document.getElementById('hermes-status');
+    const hermesStartBtn = document.getElementById('hermes-start-btn-tab');
+    const hermesStopBtn = document.getElementById('hermes-stop-btn-tab');
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+
+    let currentProjectId = null;
+    let pollInterval = null;
+    let lastLogCount = 0;
+    let isRunning = false;
+
+    function appendHermesLine(text, type = 'stdout') {
+        if (!hermesOutput) return;
+        const div = document.createElement('div');
+        div.className = `hermes-line ${type}`;
+        // Strip ANSI escape codes (terminal colors/escape sequences)
+        div.textContent = stripAnsi(text);
+        hermesOutput.appendChild(div);
+        hermesOutput.scrollTop = hermesOutput.scrollHeight;
+    }
+
+    function setHermesStatus(label, cls) {
+        if (hermesStatus) {
+            hermesStatus.textContent = label;
+            hermesStatus.className = 'hermes-status' + (cls ? ' ' + cls : '');
+        }
+    }
+
+    function showHermesInTab(projectId) {
+        currentProjectId = projectId;
+        // En vez de mostrar el tab Hermes, inicia y va al chat común
+        startHermesForTab();
+    }
+
+    async function checkRunningInstance(projectId) {
+        try {
+            const res = await fetch(`${API}/hermes/instances`);
+            const data = await res.json();
+            const inst = (data.instances || []).find(i => i.id === projectId);
+            if (inst && (inst.status === 'running' || inst.status === 'starting')) {
+                isRunning = true;
+                setHermesStatus('● Activo', 'running');
+                hermesStartBtn.classList.add('hidden');
+                hermesStopBtn.classList.remove('hidden');
+                hermesInputArea.style.display = '';
+                hermesInput.disabled = false;
+                hermesOutput.innerHTML = '<div class="hermes-line system">Conectado a Hermes. Escribí tu mensaje abajo.</div>';
+                startPolling(projectId);
+            } else {
+                isRunning = false;
+                setHermesStatus('○ Detenido', '');
+                hermesStartBtn.classList.remove('hidden');
+                hermesStopBtn.classList.add('hidden');
+                hermesInputArea.style.display = 'none';
+                hermesInput.disabled = true;
+                hermesOutput.innerHTML = '<div class="hermes-line system">Hermes no está corriendo. Presioná ▶ Iniciar.</div>';
+            }
+        } catch {}
+    }
+
+    function startPolling(projectId) {
+        if (pollInterval) clearInterval(pollInterval);
+        lastLogCount = 0;
+        pollInterval = setInterval(async () => {
+            if (!projectId) return;
+            try {
+                const res = await fetch(`${API}/hermes/logs/${projectId}?limit=200`);
+                const data = await res.json();
+                const logs = data.logs || [];
+                if (logs.length > lastLogCount) {
+                    const newLogs = logs.slice(lastLogCount);
+                    for (const log of newLogs) {
+                        appendHermesLine(log.text, log.type === 'stderr' ? 'stderr' : 'stdout');
+                    }
+                    lastLogCount = logs.length;
+                }
+            } catch {}
+        }, 500);
+    }
+
+    function stopPolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+
+    async function startHermesForTab() {
+        const project = getActiveProject();
+        if (!project) {
+            appendHermesLine('❌ No hay proyecto activo.', 'stderr');
+            return;
+        }
+        const projectId = project.id;
+        const workdir = project.folder || '';
+        if (!workdir) {
+            appendHermesLine('❌ El proyecto no tiene directorio.', 'stderr');
+            return;
+        }
+        const model = project.model || state.selectedModel || '';
+        // Obtener nombre personalizado del agente
+        const hermesNameInput = document.getElementById('hermes-agent-name');
+        const agentName = hermesNameInput ? hermesNameInput.value.trim() || 'Hermes Agent' : 'Hermes Agent';
+
+        setHermesStatus('◐ Iniciando...', '');
+        hermesStartBtn.disabled = true;
+        hermesStartBtn.textContent = 'Iniciando...';
+        hermesOutput.innerHTML = '<div class="hermes-line system">Iniciando Hermes...</div>';
+        lastLogCount = 0;
+
+        try {
+            const res = await fetch(`${API}/hermes/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, workdir, model, name: agentName })
+            });
+            const data = await res.json();
+            if (data.instance) {
+                isRunning = true;
+                setHermesStatus('● Activo', 'running');
+                hermesStartBtn.classList.add('hidden');
+                hermesStopBtn.classList.remove('hidden');
+                hermesInputArea.style.display = '';
+                hermesInput.disabled = false;
+                hermesInput.focus();
+                appendHermesLine('✅ Hermes iniciado correctamente.', 'system');
+                startPolling(projectId);
+                currentProjectId = projectId;
+
+                // Crear un chat en el proyecto para Hermes y switchear al chat-view común
+                if (project && !project.chats) project.chats = [];
+                const existingChat = project ? project.chats.find(c => c.id === 'hermes-' + projectId) : null;
+                if (!existingChat && project) {
+                    const hermesChat = {
+                        id: 'hermes-' + projectId,
+                        name: agentName,
+                        model: model || 'deepseek-chat',
+                        messages: [{ role: 'assistant', content: '✅ Hermes iniciado. Escribí tu mensaje abajo.' }],
+                        createdAt: Date.now(),
+                        isHermes: true
+                    };
+                    project.chats.push(hermesChat);
+                    // Switchear al tab de chat común con este agente
+                    setTimeout(() => {
+                        if (window.switchToChat) {
+                            window.switchToChat(projectId, hermesChat.id);
+                        } else {
+                            // Fallback: seleccionar manualmente
+                            project.activeChatId = hermesChat.id;
+                            project.activeTabId = 'chat';
+                            if (window.renderTabs) window.renderTabs();
+                            if (window.updateViewVisibility) window.updateViewVisibility();
+                        }
+                    }, 100);
+                } else if (existingChat) {
+                    // Switchear al chat existente
+                    setTimeout(() => {
+                        if (window.switchToChat) {
+                            window.switchToChat(projectId, existingChat.id);
+                        }
+                    }, 100);
+                }
+            } else {
+                appendHermesLine('❌ Error: ' + (data.error || 'No se pudo iniciar'), 'stderr');
+                setHermesStatus('○ Error', 'error');
+            }
+        } catch (e) {
+            appendHermesLine('❌ Error de conexión: ' + e.message, 'stderr');
+            setHermesStatus('○ Error', 'error');
+        } finally {
+            hermesStartBtn.disabled = false;
+            hermesStartBtn.textContent = '▶ Iniciar';
+        }
+    }
+
+    async function stopHermesForTab() {
+        if (!currentProjectId) return;
+        stopPolling();
+        try {
+            await fetch(`${API}/hermes/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: currentProjectId })
+            });
+        } catch {}
+        isRunning = false;
+        setHermesStatus('○ Detenido', '');
+        hermesStartBtn.classList.remove('hidden');
+        hermesStopBtn.classList.add('hidden');
+        hermesInputArea.style.display = 'none';
+        hermesInput.disabled = true;
+        appendHermesLine('⏹ Hermes detenido.', 'system');
+    }
+
+    async function sendHermesMessage() {
+        const message = hermesInput.value.trim();
+        if (!message || !currentProjectId || !isRunning) return;
+        hermesInput.value = '';
+        appendHermesLine('>>> ' + message, 'hermes-prompt');
+        try {
+            const res = await fetch(`${API}/hermes/message`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: currentProjectId, message })
+            });
+            const data = await res.json();
+            if (data.response) {
+                appendHermesLine(data.response, 'stdout');
+            }
+        } catch (e) {
+            appendHermesLine('❌ Error: ' + e.message, 'stderr');
+        }
+    }
+
+    // Event listeners
+    if (hermesStartBtn) {
+        hermesStartBtn.addEventListener('click', startHermesForTab);
+    }
+    if (hermesStopBtn) {
+        hermesStopBtn.addEventListener('click', stopHermesForTab);
+    }
+    if (hermesInput) {
+        hermesInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendHermesMessage();
+        });
+    }
+
+    // Exponer para que otros módulos puedan mostrar Hermes
+    window.showHermesTab = showHermesInTab;
+
+    // Nav click para el tab Hermes
+    if (hermesTabNav) {
+        hermesTabNav.addEventListener('click', () => {
+            // Redirigir al chat común en vez de mostrar el tab Hermes
+            if (currentProjectId) {
+                startHermesForTab();
+            }
+        });
+    }
+
+    console.log('[HERMES-TAB] Módulo de pestaña Hermes cargado.');
+})();
+
+// ──────────────────────────────────────────────
+// HERMES LOGIC — Maneja mensajes de chat común → Hermes Bridge
+// ──────────────────────────────────────────────
+async function triggerHermesLogic(project, chat, origin = 'user') {
+    if (chat.isThinking) return;
+
+    const thinkingPhrases = [
+        "Invoco espiritus de la red...",
+        "Analizando con sabiduría arcana...",
+        "Tejiendo hechizos algorítmicos...",
+        "Conjurando respuesta...",
+        "Procesando con inteligencia artificial..."
+    ];
+    const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
+    updateThinking(chat, true, "Esperando respuesta", randomPhrase);
+    chat.isStopped = false;
+    renderMessages();
+
+    const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
+    if (!lastUserMsg) {
+        updateThinking(chat, false);
+        return;
+    }
+    let message = lastUserMsg.content;
+    const images = lastUserMsg.images || [];
+
+    const instanceKey = project.id + ':' + chat.id;
+
+    // Crear un bloque de progreso como mensaje "system" en el chat
+    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const progressMsg = {
+        role: 'system',
+        id: progressMsgId,
+        content: '⚡ Invocando Hermes...\n',
+        timestamp: Date.now(),
+        isProgress: true,
+        minimized: false // mientras genera, maximizado
+    };
+    chat.messages.push(progressMsg);
+    renderMessages();
+    saveData();
+
+    // Conectar WebSocket para recibir progreso en vivo
+    let progressWs = null;
+    try {
+        progressWs = new WebSocket(`ws://localhost:3001/ws/hermes`);
+        progressWs.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
+                    if (data.type === 'progress' || data.type === 'stdout') {
+                        // Agregar línea al mensaje de progreso
+                        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+                        if (progressChatMsg) {
+                            const lines = data.text.split('\n').filter(l => l.trim());
+                            for (const line of lines) {
+                                const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+                                if (clean) {
+                                    // Si contiene tool call info, formatearlo lindo
+                                    let formatted = clean;
+                                    if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
+                                        formatted = '🛠️ ' + clean.replace(/.*tool_call[^:]*:\s*/i, '').slice(0, 60);
+                                    } else if (clean.includes('response') || clean.includes('assistant')) {
+                                        formatted = '💬 ' + clean.replace(/.*response[^:]*:\s*/i, '').slice(0, 60);
+                                    } else if (clean.match(/^[A-Z]/)) {
+                                        formatted = '📋 ' + clean.slice(0, 80);
+                                    }
+                                    progressChatMsg.content += '  ' + formatted + '\n';
+                                }
+                            }
+                            // Limitar líneas de progreso para no saturar
+                            const lineCount = progressChatMsg.content.split('\n').length;
+                            if (lineCount > 50) {
+                                const lines_arr = progressChatMsg.content.split('\n');
+                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-30).join('\n');
+                            }
+                            // Actualizar el indicador de thinking también
+                            const statusEl = document.getElementById('chat-thinking-status');
+                            if (statusEl) {
+                                const lastClean = lines.filter(l => l.trim()).pop() || '';
+                                const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
+                                if (short) statusEl.textContent = '⚡ ' + short;
+                            }
+                            renderMessages();
+                        }
+                    }
+                }
+            } catch(e) {}
+        };
+        progressWs.onerror = () => {};
+    } catch(e) {}
+
+    try {
+        const controller = new AbortController();
+        chat.abortController = controller;
+
+        chat.isStreaming = true;
+        
+        // Incluir historial de conversación para que Hermes mantenga contexto
+        const historyMessages = chat.messages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .filter(m => !m.isProgress || !m.finished)
+            .slice(-20) // últimas 20 interacciones para no saturar
+            .map(m => ({ role: m.role, content: m.content }));
+
+        const res = await fetch(`${API_BASE}/hermes/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: project.id, chatId: chat.id, message, images, history: historyMessages })
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            // Reemplazar mensaje de progreso con error
+            const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+            if (progressChatMsg) {
+                progressChatMsg.content = '❌ Error: ' + (errData.error || res.statusText);
+                progressChatMsg.isProgress = false;
+            } else {
+                chat.messages.push({
+                    role: 'assistant',
+                    content: '❌ Error: ' + (errData.error || res.statusText),
+                    timestamp: Date.now()
+                });
+            }
+            renderMessages();
+            updateThinking(chat, false);
+            if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            return;
+        }
+
+        const data = await res.json();
+        // Strip ANSI escape codes
+        const response = stripAnsi(data.response || '(sin respuesta)');
+
+        // Eliminar bloque de progreso del chat y mostrar solo la respuesta
+        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        if (progressChatMsg) {
+            progressChatMsg.finished = true; // oculto en renderMessages
+            // Agregar solo la respuesta limpia como assistant
+            chat.messages.push({
+                role: 'assistant',
+                content: response,
+                timestamp: Date.now()
+            });
+        } else {
+            chat.messages.push({
+                role: 'assistant',
+                content: response,
+                timestamp: Date.now()
+            });
+        }
+
+        chat.isStreaming = false;
+        renderMessages();
+        updateThinking(chat, false);
+        saveData();
+        if (progressWs) { try { progressWs.close(); } catch(e) {} }
+        
+        // Broadcast a otras pestañas (Agents Room) que el estado cambió
+        try {
+            const bc = new BroadcastChannel('jp-agents-room');
+            bc.postMessage({ type: 'agents-updated', timestamp: Date.now() });
+            bc.close();
+        } catch(e) {}
+
+    } catch (e) {
+        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        if (progressChatMsg) {
+            progressChatMsg.content += '\n❌ Error: ' + e.message;
+            progressChatMsg.finished = true;
+        }
+        if (e.name === 'AbortError') {
+            chat.messages.push({
+                role: 'system',
+                content: '⏹️ Consulta cancelada (timeout de 120s).',
+                timestamp: Date.now()
+            });
+        } else {
+            chat.messages.push({
+                role: 'assistant',
+                content: '❌ Error de conexión: ' + e.message,
+                timestamp: Date.now()
+            });
+        }
+        chat.isStreaming = false;
+        renderMessages();
+        updateThinking(chat, false);
+        if (progressWs) { try { progressWs.close(); } catch(e) {} }
+    }
+}
+
+// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// LISTA DE AGENTES — Tabla limpia
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:3001/api';
+    const tbody = document.getElementById('monitor-tbody');
+    const magicCount = document.getElementById('magic-count');
+    const refreshBtn = document.getElementById('magic-refresh-btn');
+
+    function getStatusLabel(status) {
+        switch(status) {
+            case 'idle': return 'Inactivo';
+            case 'thinking': return 'Pensando...';
+            case 'running': return 'Trabajando';
+            case 'error': return 'Error';
+            default: return status;
+        }
+    }
+
+    async function refreshAgentList() {
+        if (!tbody) return;
+        try {
+            const res = await fetch(`${API}/admin/agents`);
+            const data = await res.json();
+            const agents = data.agents || [];
+
+            if (magicCount) magicCount.textContent = `${agents.length} agente${agents.length !== 1 ? 's' : ''}`;
+
+            if (agents.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-secondary);">No hay agentes activos. Creá un proyecto e iniciá un chat para ver agentes aquí.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = '';
+            agents.forEach(agent => {
+                const displayName = agent.name || agent.id.slice(0, 8);
+                const tr = document.createElement('tr');
+                tr.style.cursor = 'pointer';
+                const statusClass = agent.status === 'idle' ? 'idle' :
+                    agent.status === 'thinking' ? 'thinking' :
+                    agent.status === 'running' ? 'running' : 'error';
+                tr.innerHTML = `
+                    <td><strong>${escapeHtml(displayName)}</strong>${agent.isHermes ? ' <span style="color:#22d3ee;font-size:0.7rem;">⚡</span>' : ''}</td>
+                    <td>${escapeHtml(agent.projectName || '—')}</td>
+                    <td><span class="monitor-status-dot ${statusClass}"></span> ${getStatusLabel(agent.status)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${agent.lastMessage ? escapeHtml(agent.lastMessage.content || '').slice(0, 60) : '—'}</td>
+                    <td><button class="btn-monitor-goto" data-project="${escapeHtml(agent.projectId || '')}" data-agent="${escapeHtml(agent.id)}">Ir al Chat</button></td>
+                `;
+                const gotoBtn = tr.querySelector('.btn-monitor-goto');
+                if (gotoBtn) {
+                    gotoBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (window.switchToChat && agent.projectId) {
+                            window.switchToChat(agent.projectId, agent.id);
+                        }
+                    });
+                }
+                tr.addEventListener('click', () => {
+                    if (window.switchToChat && agent.projectId) {
+                        window.switchToChat(agent.projectId, agent.id);
+                    }
+                });
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            console.error('[AGENT-LIST] Error:', e);
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#ff4444;">❌ Error: ' + e.message + '</td></tr>';
+        }
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Init
+    if (refreshBtn) refreshBtn.addEventListener('click', refreshAgentList);
+
+    // Auto-refresh cada 5s si el admin tab está visible
+    let listInterval = null;
+    function startAutoRefresh() {
+        if (listInterval) return;
+        listInterval = setInterval(() => {
+            const adminTab = document.getElementById('admin-tab-content');
+            if (adminTab && !adminTab.classList.contains('hidden')) {
+                refreshAgentList();
+            }
+        }, 5000);
+    }
+    function stopAutoRefresh() {
+        if (listInterval) { clearInterval(listInterval); listInterval = null; }
+    }
+
+    // Observar visibilidad
+    const adminContent = document.getElementById('admin-tab-content');
+    if (adminContent) {
+        const observer = new MutationObserver(() => {
+            if (!adminContent.classList.contains('hidden')) {
+                refreshAgentList();
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+        observer.observe(adminContent, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Refresh al cambiar sub-tab a table
+    document.querySelectorAll('.admin-sub-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            if (tab.dataset.subTab === 'table') {
+                setTimeout(refreshAgentList, 100);
+            }
+        });
+    });
+
+    // Refresh inicial
+    refreshAgentList();
+
+    console.log('[AGENT-LIST] Monitor de agentes cargado.');
 })();

@@ -11,27 +11,107 @@
 
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import path from 'path';
 
 class HermesBridge extends EventEmitter {
     constructor() {
         super();
-        this.instances = new Map(); // id -> { proc, workdir, status, logs, createdAt }
+        this.instances = new Map(); // key: "projectId:chatId" -> { proc, workdir, status, logs, createdAt }
         this._wsClients = new Set(); // WebSocket clients for live logs
     }
 
     /**
-     * Spawnea una nueva instancia de Hermes para un proyecto
-     * @param {string} projectId - ID único del proyecto
-     * @param {string} workdir - Directorio del proyecto
-     * @param {string} [model] - Modelo opcional de Hermes
-     * @returns {object} La instancia creada
+     * Encuentra el path a hermes.exe
      */
-    async startInstance(projectId, workdir, model = null) {
-        if (this.instances.has(projectId)) {
-            throw new Error(`Ya existe una instancia para el proyecto: ${projectId}`);
+    async _findHermesPath(workdir) {
+        const fs = await import('fs/promises');
+        const possiblePaths = [
+            // Ruta directa al .exe del Hermes Agent principal
+            'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe',
+            // En .venv del proyecto
+            path.join(workdir, '.venv', 'Scripts', 'hermes.exe'),
+            path.join(workdir, 'venv', 'Scripts', 'hermes.exe'),
+        ];
+        for (const p of possiblePaths) {
+            try {
+                await fs.access(p);
+                return p;
+            } catch {}
+        }
+        // Fallback: buscar en PATH real (no funciona con shell:false en cmd.exe)
+        return 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
+    }
+
+    /**
+     * Spawnea Hermes en modo oneshot (consulta única, sin TTY).
+     * @param {string} instanceKey - "projectId:chatId"
+     * @param {string} projectId
+     * @param {string} workdir
+     * @param {string} query
+     * @param {string|null} model
+     * @returns {Promise<{stdout: string, stderr: string}>}
+     */
+    async _runHermesQuery(instanceKey, projectId, workdir, query, model = null) {
+        return new Promise(async (resolve, reject) => {
+            const hermesPath = await this._findHermesPath(workdir);
+            const args = ['chat', '-q', query, '--verbose'];
+            if (model && model !== '' && model !== 'default') {
+                args.push('--model', model);
+            }
+
+            const proc = spawn(hermesPath, args, {
+                cwd: workdir,
+                stdio: ['pipe', 'pipe', 'pipe'],
+                shell: false,
+                env: {
+                    ...process.env,
+                    HERMES_WORKDIR: workdir
+                }
+            });
+
+            let stdout = '';
+            let stderr = '';
+
+            proc.stderr.on('data', (data) => {
+                const text = data.toString();
+                stderr += text;
+                const lines = text.split('\n');
+                for (const line of lines) {
+                    if (line.trim()) {
+                        this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
+                    }
+                }
+            });
+
+            proc.stdout.on('data', (data) => {
+                const text = data.toString();
+                stdout += text;
+                this._broadcastLog(instanceKey, projectId, 'stdout', text);
+            });
+
+            proc.on('error', (err) => reject(err));
+
+            proc.on('exit', (code) => {
+                resolve({ stdout, stderr, exitCode: code });
+            });
+        });
+    }
+
+    /**
+     * "Inicia" una instancia de Hermes para un chat específico.
+     * @param {string} projectId
+     * @param {string} chatId - Identificador único del chat (permite múltiples agentes por proyecto)
+     * @param {string} workdir
+     * @param {string|null} model
+     * @param {string|null} name
+     * @returns {Promise<object>}
+     */
+    async startInstance(projectId, chatId, workdir, model = null, name = null) {
+        const instanceKey = `${projectId}:${chatId}`;
+        if (this.instances.has(instanceKey)) {
+            throw new Error(`Ya existe una instancia Hermes para este agente: ${name || chatId}`);
         }
 
-        // Verificar que el directorio existe
         const fs = await import('fs/promises');
         try {
             await fs.access(workdir);
@@ -39,120 +119,69 @@ class HermesBridge extends EventEmitter {
             throw new Error(`El directorio no existe: ${workdir}`);
         }
 
-        return new Promise((resolve, reject) => {
-            // Construir el comando Hermes
-            // Usamos --jsonrpc para comunicación estructurada, o simplemente spawn hermes con workdir
-            const args = [];
-            if (model) {
-                args.push('--model', model);
-            }
+        // Verificar que hermes binario existe
+        try {
+            const hermesPath = await this._findHermesPath(workdir);
+            await fs.access(hermesPath);
+        } catch {
+            console.warn('[HERMES-BRIDGE] No se encontró hermes en PATH ni en .venv del proyecto');
+        }
 
-            const proc = spawn('hermes', args, {
-                cwd: workdir,
-                stdio: ['pipe', 'pipe', 'pipe'],
-                shell: true,
-                env: {
-                    ...process.env,
-                    HERMES_WORKDIR: workdir
-                }
-            });
+        const instance = {
+            id: instanceKey,
+            projectId,
+            chatId,
+            name: name || `⚡ Hermes: ${chatId.slice(0, 8)}`,
+            workdir,
+            status: 'idle', // NO mientes — no hay proceso corriendo
+            model: model || 'default',
+            createdAt: new Date().toISOString(),
+            logs: []
+        };
 
-            const instance = {
-                id: projectId,
-                proc,
-                workdir,
-                status: 'starting',
-                logs: [],
-                createdAt: new Date().toISOString(),
-                model: model || 'default',
-                buffer: ''
-            };
-
-            proc.stdout.on('data', (data) => {
-                const text = data.toString();
-                instance.logs.push({ type: 'stdout', text, timestamp: Date.now() });
-                // Trim logs to last 500 lines
-                if (instance.logs.length > 500) {
-                    instance.logs = instance.logs.slice(-500);
-                }
-                instance.buffer += text;
-                this._broadcastLog(projectId, 'stdout', text);
-            });
-
-            proc.stderr.on('data', (data) => {
-                const text = data.toString();
-                instance.logs.push({ type: 'stderr', text, timestamp: Date.now() });
-                if (instance.logs.length > 500) {
-                    instance.logs = instance.logs.slice(-500);
-                }
-                this._broadcastLog(projectId, 'stderr', text);
-            });
-
-            proc.on('error', (err) => {
-                instance.status = 'error';
-                instance.error = err.message;
-                this._broadcastStatus(projectId, 'error');
-                reject(err);
-            });
-
-            proc.on('exit', (code) => {
-                instance.status = 'exited';
-                instance.exitCode = code;
-                this._broadcastStatus(projectId, 'exited');
-            });
-
-            // Mark as running after a short delay
-            setTimeout(() => {
-                if (instance.status !== 'error' && instance.status !== 'exited') {
-                    instance.status = 'running';
-                    this._broadcastStatus(projectId, 'running');
-                }
-            }, 1000);
-
-            this.instances.set(projectId, instance);
-            resolve(this._sanitizeInstance(instance));
-        });
+        this.instances.set(instanceKey, instance);
+        this._broadcastStatus(instanceKey, 'idle');
+        return this._sanitizeInstance(instance);
     }
 
     /**
-     * Envía un mensaje a una instancia específica
-     * @param {string} projectId 
-     * @param {string} message 
-     * @returns {Promise<string>} respuesta parcial
+     * Envía un mensaje a Hermes (ejecuta consulta oneshot)
+     * @param {string} projectId
+     * @param {string} chatId
+     * @param {string} message
+     * @returns {Promise<string>} respuesta
      */
-    async sendMessage(projectId, message) {
-        const instance = this.instances.get(projectId);
+    async sendMessage(projectId, chatId, message) {
+        const instanceKey = `${projectId}:${chatId}`;
+        const instance = this.instances.get(instanceKey);
         if (!instance) {
-            throw new Error(`No hay instancia activa para: ${projectId}`);
-        }
-        if (instance.status !== 'running') {
-            throw new Error(`La instancia ${projectId} no está activa (status: ${instance.status})`);
+            throw new Error(`No hay instancia Hermes activa para este agente. Iniciala primero.`);
         }
 
-        return new Promise((resolve, reject) => {
-            // Limpiar buffer antes de enviar
-            instance.buffer = '';
+        // Marcar como ocupado durante el procesamiento
+        instance.status = 'running';
+        this._broadcastStatus(instanceKey, 'running');
 
-            // Escribir el mensaje en stdin
-            instance.proc.stdin.write(message + '\n');
+        const result = await this._runHermesQuery(instanceKey, projectId, instance.workdir, message, instance.model);
 
-            // Esperar respuesta (timeout 30s)
-            const timeout = setTimeout(() => {
-                reject(new Error('Timeout esperando respuesta de Hermes'));
-            }, 30000);
+        // Volver a idle después de la consulta
+        instance.status = 'idle';
+        this._broadcastStatus(instanceKey, 'idle');
 
-            const onData = (data) => {
-                const text = data.toString();
-                // Si detectamos que Hermes terminó de responder (tiene prompt de nuevo)
-                if (text.includes('>') || text.includes('❯') || text.includes('hermes')) {
-                    clearTimeout(timeout);
-                    instance.proc.stdout.removeListener('data', onData);
-                    resolve(instance.buffer || text);
-                }
-            };
+        // Loggear
+        instance.logs.push({ type: 'query', text: message, timestamp: Date.now() });
+        if (result.stdout) {
+            instance.logs.push({ type: 'response', text: result.stdout.slice(0, 200), timestamp: Date.now() });
+        }
+        if (instance.logs.length > 100) {
+            instance.logs = instance.logs.slice(-100);
+        }
 
-            instance.proc.stdout.on('data', onData);
-        });
+        if (result.exitCode !== 0) {
+            return `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`;
+        }
+
+        return result.stdout || '(respuesta vacía)';
     }
 
     /**
@@ -185,29 +214,18 @@ class HermesBridge extends EventEmitter {
     }
 
     /**
-     * Detiene una instancia
+     * Detiene una instancia (libera recursos, no hay proceso real que matar)
      */
-    async stopInstance(projectId) {
-        const instance = this.instances.get(projectId);
+    async stopInstance(projectId, chatId) {
+        const instanceKey = `${projectId}:${chatId}`;
+        const instance = this.instances.get(instanceKey);
         if (!instance) {
-            throw new Error(`No hay instancia para: ${projectId}`);
+            throw new Error(`No hay instancia para: ${instanceKey}`);
         }
 
-        return new Promise((resolve) => {
-            instance.proc.on('exit', () => {
-                this.instances.delete(projectId);
-                this._broadcastStatus(projectId, 'stopped');
-                resolve({ stopped: true });
-            });
-
-            // Enviar SIGTERM, luego SIGKILL si no responde
-            instance.proc.kill('SIGTERM');
-            setTimeout(() => {
-                try {
-                    instance.proc.kill('SIGKILL');
-                } catch { }
-            }, 3000);
-        });
+        this.instances.delete(instanceKey);
+        this._broadcastStatus(instanceKey, 'stopped');
+        return { stopped: true };
     }
 
     /**
@@ -215,10 +233,11 @@ class HermesBridge extends EventEmitter {
      */
     async stopAll() {
         const ids = [...this.instances.keys()];
-        const results = await Promise.allSettled(
-            ids.map(id => this.stopInstance(id))
-        );
-        return results.map((r, i) => ({ id: ids[i], stopped: r.status === 'fulfilled' }));
+        this.instances.clear();
+        for (const id of ids) {
+            this._broadcastStatus(id, 'stopped');
+        }
+        return ids.map(id => ({ id, stopped: true }));
     }
 
     /**
@@ -229,10 +248,20 @@ class HermesBridge extends EventEmitter {
     }
 
     /**
+     * Lista instancias de un proyecto específico
+     */
+    listProjectInstances(projectId) {
+        return [...this.instances.values()]
+            .filter(inst => inst.projectId === projectId)
+            .map(inst => this._sanitizeInstance(inst));
+    }
+
+    /**
      * Obtiene logs de una instancia
      */
-    getLogs(projectId, limit = 100) {
-        const instance = this.instances.get(projectId);
+    getLogs(projectId, chatId, limit = 100) {
+        const instanceKey = `${projectId}:${chatId}`;
+        const instance = this.instances.get(instanceKey);
         if (!instance) return [];
         return instance.logs.slice(-limit);
     }
@@ -243,31 +272,32 @@ class HermesBridge extends EventEmitter {
         ws.on('close', () => this._wsClients.delete(ws));
     }
 
-    _broadcastLog(projectId, type, text) {
-        const msg = JSON.stringify({ event: 'hermes:log', projectId, type, text, timestamp: Date.now() });
+    _broadcastLog(instanceKey, projectId, type, text) {
+        const msg = JSON.stringify({ event: 'hermes:log', instanceKey, projectId, type, text, timestamp: Date.now() });
         for (const ws of this._wsClients) {
             try { ws.send(msg); } catch { this._wsClients.delete(ws); }
         }
     }
 
-    _broadcastStatus(projectId, status) {
-        const msg = JSON.stringify({ event: 'hermes:status', projectId, status, timestamp: Date.now() });
+    _broadcastStatus(instanceKey, status) {
+        const msg = JSON.stringify({ event: 'hermes:status', instanceKey, status, timestamp: Date.now() });
         for (const ws of this._wsClients) {
             try { ws.send(msg); } catch { this._wsClients.delete(ws); }
         }
-        this.emit('status', { projectId, status });
+        this.emit('status', { instanceKey, status });
     }
 
     _sanitizeInstance(inst) {
         return {
             id: inst.id,
+            projectId: inst.projectId,
+            chatId: inst.chatId,
+            name: inst.name || `⚡ Hermes: ${(inst.chatId || inst.id).slice(0, 8)}`,
             workdir: inst.workdir,
             status: inst.status,
             model: inst.model,
             createdAt: inst.createdAt,
-            exitCode: inst.exitCode || null,
-            error: inst.error || null,
-            logs: inst.logs.slice(-20) // last 20 log lines for status
+            logs: inst.logs.slice(-10)
         };
     }
 }

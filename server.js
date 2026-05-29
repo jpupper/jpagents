@@ -31,6 +31,14 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Servir archivos estáticos (Agents Room, etc.)
+const __dirname_route = path.dirname(fileURLToPath(import.meta.url));
+app.use('/static', express.static(path.join(__dirname_route, '.')));
+
+// Servir imágenes temporales para Hermes (vision_analyze)
+const tempImagesDir = path.join(__dirname_route, 'temp_images');
+app.use('/temp-images', express.static(tempImagesDir));
+
 // Agent & Restart State
 let isAgentBusy = false;
 let needsRestart = false;
@@ -71,9 +79,11 @@ app.delete('/api/admin/traces', async (req, res) => {
     }
 });
 
-// Request Logger
+// Request Logger — solo para non-polling endpoints
 app.use((req, res, next) => {
     if (req.headers['x-silent-check']) return next();
+    // No loggear polling interno
+    if (req.url && (req.url.startsWith('/api/hermes/logs/') || req.url.includes('/logs/'))) return next();
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
@@ -977,7 +987,7 @@ app.get('/api/execute/stream/:projectId', (req, res) => {
 });
 
 app.post('/api/utils/improve-prompt', async (req, res) => {
-    const { content, model } = req.body;
+    const { content, model, apiKey, baseUrl } = req.body;
     if (!content) return res.status(400).json({ error: 'No content provided' });
 
     try {
@@ -989,27 +999,62 @@ app.post('/api/utils/improve-prompt', async (req, res) => {
             console.warn("[SERVER] Improver prompt file not found, using default.");
         }
 
-        const payload = {
-            model: model || 'llama3',
-            prompt: `${improverPrompt}\n\nTEXTO A MEJORAR:\n${content}\n\nTEXTO MEJORADO:`,
-            stream: false,
-            options: {
-                temperature: 0.7
+        const fullPrompt = `${improverPrompt}\n\nTEXTO A MEJORAR:\n${content}\n\nTEXTO MEJORADO:`;
+
+        // Detectar API según modelo y parámetros
+        const useOllama = !apiKey && (!baseUrl || baseUrl === 'http://localhost:11434');
+        let improvedContent = '';
+
+        if (useOllama) {
+            // Ollama (modelo local)
+            const ollamaModel = model || 'llama3';
+            const payload = {
+                model: ollamaModel,
+                prompt: fullPrompt,
+                stream: false,
+                options: { temperature: 0.7 }
+            };
+            const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) throw new Error(`Ollama error: ${response.statusText}`);
+            const data = await response.json();
+            improvedContent = data.response.trim();
+        } else {
+            // API remota (OpenAI-compatible: DeepSeek, OpenRouter, OpenAI, etc.)
+            const apiUrl = baseUrl ? baseUrl.replace(/\/+$/, '') : 'https://api.openai.com/v1';
+            const messages = [
+                { role: 'system', content: improverPrompt },
+                { role: 'user', content: `TEXTO A MEJORAR:\n${content}\n\nTEXTO MEJORADO:` }
+            ];
+            const response = await fetch(`${apiUrl}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey || ''}`
+                },
+                body: JSON.stringify({
+                    model: model || 'gpt-4o-mini',
+                    messages,
+                    temperature: 0.7,
+                    max_tokens: 4096
+                })
+            });
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                throw new Error(`API error (${response.status}): ${errText}`);
             }
-        };
-
-        const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            throw new Error(`Ollama error: ${response.statusText}`);
+            const data = await response.json();
+            improvedContent = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim();
         }
 
-        const data = await response.json();
-        res.json({ improvedContent: data.response.trim() });
+        if (!improvedContent) {
+            return res.json({ improvedContent: content });
+        }
+
+        res.json({ improvedContent });
 
     } catch (error) {
         console.error('[SERVER] Error improving prompt:', error);
@@ -1124,6 +1169,124 @@ app.get('/api/admin/stats', async (req, res) => {
             runningAgentsCount,
             isAgentBusy // Global flag
         });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Nuevo endpoint: lista completa de todos los agentes con su estado
+app.get('/api/admin/agents', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        const agents = [];
+
+        // Obtener instancias del bridge ANTES de procesar proyectos (necesario para detectar estado 'off')
+        const hermesInstances = hermesBridge.listInstances();
+
+        if (sessions.projects) {
+            for (const project of sessions.projects) {
+                if (project.chats) {
+                    for (const chat of project.chats) {
+                        const lastMsg = chat.messages && chat.messages.length > 0
+                            ? chat.messages[chat.messages.length - 1]
+                            : null;
+
+                        // Determinar estado
+                        let status = 'idle';
+                        if (chat.isThinking) status = 'thinking';
+                        else if (chat.isRunning) status = 'running';
+                        else if (lastMsg && (lastMsg.content || '').includes('❌')) status = 'error';
+
+                        // Si es un agente Hermes pero no hay bridge activo → APAGADO
+                        if (chat.useHermes === true && status === 'idle' && !chat.isThinking && !chat.isRunning) {
+                            const hasBridge = hermesInstances.some(inst => inst.id === project.id);
+                            if (!hasBridge) status = 'off';
+                        }
+
+                        agents.push({
+                            id: chat.id,
+                            name: chat.name || `Agente ${chat.id.slice(0, 6)}`,
+                            projectId: project.id,
+                            projectName: project.name || project.folder || project.id,
+                            status,
+                            model: chat.model || project.model || 'default',
+                            lastMessage: lastMsg ? {
+                                role: lastMsg.role,
+                                content: (lastMsg.content || '').slice(0, 200),
+                                timestamp: lastMsg.timestamp
+                            } : null,
+                            messageCount: chat.messages ? chat.messages.length : 0,
+                            folder: project.folder || '',
+                            isHermes: chat.useHermes === true
+                        });
+                    }
+                }
+            }
+        }
+
+        // También agregar instancias de Hermes Bridge
+        for (const inst of hermesInstances) {
+            // Evitar duplicados
+            if (!agents.find(a => a.id === inst.id)) {
+                agents.push({
+                    id: inst.id,
+                    name: `⚡ Hermes: ${inst.id.slice(0, 8)}`,
+                    projectId: inst.id,
+                    projectName: inst.workdir ? inst.workdir.split('/').pop().split('\\').pop() : inst.id,
+                    status: inst.status === 'running' ? 'idle' : inst.status,
+                    model: inst.model || 'default',
+                    lastMessage: inst.logs && inst.logs.length > 0
+                        ? { role: 'assistant', content: inst.logs[inst.logs.length - 1].text?.slice(0, 200), timestamp: Date.now() }
+                        : null,
+                    messageCount: inst.logs ? inst.logs.length : 0,
+                    folder: inst.workdir || '',
+                    isHermes: true
+                });
+            }
+        }
+
+        // También escanear procesos Hermes externos (corriendo fuera de JP Agents)
+        try {
+            cleanupDeadBridgeInstances();
+            const externalProcesses = await scanExternalHermesProcesses();
+            // Obtener PIDs de instancias activas del bridge (acceso directo al Map)
+            const bridgePids = new Set();
+            for (const [, bridgeInst] of hermesBridge.instances) {
+                if (bridgeInst.proc?.pid) bridgePids.add(bridgeInst.proc.pid);
+            }
+            for (const p of externalProcesses) {
+                if (bridgePids.has(p.pid)) continue;
+                let projectName = 'Sistema';
+                const cmd = p.commandLine || '';
+                const cwdMatch = cmd.match(/--workdir\s+["']?([^"'\s]+)/i);
+                if (cwdMatch) {
+                    const dirParts = cwdMatch[1].replace(/\\\\/g, '/').split('/').filter(Boolean);
+                    projectName = dirParts[dirParts.length - 1] || 'Sistema';
+                } else {
+                    const wd = p.workdir || '';
+                    const dirParts = wd.replace(/\\\\/g, '/').split('/').filter(Boolean);
+                    projectName = dirParts[dirParts.length - 1] || `PID ${p.pid}`;
+                }
+                agents.push({
+                    id: `external-hermes-${p.pid}`,
+                    name: `👻 Hermes: ${projectName}`,
+                    projectId: `external-hermes-${projectName}`,
+                    projectName: projectName,
+                    status: 'idle',
+                    model: p.commandLine?.match(/--model\s+["']?([^"'\s]+)/i)?.[1] || 'desconocido',
+                    lastMessage: { role: 'system', content: `🔮 Hermes externo (PID ${p.pid})`, timestamp: Date.now() },
+                    messageCount: 0,
+                    folder: p.workdir || '',
+                    isHermes: true,
+                    isExternal: true,
+                    pid: p.pid
+                });
+            }
+        } catch (e) {
+            console.warn('[ADMIN] Error scanning external Hermes:', e.message);
+        }
+
+        res.json({ agents });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1338,11 +1501,11 @@ app.get('/api/hermes/instances', (req, res) => {
 
 app.post('/api/hermes/start', async (req, res) => {
     try {
-        const { projectId, workdir, model } = req.body;
-        if (!projectId || !workdir) {
-            return res.status(400).json({ error: 'projectId y workdir son requeridos' });
+        const { projectId, chatId, workdir, model, name } = req.body;
+        if (!projectId || !chatId || !workdir) {
+            return res.status(400).json({ error: 'projectId, chatId y workdir son requeridos' });
         }
-        const instance = await hermesBridge.startInstance(projectId, workdir, model || null);
+        const instance = await hermesBridge.startInstance(projectId, chatId, workdir, model || null, name || null);
         res.json({ instance });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1351,13 +1514,44 @@ app.post('/api/hermes/start', async (req, res) => {
 
 app.post('/api/hermes/message', async (req, res) => {
     try {
-        const { projectId, message } = req.body;
-        if (!projectId || !message) {
-            return res.status(400).json({ error: 'projectId y message son requeridos' });
+        const { projectId, chatId, message, images, history } = req.body;
+        if (!projectId || !chatId || !message) {
+            return res.status(400).json({ error: 'projectId, chatId y message son requeridos' });
         }
-        const response = await hermesBridge.sendMessage(projectId, message);
+
+        // Construir mensaje con contexto completo si hay historial
+        let finalMessage = message;
+        if (history && Array.isArray(history) && history.length > 0) {
+            const historyBlock = history
+                .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
+                .join('\n\n');
+            finalMessage = `[Contexto de conversación previa]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+        }
+
+        // Si hay imágenes, guardarlas en temp y modificar el mensaje
+        if (images && images.length > 0) {
+            const tempDir = path.join(__dirname, 'temp_images');
+            try { await fs.mkdir(tempDir, { recursive: true }); } catch(e) {}
+
+            const imageRefs = [];
+            const imageUrls = [];
+            for (let i = 0; i < images.length; i++) {
+                const ext = images[i].startsWith('/9j/') ? 'jpg' : 'png';
+                const imgPath = path.join(tempDir, `${projectId}_img_${i}.${ext}`);
+                await fs.writeFile(imgPath, Buffer.from(images[i], 'base64'));
+                imageRefs.push(imgPath);
+                imageUrls.push(`http://localhost:${port}/temp-images/${projectId}_img_${i}.${ext}`);
+            }
+
+            const refsText = imageRefs.map((p, i) => `📷 Imagen adjunta ${i+1}: ${p}`).join('\\n');
+            const urlsText = imageUrls.map((u, i) => `🔗 URL imagen ${i+1}: ${u}`).join('\\n');
+            finalMessage = `${finalMessage}\n\n${refsText}\n\n${urlsText}\n\n(Puedes usar vision_analyze(image_url=...) para ver las imágenes adjuntas. Las URLs HTTP funcionan directamente.)`;
+        }
+
+        const response = await hermesBridge.sendMessage(projectId, chatId, finalMessage);
         res.json({ response });
     } catch (e) {
+        console.error('[HERMES] Error en sendMessage:', e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -1377,11 +1571,11 @@ app.post('/api/hermes/broadcast', async (req, res) => {
 
 app.post('/api/hermes/stop', async (req, res) => {
     try {
-        const { projectId } = req.body;
-        if (!projectId) {
-            return res.status(400).json({ error: 'projectId es requerido' });
+        const { projectId, chatId } = req.body;
+        if (!projectId || !chatId) {
+            return res.status(400).json({ error: 'projectId y chatId son requeridos' });
         }
-        const result = await hermesBridge.stopInstance(projectId);
+        const result = await hermesBridge.stopInstance(projectId, chatId);
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1405,6 +1599,106 @@ app.get('/api/hermes/logs/:projectId', (req, res) => {
         res.json({ logs });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── System Hermes Process Scanner ───
+// Escanea el sistema en busca de procesos hermes.exe activos
+// que NO estén registrados en el bridge de JP Agents.
+const execPromise = promisify(exec);
+async function scanExternalHermesProcesses() {
+    try {
+        // PowerShell: obtener procesos hermes con PID y CommandLine
+        const { stdout } = await execPromise(
+            'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name=\'hermes.exe\'\\" | Select-Object ProcessId,CommandLine,WorkingDirectory | ConvertTo-Json"',
+            { timeout: 5000 }
+        );
+        if (!stdout.trim() || stdout.trim() === 'null') return [];
+        const raw = JSON.parse(stdout.trim());
+        const processes = Array.isArray(raw) ? raw : [raw];
+        return processes.filter(p => p && p.ProcessId).map(p => ({
+            pid: p.ProcessId,
+            commandLine: p.CommandLine || '',
+            workdir: p.WorkingDirectory || p.CommandLine?.match(/--workdir["']?\s+["']?([^"'\s]+)/i)?.[1] || ''
+        }));
+    } catch (e) {
+        // Fallback: tasklist más simple
+        try {
+            const { stdout } = await execPromise('tasklist /FI "IMAGENAME eq hermes.exe" /FO CSV /NH', { timeout: 3000 });
+            const lines = stdout.trim().split('\n').filter(l => l.trim());
+            return lines.map(line => {
+                const parts = line.replace(/"/g, '').split(',');
+                return { pid: parseInt(parts[1]) || 0, commandLine: '', workdir: '' };
+            }).filter(p => p.pid > 0);
+        } catch { return []; }
+    }
+}
+
+// Limpiar instancias del bridge cuyo proceso hijo ya murió
+function cleanupDeadBridgeInstances() {
+    const instances = hermesBridge.listInstances();
+    for (const inst of instances) {
+        // Las instancias con status 'idle' y sin proceso hijo real
+        // se pueden limpiar después de un tiempo
+        const age = Date.now() - new Date(inst.createdAt).getTime();
+        if (inst.status === 'idle' && age > 60000) { // más de 1 minuto idle
+            hermesBridge.instances.delete(inst.id);
+        }
+    }
+}
+
+app.get('/api/system/hermes-processes', async (req, res) => {
+    try {
+        // Primero limpiar instancias muertas del bridge
+        cleanupDeadBridgeInstances();
+
+        // Luego escanear procesos externos
+        const externalProcesses = await scanExternalHermesProcesses();
+
+        // Obtener PIDs del bridge para filtrar externos
+        const bridgeInstances = hermesBridge.listInstances();
+        const bridgePids = new Set(
+            bridgeInstances
+                .map(i => i.proc?.pid)
+                .filter(Boolean)
+        );
+
+        const external = externalProcesses
+            .filter(p => !bridgePids.has(p.pid))
+            .map(p => {
+                // Intentar extraer nombre de proyecto del command line
+                let projectName = 'Sistema';
+                const cmd = p.commandLine || '';
+                const cwdMatch = cmd.match(/--workdir\s+["']?([^"'\s]+)/i);
+                if (cwdMatch) {
+                    const dirParts = cwdMatch[1].replace(/\\\\/g, '/').split('/').filter(Boolean);
+                    projectName = dirParts[dirParts.length - 1] || 'Sistema';
+                } else {
+                    // Intentar del working directory
+                    const wd = p.workdir || '';
+                    const dirParts = wd.replace(/\\\\/g, '/').split('/').filter(Boolean);
+                    projectName = dirParts[dirParts.length - 1] || `PID ${p.pid}`;
+                }
+                return {
+                    id: `external-hermes-${p.pid}`,
+                    name: `👻 Hermes: ${projectName}`,
+                    projectId: `external-${p.pid}`,
+                    projectName: projectName,
+                    status: 'running',
+                    model: p.commandLine?.match(/--model\s+["']?([^"'\s]+)/i)?.[1] || 'desconocido',
+                    lastMessage: { role: 'system', content: `🔮 Hermes externo (PID ${p.pid})`, timestamp: Date.now() },
+                    messageCount: 0,
+                    folder: p.workdir || '',
+                    isHermes: true,
+                    isExternal: true,
+                    pid: p.pid
+                };
+            });
+
+        res.json({ processes: external });
+    } catch (e) {
+        console.error('[SYSTEM] Error scanning Hermes processes:', e.message);
+        res.json({ processes: [] });
     }
 });
 

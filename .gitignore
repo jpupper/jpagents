@@ -33,3 +33,5 @@ checkpoints.db-wal
 vector_store/
 rag_uploads/
 
+# Temp images for Hermes
+temp_images/

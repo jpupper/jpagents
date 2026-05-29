@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agents Room — Three.js</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #08080f; font-family: 'Segoe UI', system-ui, sans-serif; }
+    canvas { display: block; cursor: pointer; }
+    #loading {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: rgba(124,77,255,0.6); font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 0.9rem; letter-spacing: 8px; z-index: 30;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+    #room-title {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      color: rgba(124,77,255,0.15); font-size: 2.8rem; font-weight: 900;
+      letter-spacing: 16px; pointer-events: none; z-index: 5;
+      font-family: 'SF Mono', monospace;
+    }
+    #data-panel {
+      position: fixed; bottom: 20px; left: 20px; z-index: 20;
+      background: rgba(8,8,15,0.85); border: 1px solid rgba(124,77,255,0.15);
+      border-radius: 12px; padding: 10px 14px;
+      max-height: 220px; overflow-y: auto;
+      font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.6rem;
+      color: rgba(255,255,255,0.4); backdrop-filter: blur(12px);
+      min-width: 200px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      transition: opacity 0.3s;
+    }
+    #data-panel.focus-hidden { opacity: 0; pointer-events: none; }
+    .agent-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .agent-row:last-child { border-bottom: none; }
+    .agent-row .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .agent-row .dot.idle { background: #7c4dff; box-shadow: 0 0 6px #7c4dff; }
+    .agent-row .dot.thinking { background: #00e5ff; box-shadow: 0 0 6px #00e5ff; }
+    .agent-row .dot.running { background: #a855f7; box-shadow: 0 0 6px #a855f7; }
+    .agent-row .dot.error { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+    .agent-row .dot.off { background: #555; box-shadow: none; }
+    .agent-row .a-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-row .a-model { color: rgba(255,255,255,0.2); font-size: 0.5rem; }
+    .agent-row .a-tag { font-size: 0.45rem; padding: 1px 4px; border-radius: 3px; background: rgba(124,77,255,0.15); color: rgba(124,77,255,0.6); }
+    .agent-row .a-tag.ghost { background: rgba(0,229,255,0.1); color: rgba(0,229,255,0.5); }
+    #refresh-btn {
+      position: fixed; top: 16px; right: 16px; z-index: 20; pointer-events: auto;
+      background: rgba(124,77,255,0.1); border: 1px solid rgba(124,77,255,0.2);
+      color: rgba(255,255,255,0.5); padding: 6px 14px; border-radius: 8px;
+      cursor: pointer; font-family: 'SF Mono', monospace; font-size: 0.65rem;
+      transition: all 0.2s;
+    }
+    #refresh-btn:hover { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.4); }
+    #focus-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      z-index: 15; opacity: 0; pointer-events: none; transition: opacity 0.4s;
+    }
+    #focus-backdrop.open { opacity: 1; pointer-events: auto; }
+    #focus-info-panel {
+      position: fixed; right: -340px; top: 0; bottom: 0; width: 320px; z-index: 20;
+      background: rgba(8,8,15,0.93); border-left: 1px solid rgba(124,77,255,0.2);
+      backdrop-filter: blur(16px); transition: right 0.4s cubic-bezier(0.4,0,0.2,1);
+      padding: 24px 20px; font-family: 'SF Mono', 'Consolas', monospace;
+      overflow-y: auto; display: flex; flex-direction: column;
+      box-shadow: -8px 0 32px rgba(0,0,0,0.5);
+    }
+    #focus-info-panel.open { right: 0; }
+    .fi-header { display: flex; align-items: center; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid rgba(124,77,255,0.12); margin-bottom: 16px; }
+    .fi-name { font-size: 1.0rem; font-weight: 700; color: rgba(255,255,255,0.9); }
+    .fi-label { font-size: 0.55rem; color: rgba(124,77,255,0.6); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .fi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.65rem; font-family: inherit; transition: all 0.2s; }
+    .fi-close:hover { border-color: rgba(124,77,255,0.4); color: rgba(255,255,255,0.7); }
+    .fi-section { margin-bottom: 14px; }
+    .fi-section-title { font-size: 0.5rem; letter-spacing: 2px; color: rgba(124,77,255,0.5); text-transform: uppercase; margin-bottom: 6px; }
+    .fi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(124,77,255,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.6rem; }
+    .fi-row-label { color: rgba(255,255,255,0.35); }
+    .fi-row-value { color: rgba(255,255,255,0.7); }
+    .fi-status-indicator { display: flex; align-items: center; gap: 6px; }
+    .fi-status-indicator .s-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .fi-status-indicator .s-dot.idle { background: #7c4dff; box-shadow: 0 0 8px #7c4dff; }
+    .fi-status-indicator .s-dot.thinking { background: #00e5ff; box-shadow: 0 0 8px #00e5ff; }
+    .fi-status-indicator .s-dot.running { background: #a855f7; box-shadow: 0 0 8px #a855f7; }
+    .fi-status-indicator .s-dot.error { background: #ff4444; box-shadow: 0 0 8px #ff4444; }
+    .fi-status-indicator .s-dot.off { background: #555; box-shadow: none; }
+    .fi-last-msg { font-size: 0.55rem; color: rgba(255,255,255,0.4); line-height: 1.6; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; }
+    .fi-tag { display: inline-block; font-size: 0.5rem; padding: 2px 8px; border-radius: 4px; background: rgba(124,77,255,0.12); color: rgba(124,77,255,0.6); margin-right: 4px; margin-bottom: 4px; }
+    .fi-tag.ghost { background: rgba(0,229,255,0.08); color: rgba(0,229,255,0.5); }
+    #unfocus-hint {
+      position: fixed; bottom: 50%; left: 50%; transform: translate(-50%, 50%);
+      color: rgba(255,255,255,0.15); font-size: 0.7rem; letter-spacing: 4px;
+      pointer-events: none; z-index: 20; opacity: 0; transition: opacity 0.4s;
+      font-family: 'SF Mono', monospace;
+    }
+    #unfocus-hint.open { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="loading">✦ INVOCANDO ✦</div>
+  <div id="room-title">✦ AGENTS ROOM ✦</div>
+  <div id="data-panel">Cargando...</div>
+  <button id="refresh-btn" onclick="window.refreshAgents()">⟳ Actualizar</button>
+  <div id="focus-backdrop"></div>
+  <div id="focus-info-panel">
+    <div class="fi-header">
+      <div>
+        <div class="fi-name" id="fi-name">—</div>
+        <div class="fi-label" id="fi-label">✦ AGENT</div>
+      </div>
+      <button class="fi-close" id="fi-close-btn">✕ Volver</button>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Estado</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Status</span>
+        <span class="fi-status-indicator" id="fi-status"><span class="s-dot idle"></span><span id="fi-status-text">idle</span></span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Modelo</span>
+        <span class="fi-row-value" id="fi-model">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Mensajes</span>
+        <span class="fi-row-value" id="fi-messages">0</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Proyecto</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Nombre</span>
+        <span class="fi-row-value" id="fi-project">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">ID</span>
+        <span class="fi-row-value" id="fi-id">—</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Último Mensaje</div>
+      <div class="fi-last-msg" id="fi-last-msg">Sin mensajes</div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Tags</div>
+      <div class="fi-properties" id="fi-tags">
+        <span class="fi-tag">✦ AI</span>
+      </div>
+    </div>
+  </div>
+  <div id="unfocus-hint">✦ Click fuera o ESC para volver ✦</div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// ─── CONFIG ───
+const API = 'http://localhost:3001/api';
+let agents = [];
+let allAgentsWithData = [];
+let mageGroup = new THREE.Group();
+let floorGroup = new THREE.Group();
+let projectColors = {}; // projectId -> color hue
+let projectCount = 0;
+
+// ─── FOCUS / RAYCASTER ───
+let focusState = null;
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const clickables = [];
+let isFocusMode = false;
+
+// ─── SCENE SETUP ───
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e0e28);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(0, 300, 500);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.NoToneMapping;
+document.body.prepend(renderer.domElement);
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(window.innerWidth, window.innerHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.prepend(labelRenderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.3;
+controls.maxPolarAngle = Math.PI / 2.2;
+controls.minDistance = 200;
+controls.maxDistance = 900;
+controls.target.set(0, 5, 0);
+
+// ─── LIGHTS ───
+const ambient = new THREE.AmbientLight(0x1a1035, 0.6);
+scene.add(ambient);
+
+const keyLight = new THREE.DirectionalLight(0xbbb8ff, 2.5);
+keyLight.position.set(100, 300, 200);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 600;
+keyLight.shadow.camera.left = -300;
+keyLight.shadow.camera.right = 300;
+keyLight.shadow.camera.top = 300;
+keyLight.shadow.camera.bottom = -300;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0x7c4dff, 1.0);
+fillLight.position.set(-200, 100, -100);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xff88cc, 0.6);
+rimLight.position.set(0, -50, -300);
+scene.add(rimLight);
+
+// ─── STARFIELD BACKGROUND ───
+function createStarfield() {
+  const starsGeo = new THREE.BufferGeometry();
+  const starCount = 3000;
+  const positions = new Float32Array(starCount * 3);
+  const sizes = new Float32Array(starCount);
+  const colors = new Float32Array(starCount * 3);
+  for (let i = 0; i < starCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 500 + Math.random() * 800;
+    positions[i*3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i*3+1] = Math.abs(r * Math.cos(phi)) * 0.4;
+    positions[i*3+2] = r * Math.sin(phi) * Math.sin(theta);
+    sizes[i] = 0.5 + Math.random() * 2;
+    const tint = Math.random();
+    colors[i*3] = 0.6 + tint * 0.3;
+    colors[i*3+1] = 0.5 + (1-tint) * 0.4;
+    colors[i*3+2] = 0.8 + Math.random() * 0.2;
+  }
+  starsGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  starsGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+  starsGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const starMat = new THREE.PointsMaterial({
+    size: 1.5,
+    transparent: true,
+    opacity: 0.6,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+  const stars = new THREE.Points(starsGeo, starMat);
+  scene.add(stars);
+  return stars;
+}
+const starfield = createStarfield();
+
+// Nebula-like ambient glow
+function createNebula() {
+  const nebulaMat = new THREE.MeshBasicMaterial({
+    color: 0x1a1040,
+    transparent: true,
+    opacity: 0.08,
+    side: THREE.BackSide,
+  });
+  const nebula = new THREE.Mesh(new THREE.SphereGeometry(600, 32, 32), nebulaMat);
+  scene.add(nebula);
+
+  const nebulaMat2 = new THREE.MeshBasicMaterial({
+    color: 0x0a2040,
+    transparent: true,
+    opacity: 0.05,
+    side: THREE.BackSide,
+  });
+  const nebula2 = new THREE.Mesh(new THREE.SphereGeometry(550, 32, 32), nebulaMat2);
+  nebula2.position.set(-100, 50, -100);
+  scene.add(nebula2);
+}
+createNebula();
+
+// ─── GROUND FLOOR (shared by all projects) ───
+function createGroundFloor() {
+  const group = new THREE.Group();
+  const yPos = -2;
+
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a18,
+    roughness: 0.9,
+    metalness: 0.1,
+  });
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(450, 48), floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = yPos;
+  floor.receiveShadow = true;
+  group.add(floor);
+
+  // Outer glow ring
+  const borderMat = new THREE.MeshBasicMaterial({
+    color: 0x7c4dff,
+    transparent: true,
+    opacity: 0.06,
+    side: THREE.DoubleSide,
+  });
+  const border = new THREE.Mesh(new THREE.RingGeometry(448, 460, 64), borderMat);
+  border.rotation.x = -Math.PI / 2;
+  border.position.y = yPos + 0.5;
+  group.add(border);
+
+  // Subtle grid across the whole floor
+  const gridHelper = new THREE.GridHelper(900, 36, 0x3a2a6a, 0x2a1a4a);
+  gridHelper.position.y = yPos + 0.5;
+  gridHelper.material.transparent = true;
+  gridHelper.material.opacity = 0.05;
+  group.add(gridHelper);
+
+  return group;
+}
+
+// ─── PROJECT NODE (small pedestal for each project) ───
+function createProjectNode(projectName, projectId, hue) {
+  const group = new THREE.Group();
+  const yPos = 0;
+
+  const color = new THREE.Color(`hsl(${hue}, 45%, 18%)`);
+  const colorLight = new THREE.Color(`hsl(${hue}, 55%, 35%)`);
+
+  // Pedestal base
+  const baseMat = new THREE.MeshStandardMaterial({
+    color: color,
+    roughness: 0.6,
+    metalness: 0.3,
+  });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(18, 22, 6, 16), baseMat);
+  base.position.y = 3;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  group.add(base);
+
+  // Pedestal top platform (glowing)
+  const topMat = new THREE.MeshStandardMaterial({
+    color: colorLight,
+    roughness: 0.4,
+    metalness: 0.5,
+    emissive: colorLight,
+    emissiveIntensity: 0.05,
+  });
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(16, 16, 1.5, 16), topMat);
+  top.position.y = 7;
+  group.add(top);
+
+  // Glow ring around pedestal
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: colorLight,
+    transparent: true,
+    opacity: 0.2,
+    side: THREE.DoubleSide,
+  });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(20, 0.8, 8, 32), ringMat);
+  ring.position.y = 7.5;
+  ring.rotation.x = Math.PI / 2;
+  group.add(ring);
+
+  // Inner glow on floor under pedestal
+  const glowFloorMat = new THREE.MeshBasicMaterial({
+    color: colorLight,
+    transparent: true,
+    opacity: 0.08,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const glowFloor = new THREE.Mesh(new THREE.CircleGeometry(24, 24), glowFloorMat);
+  glowFloor.rotation.x = -Math.PI / 2;
+  glowFloor.position.y = -1.5;
+  group.add(glowFloor);
+
+  // Light pillar (subtle)
+  const pillarMat = new THREE.MeshBasicMaterial({
+    color: colorLight,
+    transparent: true,
+    opacity: 0.03,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(4, 12, 60, 12, 1, true), pillarMat);
+  pillar.position.y = 35;
+  group.add(pillar);
+
+  // Project name label above pedestal
+  const nameDiv = document.createElement('div');
+  nameDiv.style.cssText = `
+    color: rgba(255,255,255,0.35);
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    text-shadow: 0 0 20px rgba(124,77,255,0.15);
+    background: rgba(0,0,0,0.3);
+    padding: 4px 12px;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
+  `;
+  nameDiv.textContent = projectName || 'Default';
+  const nameLabel = new CSS2DObject(nameDiv);
+  nameLabel.position.set(0, 60, 0);
+  group.add(nameLabel);
+
+  // Orbiting ring (visible indicator of the orbit path)
+  const orbitRingMat = new THREE.MeshBasicMaterial({
+    color: colorLight,
+    transparent: true,
+    opacity: 0.06,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const orbitRing = new THREE.Mesh(new THREE.RingGeometry(36, 38, 48), orbitRingMat);
+  orbitRing.rotation.x = -Math.PI / 2;
+  orbitRing.position.y = -1;
+  group.add(orbitRing);
+
+  // Small runic symbols floating around pedestal
+  const runeChars = ['✦', '◇', '⬡', '△'];
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2 + Math.random() * 0.3;
+    const r = 28;
+    const runeMat = new THREE.SpriteMaterial({
+      map: getCharTexture(runeChars[i % runeChars.length]),
+      transparent: true,
+      opacity: 0.06,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      color: new THREE.Color(`hsl(${hue}, 60%, 60%)`),
+    });
+    const rune = new THREE.Sprite(runeMat);
+    rune.position.set(Math.cos(angle) * r, 3 + Math.random() * 6, Math.sin(angle) * r);
+    rune.scale.set(8, 8, 1);
+    rune.userData = { angle, radius: r, yBase: 3, speed: 0.15 + Math.random() * 0.2, phase: Math.random() * Math.PI * 2 };
+    group.add(rune);
+  }
+
+  // Ambient point light
+  const pointLight = new THREE.PointLight(colorLight, 0.4, 100);
+  pointLight.position.set(0, 30, 0);
+  group.add(pointLight);
+
+  return group;
+}
+
+// ─── PARTICLE TEXTURE ───
+const particleCanvas = document.createElement('canvas');
+particleCanvas.width = 32;
+particleCanvas.height = 32;
+const pCtx = particleCanvas.getContext('2d');
+const gradient = pCtx.createRadialGradient(16, 16, 0, 16, 16, 16);
+gradient.addColorStop(0, 'rgba(255,255,255,1)');
+gradient.addColorStop(0.3, 'rgba(200,200,255,0.6)');
+gradient.addColorStop(1, 'rgba(255,255,255,0)');
+pCtx.fillStyle = gradient;
+pCtx.fillRect(0, 0, 32, 32);
+const particleTexture = new THREE.CanvasTexture(particleCanvas);
+
+// ─── AMBIENT PARTICLES ───
+const particleCount = 600;
+const ambientParticlesGeo = new THREE.BufferGeometry();
+const ambientPos = new Float32Array(particleCount * 3);
+const ambientSpeeds = new Float32Array(particleCount);
+const ambientSizes = new Float32Array(particleCount);
+for (let i = 0; i < particleCount; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const r = 100 + Math.random() * 300;
+  ambientPos[i*3] = Math.cos(theta) * r;
+  ambientPos[i*3+1] = 10 + Math.random() * 120;
+  ambientPos[i*3+2] = Math.sin(theta) * r;
+  ambientSpeeds[i] = 0.2 + Math.random() * 0.5;
+  ambientSizes[i] = 2 + Math.random() * 6;
+}
+ambientParticlesGeo.setAttribute('position', new THREE.BufferAttribute(ambientPos, 3));
+ambientParticlesGeo.setAttribute('size', new THREE.BufferAttribute(ambientSizes, 1));
+
+const ambientParticleMat = new THREE.PointsMaterial({
+  size: 4,
+  map: particleTexture,
+  transparent: true,
+  opacity: 0.15,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  color: 0x7c4dff,
+});
+const ambientParticles = new THREE.Points(ambientParticlesGeo, ambientParticleMat);
+scene.add(ambientParticles);
+
+// ─── BUILD MAGE ───
+function buildMage(agent, index, total, isGhost = false) {
+  const group = new THREE.Group();
+
+  const hue = (index * 47 + 264) % 360;
+  const ghostHue = 187; // cyan for ghosts
+  const mHue = isGhost ? ghostHue : hue;
+  const isOff = agent.status === 'off';
+  const statusHue = isGhost ? 187 :
+    isOff ? 0 :
+    agent.status === 'thinking' ? 187 :
+    agent.status === 'running' ? 280 :
+    agent.status === 'error' ? 0 : 264;
+  const glowColor = new THREE.Color(`hsl(${statusHue}, ${isOff ? 0 : 80}%, ${isOff ? 20 : 60}%)`);
+
+  const bodyOpacity = isGhost ? 0.45 : 1;
+  const emissiveIntensity = isGhost ? 0.15 : (isOff ? 0 : 0.1);
+  const satFactor = isOff ? 0.15 : 1; // desaturar colores si apagado
+
+  // ── Body (robe) ──
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${60 * satFactor}%, ${isGhost ? 40 : isOff ? 18 : 25}%)`),
+    roughness: 0.7,
+    metalness: 0.1,
+    transparent: isGhost,
+    opacity: bodyOpacity,
+  });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(10, 14, 30, 10), bodyMat);
+  body.position.y = 15; body.castShadow = true;
+  group.add(body);
+
+  // ── Robe trim ──
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${70 * satFactor}%, ${isGhost ? 50 : isOff ? 22 : 35}%)`),
+    roughness: 0.5, transparent: isGhost, opacity: bodyOpacity,
+  });
+  const trim = new THREE.Mesh(new THREE.TorusGeometry(12, 1.5, 8, 16), trimMat);
+  trim.position.y = 2; trim.rotation.x = Math.PI / 2;
+  group.add(trim);
+
+  // ── Head ──
+  const headMat = new THREE.MeshStandardMaterial({
+    color: isGhost ? 0x88ccff : (isOff ? 0x888888 : 0xf0d0b0),
+    roughness: 0.6, transparent: isGhost, opacity: Math.min(bodyOpacity + 0.1, 1),
+  });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(6, 12, 12), headMat);
+  head.position.y = 32; head.castShadow = true;
+  group.add(head);
+
+  // ── Hat ──
+  const hatMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${80 * satFactor}%, ${isGhost ? 35 : isOff ? 12 : 15}%)`),
+    roughness: 0.8, transparent: isGhost, opacity: bodyOpacity,
+  });
+  const brim = new THREE.Mesh(new THREE.CylinderGeometry(14, 14, 1.5, 12), hatMat);
+  brim.position.y = 33; group.add(brim);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(10, 22, 10), hatMat);
+  cone.position.y = 42; cone.castShadow = true;
+  group.add(cone);
+
+  // Hat tip with glow
+  const tipMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${isOff ? 0 : 90}%, ${isOff ? 15 : 25}%)`),
+    emissive: isOff ? new THREE.Color(0x222222) : glowColor, emissiveIntensity: emissiveIntensity,
+    transparent: isGhost, opacity: bodyOpacity + 0.2,
+  });
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(2.5, 6, 6), tipMat);
+  tip.position.y = 54;
+  group.add(tip);
+
+  // Ghost effect: additional ethereal glow layer
+  let ghostAura = null;
+  if (isGhost) {
+    const gAuraMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff,
+      transparent: true,
+      opacity: 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    ghostAura = new THREE.Mesh(new THREE.SphereGeometry(24, 16, 16), gAuraMat);
+    ghostAura.position.y = 20;
+    group.add(ghostAura);
+  }
+
+  // Eyes
+  const eyeMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${statusHue}, ${isOff ? 0 : 90}%, ${isOff ? 25 : 70}%)`),
+    emissive: isOff ? new THREE.Color(0x111111) : new THREE.Color(`hsl(${statusHue}, 90%, 60%)`),
+    emissiveIntensity: isOff ? 0 : 0.3,
+  });
+  const eye1 = new THREE.Mesh(new THREE.SphereGeometry(1.8, 8, 8), eyeMat);
+  eye1.position.set(-2.5, 32.5, 5.5); group.add(eye1);
+  const eye2 = new THREE.Mesh(new THREE.SphereGeometry(1.8, 8, 8), eyeMat);
+  eye2.position.set(2.5, 32.5, 5.5); group.add(eye2);
+
+  // Beard
+  const beardMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${40 * satFactor}%, ${isOff ? 30 : 50}%)`),
+    roughness: 0.9, transparent: isGhost, opacity: bodyOpacity,
+  });
+  const beard = new THREE.Mesh(new THREE.ConeGeometry(5, 8, 6), beardMat);
+  beard.position.set(0, 28, 4); beard.rotation.x = 0.2;
+  group.add(beard);
+
+  // Arms
+  const armMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(`hsl(${mHue}, ${55 * satFactor}%, ${isOff ? 16 : 28}%)`),
+    roughness: 0.7, transparent: isGhost, opacity: bodyOpacity,
+  });
+  const armL = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.5, 14, 6), armMat);
+  armL.position.set(-11, 18, 0); armL.rotation.z = 0.3;
+  group.add(armL);
+  const armR = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.5, 14, 6), armMat);
+  armR.position.set(11, 18, 0); armR.rotation.z = -0.3;
+  group.add(armR);
+
+  // Hands
+  const handMat = new THREE.MeshStandardMaterial({
+    color: isGhost ? 0x88ccff : (isOff ? 0x777777 : 0xf0d0b0),
+    roughness: 0.6, transparent: isGhost, opacity: Math.min(bodyOpacity + 0.15, 1),
+  });
+  const handL = new THREE.Mesh(new THREE.SphereGeometry(2.2, 6, 6), handMat);
+  handL.position.set(-14, 13, 0); group.add(handL);
+  const handR = new THREE.Mesh(new THREE.SphereGeometry(2.2, 6, 6), handMat);
+  handR.position.set(14, 13, 0); group.add(handR);
+
+  if (!isGhost) {
+    // ── Book (for non-ghost mages) ──
+    const bookGroup = new THREE.Group();
+    const pedestalMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(`hsl(${mHue}, ${40 * satFactor}%, ${isOff ? 12 : 15}%)`), roughness: 0.8, metalness: isOff ? 0 : 0.3,
+    });
+    const pedBase = new THREE.Mesh(new THREE.CylinderGeometry(7, 9, 3, 8), pedestalMat);
+    pedBase.position.y = 0; bookGroup.add(pedBase);
+    const pedColumn = new THREE.Mesh(new THREE.CylinderGeometry(4, 5, 10, 8), pedestalMat);
+    pedColumn.position.y = 6.5; bookGroup.add(pedColumn);
+    const pedTop = new THREE.Mesh(new THREE.CylinderGeometry(8, 8, 1.5, 8), pedestalMat);
+    pedTop.position.y = 12; bookGroup.add(pedTop);
+    const pedGlowMat = new THREE.MeshStandardMaterial({
+      color: isOff ? new THREE.Color(0x222222) : glowColor, emissive: isOff ? new THREE.Color(0x000000) : glowColor, emissiveIntensity: isOff ? 0 : 0.15,
+      transparent: true, opacity: isOff ? 0.05 : 0.3,
+    });
+    const pedRing = new THREE.Mesh(new THREE.TorusGeometry(6, 0.8, 8, 16), pedGlowMat);
+    pedRing.position.y = 12.5; pedRing.rotation.x = Math.PI / 2;
+    bookGroup.add(pedRing);
+
+    const bookMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.9 });
+    const bookCover = new THREE.Mesh(new THREE.BoxGeometry(14, 2, 10), bookMat);
+    bookCover.position.y = 14.5; bookGroup.add(bookCover);
+    const pageMat = new THREE.MeshStandardMaterial({ color: 0xfff8e0, roughness: 0.5 });
+    const pages = new THREE.Mesh(new THREE.BoxGeometry(12, 1.2, 8), pageMat);
+    pages.position.y = 16; bookGroup.add(pages);
+    const runeGlowMat = new THREE.MeshStandardMaterial({
+      color: isOff ? new THREE.Color(0x333333) : glowColor, emissive: isOff ? new THREE.Color(0x111111) : glowColor, emissiveIntensity: isOff ? 0 : 0.2,
+      transparent: true, opacity: isOff ? 0.1 : 0.6,
+    });
+    const runePlate = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 5), runeGlowMat);
+    runePlate.position.y = 16.8; bookGroup.add(runePlate);
+
+    bookGroup.position.set(0, 2, 16);
+    bookGroup.userData = { baseY: 2, phase: Math.random() * Math.PI * 2 };
+    group.add(bookGroup);
+    group.userData.bookGroupRef = bookGroup;
+
+    // ── Glow aura ──
+    const auraMat = new THREE.MeshBasicMaterial({
+      color: isOff ? new THREE.Color(0x222222) : glowColor, transparent: true, opacity: isOff ? 0 : 0.06,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const aura = new THREE.Mesh(new THREE.SphereGeometry(22, 16, 16), auraMat);
+    aura.position.y = 20; group.add(aura);
+
+    // Glow light
+    const glowLight = new THREE.PointLight(glowColor, isOff ? 0 : 0.4, 60);
+    glowLight.position.y = 20; group.add(glowLight);
+
+    // Enhanced effects
+    const outerAuraMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const outerAura = new THREE.Mesh(new THREE.SphereGeometry(35, 20, 20), outerAuraMat);
+    outerAura.position.y = 20; outerAura.visible = false;
+    group.add(outerAura);
+
+    const innerGlowMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const innerGlow = new THREE.Mesh(new THREE.SphereGeometry(20, 16, 16), innerGlowMat);
+    innerGlow.position.y = 20; innerGlow.visible = false;
+    group.add(innerGlow);
+
+    const coreGlowMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(12, 12, 12), coreGlowMat);
+    coreGlow.position.y = 20; coreGlow.visible = false;
+    group.add(coreGlow);
+
+    const groundRingMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const groundRing = new THREE.Mesh(new THREE.RingGeometry(8, 18, 32), groundRingMat);
+    groundRing.rotation.x = -Math.PI / 2; groundRing.position.y = -1; groundRing.visible = false;
+    group.add(groundRing);
+
+    // Energy rings
+    const energyRings = [];
+    for (let ri = 0; ri < 6; ri++) {
+      const rMat = new THREE.MeshBasicMaterial({
+        color: glowColor, transparent: true, opacity: 0.0,
+        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(2, 8, 32), rMat);
+      ring.rotation.x = -Math.PI / 2; ring.position.y = -0.5; ring.visible = false;
+      ring.userData = { phaseOffset: ri * 0.2 };
+      group.add(ring); energyRings.push(ring);
+    }
+
+    // Beam
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 8, 80, 12, 1, true), beamMat);
+    beam.position.y = 85; beam.visible = false;
+    group.add(beam);
+
+    // Rune circle
+    const runeCircleMat = new THREE.MeshBasicMaterial({
+      color: glowColor, transparent: true, opacity: 0.0,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const runeCircle = new THREE.Mesh(new THREE.RingGeometry(12, 28, 48), runeCircleMat);
+    runeCircle.rotation.x = -Math.PI / 2; runeCircle.position.y = -0.8; runeCircle.visible = false;
+    group.add(runeCircle);
+
+    // Orbit orbs
+    const orbitOrbs = [];
+    for (let oi = 0; oi < 6; oi++) {
+      const oMat = new THREE.SpriteMaterial({
+        map: getCharTexture('✦'), transparent: true, opacity: 0.0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const orb = new THREE.Sprite(oMat);
+      orb.scale.set(5, 5, 1); orb.visible = false;
+      orb.userData = { angle: (oi / 6) * Math.PI * 2, radius: 18 + oi * 3, speed: 0.4 + oi * 0.1 };
+      group.add(orb); orbitOrbs.push(orb);
+    }
+
+    Object.assign(group.userData, {
+      aura, glowLight, outerAura, innerGlow, coreGlow, groundRing, energyRings, beam, runeCircle, orbitOrbs,
+    });
+  }
+
+  // ── Position in project-based layout ──
+  // (will be set by rebuildScene)
+  group.userData = {
+    ...group.userData,
+    agentStatus: agent.status,
+    isGhost,
+    isOff,
+    ghostAura,
+    bobPhase: Math.random() * Math.PI * 2,
+    glowColor,
+    statusHue,
+    tip,
+    eyeMat,
+    ringWavePhase: 0,
+    glowBeatPhase: Math.random() * Math.PI * 2,
+    targetPos: new THREE.Vector3(0, 0, 0),
+  };
+
+  return group;
+}
+
+function getCharTexture(char) {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.font = '48px "SF Mono", "Segoe UI", monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(char, 32, 34);
+  return new THREE.CanvasTexture(c);
+}
+
+// ─── BUILD LABEL ───
+function buildLabel(agent, index) {
+  const div = document.createElement('div');
+  div.style.cssText = `
+    text-align: center;
+    font-family: 'SF Mono', 'Consolas', monospace;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  `;
+
+  const isGhost = agent.isExternal;
+  const nameColor = isGhost ? 'rgba(0,229,255,0.6)' : 'rgba(255,255,255,0.8)';
+
+  const nameEl = document.createElement('div');
+  nameEl.style.cssText = `color: ${nameColor}; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 20px rgba(124,77,255,0.3);`;
+  nameEl.textContent = agent.name || agent.id.slice(0, 10);
+  div.appendChild(nameEl);
+
+  // Línea de estado
+  const statusEl = document.createElement('div');
+  const isOff = agent.status === 'off';
+  const statusColor = agent.isExternal ? '#00e5ff' :
+    isOff ? '#666' :
+    agent.status === 'thinking' ? '#00e5ff' : agent.status === 'running' ? '#a855f7' : agent.status === 'error' ? '#ff4444' : '#7c4dff';
+  const statusText = agent.isExternal ? '👻 externo' :
+    isOff ? '⏻ apagado' :
+    agent.status === 'thinking' ? '⟳ pensando' : agent.status === 'running' ? '⚡ trabajando' : agent.status === 'error' ? '✕ error' : '◉ idle';
+  statusEl.style.cssText = `color: ${statusColor}; font-size: 7.5px; letter-spacing: 0.5px; opacity: 0.8; margin-top: 2px;`;
+  statusEl.textContent = statusText;
+  div.appendChild(statusEl);
+
+  // Project name
+  const projectEl = document.createElement('div');
+  projectEl.style.cssText = `font-size: 7px; color: rgba(255,255,255,0.2); letter-spacing: 1px; margin-top: 1px;`;
+  projectEl.textContent = agent.projectName || '';
+  div.appendChild(projectEl);
+
+  // Tag line
+  const tagEl = document.createElement('div');
+  const tagColor = isGhost ? 'rgba(0,229,255,0.4)' : (isOff ? 'rgba(100,100,100,0.4)' : 'rgba(124,77,255,0.5)');
+  tagEl.style.cssText = `font-size: 7px; color: ${tagColor}; letter-spacing: 2px; margin-top: 1px;`;
+  tagEl.textContent = isGhost ? '👻 HERMES GHOST' : (isOff ? '⏻ HERMES OFF' : (agent.isHermes ? '⚡ HERMES' : '✦ AGENT'));
+  div.appendChild(tagEl);
+
+  const label = new CSS2DObject(div);
+  return label;
+}
+
+// ─── REBUILD SCENE ───
+function rebuildScene() {
+  // Clean up old
+  cleanupScene();
+
+  // Store all agents
+  allAgentsWithData = [...agents];
+
+  // Mostrar TODOS los agentes — no filtrar por estado
+  const visibleAgents = agents;
+
+  if (visibleAgents.length === 0) {
+    scene.add(mageGroup);
+    mageParticles = [];
+    updatePanel();
+    // Ocultar loading aunque no haya agentes
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl) loadingEl.style.display = 'none';
+    return;
+  }
+
+  // Build single ground floor first
+  scene.add(floorGroup);
+  const groundFloor = createGroundFloor();
+  floorGroup.add(groundFloor);
+
+  // Group agents by project
+  const projectGroups = {};
+  for (const agent of visibleAgents) {
+    const projKey = agent.projectId || '__default__';
+    if (!projectGroups[projKey]) projectGroups[projKey] = { name: agent.projectName || 'Default', agents: [] };
+    projectGroups[projKey].agents.push(agent);
+  }
+
+  const projKeys = Object.keys(projectGroups);
+  projectCount = projKeys.length;
+
+  // ─── POLAR distribution of project nodes ───
+  const polarRadius = Math.min(180, 40 + projKeys.length * 35);
+
+  projKeys.forEach((projKey, pIdx) => {
+    const group = projectGroups[projKey];
+    // Assign a color hue for this project
+    if (!projectColors[projKey]) {
+      projectColors[projKey] = (pIdx * 60 + 264) % 360;
+    }
+    const hue = projectColors[projKey];
+
+    // Polar position — distribute projects evenly in a circle
+    const polarAngle = (pIdx / projKeys.length) * Math.PI * 2 - Math.PI / 2;
+    const px = Math.cos(polarAngle) * polarRadius;
+    const pz = Math.sin(polarAngle) * polarRadius;
+
+    // Create project node at ground level
+    const node = createProjectNode(group.name, projKey, hue);
+    node.position.set(px, 0, pz);
+    floorGroup.add(node);
+
+    // ─── Place agents ORBITING around this project node ───
+    const agentsInGroup = group.agents;
+    const orbitRadius = 42;
+
+    agentsInGroup.forEach((agent, aIdx) => {
+      const isGhost = !!agent.isExternal;
+      const mage = buildMage(agent, aIdx, agentsInGroup.length, isGhost);
+
+      // Initial orbit position
+      const orbitAngle = (aIdx / agentsInGroup.length) * Math.PI * 2;
+      const gx = px + Math.cos(orbitAngle) * orbitRadius;
+      const gz = pz + Math.sin(orbitAngle) * orbitRadius;
+
+      mage.position.set(gx, 0, gz);
+      mage.userData.targetPos = mage.position.clone();
+
+      // Store orbit data for animation
+      mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
+      mage.userData.orbitAngle = orbitAngle;
+      mage.userData.orbitRadius = orbitRadius;
+      mage.userData.orbitSpeed = 0.12 + Math.random() * 0.08;
+
+      // Store the original agent index for focus
+      const originalIndex = agents.indexOf(agent);
+
+      mage.traverse(child => {
+        if (child.isMesh) {
+          clickables.push({ mesh: child, agentIndex: originalIndex, mage });
+        }
+      });
+
+      mageGroup.add(mage);
+
+      const label = buildLabel(agent, originalIndex);
+      label.position.set(gx, 70, gz);
+      scene.add(label);
+      // Store label ref on mage so animation can follow
+      mage.userData.label = label;
+    });
+  });
+
+  scene.add(mageGroup);
+
+  // Initialize character particles
+  mageParticles = visibleAgents.map(() => ({ particles: [] }));
+  updatePanel();
+
+  // Ocultar loading después del primer render exitoso
+  const loadingEl = document.getElementById('loading');
+  if (loadingEl) loadingEl.style.display = 'none';
+}
+
+function cleanupScene() {
+  while (mageGroup.children.length) {
+    const child = mageGroup.children[0];
+    mageGroup.remove(child);
+    if (child.traverse) {
+      child.traverse(c => {
+        if (c.geometry) c.geometry.dispose();
+        if (c.material) c.material.dispose();
+      });
+    }
+  }
+  scene.remove(mageGroup);
+  mageGroup = new THREE.Group();
+
+  while (floorGroup.children.length) {
+    const child = floorGroup.children[0];
+    floorGroup.remove(child);
+    if (child.traverse) {
+      child.traverse(c => {
+        if (c.geometry) c.geometry.dispose();
+        if (c.material) c.material.dispose();
+      });
+    }
+  }
+  scene.remove(floorGroup);
+  floorGroup = new THREE.Group();
+
+  const toRemove = [];
+  scene.children.forEach(c => {
+    if (c.isCSS2DObject) toRemove.push(c);
+  });
+  toRemove.forEach(c => scene.remove(c));
+
+  cleanupCharParticles();
+  clickables.length = 0;
+  if (isFocusMode) unfocusAgent();
+}
+
+// ─── PARTICLES ───
+let mageParticles = [];
+let charParticleTexture = null;
+let charParticleGeo = null;
+
+function cleanupCharParticles() {
+  for (const entry of mageParticles) {
+    for (const p of entry.particles) {
+      scene.remove(p.sprite);
+      if (p.sprite.material) p.sprite.material.dispose();
+    }
+  }
+  mageParticles = [];
+}
+
+function spawnCharParticle(magePos) {
+  if (!charParticleTexture) {
+    const chars = ['✦', '◇', '⬡', '△', '✧', '⟡'];
+    const c = document.createElement('canvas');
+    c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    const char = chars[Math.floor(Math.random() * chars.length)];
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '24px "SF Mono", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(char, 16, 17);
+    charParticleTexture = new THREE.CanvasTexture(c);
+  }
+
+  const mat = new THREE.SpriteMaterial({
+    map: charParticleTexture,
+    transparent: true,
+    opacity: 0.8,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    color: new THREE.Color(`hsl(${Math.random() * 360}, 80%, 60%)`),
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.position.copy(magePos);
+  const startScale = 3 + Math.random() * 6;
+  sprite.scale.set(startScale, startScale, 1);
+
+  return {
+    sprite,
+    vel: new THREE.Vector3(),
+    life: 0,
+    maxLife: 0.5 + Math.random() * 1.0,
+    startScale,
+  };
+}
+
+// ─── UPDATE DATA PANEL ───
+function updatePanel() {
+  const el = document.getElementById('data-panel');
+  if (!el) return;
+  let html = '';
+  for (const a of agents) {
+    const s = a.status || 'idle';
+    const name = a.name || a.id.slice(0, 8);
+    const model = a.model || '—';
+    const isGhost = a.isExternal;
+    const tagClass = isGhost ? 'ghost' : '';
+    const isOff = s === 'off';
+    const tagText = isGhost ? '👻GHOST' : (isOff ? '⏻OFF' : (a.isHermes ? '⚡HERMES' : '✦AI'));
+    html += `<div class="agent-row"><span class="dot ${s}"></span><span class="a-name" style="${isOff ? 'color:rgba(255,255,255,0.3)' : ''}">${name}</span><span class="a-model">${model}</span><span class="a-tag ${tagClass}">${tagText}</span></div>`;
+  }
+  el.innerHTML = html || '<div style="color:rgba(255,255,255,0.2);padding:8px;text-align:center;">⏳ Esperando agentes...</div>';
+}
+
+// ─── FOCUS / UNFOCUS ───
+function focusAgent(agentIndex) {
+  if (isFocusMode) return;
+  const agentData = allAgentsWithData[agentIndex];
+  if (!agentData) return;
+
+  let targetMage = null;
+  for (const c of clickables) {
+    if (c.agentIndex === agentIndex) {
+      targetMage = c.mage;
+      break;
+    }
+  }
+  if (!targetMage) return;
+
+  isFocusMode = true;
+  focusState = {
+    agentIndex, mage: targetMage,
+    initialCamPos: camera.position.clone(),
+    initialTarget: controls.target.clone(),
+    animating: true, animT: 0,
+  };
+
+  controls.autoRotate = false;
+  controls.enableRotate = false;
+  controls.enablePan = false;
+
+  document.getElementById('focus-info-panel').classList.add('open');
+  document.getElementById('focus-backdrop').classList.add('open');
+  document.getElementById('unfocus-hint').classList.add('open');
+  document.getElementById('data-panel').classList.add('focus-hidden');
+
+  updateFocusPanel(agentData);
+}
+
+function unfocusAgent() {
+  if (!isFocusMode) return;
+  isFocusMode = false;
+  controls.autoRotate = true;
+  controls.enableRotate = true;
+  controls.enablePan = true;
+
+  document.getElementById('focus-info-panel').classList.remove('open');
+  document.getElementById('focus-backdrop').classList.remove('open');
+  document.getElementById('unfocus-hint').classList.remove('open');
+  document.getElementById('data-panel').classList.remove('focus-hidden');
+
+  focusState = null;
+}
+
+function updateFocusPanel(agent) {
+  const name = document.getElementById('fi-name');
+  const label = document.getElementById('fi-label');
+  const statusEl = document.getElementById('fi-status-text');
+  const statusDot = document.querySelector('#fi-status .s-dot');
+  const modelEl = document.getElementById('fi-model');
+  const msgsEl = document.getElementById('fi-messages');
+  const projectEl = document.getElementById('fi-project');
+  const idEl = document.getElementById('fi-id');
+  const lastMsgEl = document.getElementById('fi-last-msg');
+  const tagsEl = document.getElementById('fi-tags');
+
+  const isGhost = agent.isExternal;
+  const isOff = agent.status === 'off';
+  name.textContent = agent.name || agent.id.slice(0, 10);
+  label.textContent = isOff ? '⏻ HERMES APAGADO' : (isGhost ? '👻 HERMES EXTERNO' : (agent.isHermes ? '⚡ HERMES AGENT' : '✦ AI AGENT'));
+  const s = agent.status || 'idle';
+  statusEl.textContent = isGhost ? 'idle (external)' : (isOff ? 'apagado' : s);
+  statusDot.className = 's-dot ' + (isGhost ? 'idle' : (isOff ? 'off' : s));
+  modelEl.textContent = agent.model || 'default';
+  msgsEl.textContent = agent.messageCount || 0;
+  projectEl.textContent = agent.projectName || '—';
+  idEl.textContent = agent.id ? agent.id.slice(0, 12) + '…' : '—';
+
+  if (agent.lastMessage && agent.lastMessage.content) {
+    lastMsgEl.textContent = agent.lastMessage.content.slice(0, 300);
+  } else {
+    lastMsgEl.textContent = 'Sin mensajes';
+  }
+
+  tagsEl.innerHTML = '';
+  const typeTag = document.createElement('span');
+  typeTag.className = 'fi-tag' + (isGhost ? ' ghost' : '');
+  typeTag.textContent = isOff ? '⏻ OFF' : (isGhost ? '👻 GHOST' : (agent.isHermes ? '⚡ HERMES' : '✦ AI'));
+  tagsEl.appendChild(typeTag);
+  if (agent.model) {
+    const modelTag = document.createElement('span');
+    modelTag.className = 'fi-tag';
+    modelTag.textContent = agent.model.slice(0, 15);
+    tagsEl.appendChild(modelTag);
+  }
+  if (agent.projectName) {
+    const projTag = document.createElement('span');
+    projTag.className = 'fi-tag';
+    projTag.textContent = agent.projectName.slice(0, 20);
+    tagsEl.appendChild(projTag);
+  }
+}
+
+// ─── FETCH AGENTS ───
+let lastAgentData = '';
+window.refreshAgents = async function() {
+  try {
+    const res = await fetch(`${API}/admin/agents`);
+    const data = await res.json();
+    const newAgents = data.agents || [];
+
+    // Comparar si cambiaron
+    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, status: a.status, name: a.name, isExternal: a.isExternal })));
+    if (dataKey === lastAgentData && agents.length > 0) {
+      agents = newAgents;
+      updatePanel();
+      if (isFocusMode && focusState) {
+        const agentData = allAgentsWithData[focusState.agentIndex];
+        if (agentData) updateFocusPanel(agentData);
+      }
+      return;
+    }
+    lastAgentData = dataKey;
+    agents = newAgents;
+    rebuildScene();
+  } catch(e) {
+    console.error('[AGENTS-ROOM] Fetch error:', e.message);
+    // Ocultar loading incluso si falla el fetch
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+      loadingEl.textContent = '✦ ERROR: ' + e.message.slice(0, 30) + '... ✦';
+      loadingEl.style.color = 'rgba(255,68,68,0.6)';
+    }
+  }
+};
+
+// ─── ANIMATION LOOP ───
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const t = clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // Focus camera transition
+  if (focusState && focusState.animating) {
+    focusState.animT += dt * 0.8;
+    const p = Math.min(focusState.animT, 1);
+    const ease = 1 - Math.pow(1 - p, 3);
+
+    const camTarget = new THREE.Vector3();
+    focusState.mage.getWorldPosition(camTarget);
+    camTarget.y += 20;
+
+    const targetPos = new THREE.Vector3(
+      camTarget.x + 70, camTarget.y + 25, camTarget.z + 70
+    );
+
+    if (p < 1) {
+      camera.position.lerpVectors(focusState.initialCamPos, targetPos, ease);
+      controls.target.lerpVectors(focusState.initialTarget, camTarget, ease);
+    } else {
+      camera.position.copy(targetPos);
+      controls.target.copy(camTarget);
+      focusState.animating = false;
+    }
+  }
+
+  if (focusState && !focusState.animating) {
+    const camTarget = new THREE.Vector3();
+    focusState.mage.getWorldPosition(camTarget);
+    camTarget.y += 20;
+    controls.target.lerp(camTarget, 0.05);
+  }
+
+  // ─── Orbit agents around their project nodes ───
+  mageGroup.children.forEach((mage) => {
+    if (!mage.userData || !mage.userData.orbitCenter) return;
+    const ud = mage.userData;
+    ud.orbitAngle += dt * ud.orbitSpeed;
+    const newX = ud.orbitCenter.x + Math.cos(ud.orbitAngle) * ud.orbitRadius;
+    const newZ = ud.orbitCenter.z + Math.sin(ud.orbitAngle) * ud.orbitRadius;
+    mage.position.x = newX;
+    mage.position.z = newZ;
+    ud.targetPos.x = newX;
+    ud.targetPos.z = newZ;
+    // Move label to follow the agent
+    if (ud.label) {
+      ud.label.position.x = newX;
+      ud.label.position.z = newZ;
+    }
+  });
+
+  // Animate mages
+  mageGroup.children.forEach((mage, i) => {
+    if (!mage.userData) return;
+    const ud = mage.userData;
+    const isGhost = ud.isGhost;
+    const isOff = ud.isOff;
+    const isActive = !isGhost && !isOff && (ud.agentStatus === 'running' || ud.agentStatus === 'thinking');
+
+    // Bob — los apagados apenas se mueven
+    const bobScale = isGhost ? 1.5 : (isOff ? 0.3 : 2);
+    const bob = Math.sin(t * 0.6 + ud.bobPhase) * bobScale;
+    mage.position.y = (mage.userData.targetPos?.y || 0) + bob;
+
+    if (isGhost) {
+      // Ghost ethereal effects
+      if (ud.ghostAura) {
+        ud.ghostAura.material.opacity = 0.06 + Math.sin(t * 0.8 + i) * 0.04;
+        ud.ghostAura.scale.setScalar(1 + Math.sin(t * 0.5 + i * 0.7) * 0.1);
+      }
+      // Ghost tip flicker
+      if (ud.tip) {
+        ud.tip.material.emissiveIntensity = 0.1 + Math.sin(t * 1.5 + i * 1.3) * 0.1;
+      }
+      return; // ghosts have no book/book effects
+    }
+
+    // Book float & rotate
+    const bg = ud.bookGroupRef;
+    if (bg) {
+      bg.position.y = (bg.userData?.baseY || 2) + Math.sin(t * 0.8 + (bg.userData?.phase || 0)) * 2;
+      bg.rotation.x = Math.sin(t * 0.4 + i) * 0.1;
+      bg.rotation.z = Math.sin(t * 0.3 + i * 0.5) * 0.05;
+    }
+
+    // ── All the existing animation effects from original code ──
+    const aura = ud.aura;
+    if (aura) {
+      if (isActive) {
+        aura.material.opacity = 0.08 + Math.sin(t * 0.7 + i) * 0.06;
+        aura.scale.setScalar(1 + Math.sin(t * 0.5 + i * 1.3) * 0.12);
+      } else if (isOff) {
+        aura.material.opacity = 0;
+        aura.scale.setScalar(1);
+      } else {
+        aura.material.opacity = 0.04 + Math.sin(t * 0.5 + i) * 0.02;
+        aura.scale.setScalar(1 + Math.sin(t * 0.3 + i) * 0.05);
+      }
+    }
+
+    const gl = ud.glowLight;
+    if (gl) {
+      if (isActive) gl.intensity = 1.2 + Math.sin(t * 0.9 + i * 1.5) * 0.6;
+      else if (isOff) gl.intensity = 0;
+      else gl.intensity = 0.3 + Math.sin(t * 0.7 + i * 1.2) * 0.15;
+    }
+
+    const oa = ud.outerAura;
+    if (oa) {
+      oa.visible = isActive;
+      if (isActive) { oa.material.opacity = 0.08 + Math.sin(t * 0.4 + i) * 0.05; oa.scale.setScalar(1 + Math.sin(t * 0.3 + i * 0.7) * 0.12); }
+    }
+
+    const ig = ud.innerGlow;
+    if (ig) {
+      ig.visible = isActive;
+      if (isActive) { const beat = Math.pow(Math.abs(Math.sin(t * 3.0 + ud.glowBeatPhase)), 4); ig.material.opacity = 0.15 + beat * 0.35; ig.scale.setScalar(1 + beat * 0.3); }
+    }
+
+    const cg = ud.coreGlow;
+    if (cg) {
+      cg.visible = isActive;
+      if (isActive) { const beat = Math.pow(Math.abs(Math.sin(t * 3.0 + ud.glowBeatPhase + 0.3)), 6); cg.material.opacity = 0.1 + beat * 0.5; cg.scale.setScalar(1 + beat * 0.5); }
+    }
+
+    const orbs = ud.orbitOrbs;
+    if (orbs) {
+      orbs.forEach(orb => {
+        orb.visible = isActive;
+        if (isActive) {
+          const angle = orb.userData.angle + t * orb.userData.speed;
+          const r = orb.userData.radius;
+          orb.position.set(Math.cos(angle) * r, 20 + Math.sin(t * 0.7 + angle) * 8, Math.sin(angle) * r);
+          orb.material.opacity = 0.4 + Math.sin(t * 2 + angle) * 0.3;
+          const s = 5 + Math.sin(t * 1.5 + angle) * 2;
+          orb.scale.set(s, s, 1);
+        }
+      });
+    }
+
+    const gr = ud.groundRing;
+    if (gr) { gr.visible = isActive; if (isActive) { gr.material.opacity = 0.08 + Math.sin(t * 0.6 + i * 0.5) * 0.05; gr.scale.setScalar(1 + Math.sin(t * 0.4 + i) * 0.15); } }
+
+    const rings = ud.energyRings;
+    if (rings) {
+      if (isActive) {
+        ud.ringWavePhase = (ud.ringWavePhase || 0) + dt * 0.8;
+        rings.forEach((ring, ri) => {
+          const phase = (ud.ringWavePhase + ring.userData.phaseOffset) % 1;
+          ring.visible = true;
+          ring.scale.setScalar(1 + phase * 14);
+          ring.material.opacity = (1 - phase) * 0.18;
+        });
+      } else rings.forEach(r => { r.visible = false; });
+    }
+
+    const bm = ud.beam;
+    if (bm) { bm.visible = isActive; if (isActive) { bm.material.opacity = 0.05 + Math.sin(t * 0.5 + i * 0.7) * 0.035; bm.scale.x = 1 + Math.sin(t * 0.8 + i) * 0.4; bm.scale.z = 1 + Math.sin(t * 0.8 + i) * 0.4; } }
+
+    const rc = ud.runeCircle;
+    if (rc) { rc.visible = isActive; if (isActive) { rc.material.opacity = 0.07 + Math.sin(t * 0.5 + i * 0.5) * 0.045; rc.rotation.z = t * 0.15 + i * 1.5; } }
+
+    // Character particles
+    if (isActive && mageParticles[i] && Math.random() < 0.7) {
+      const worldPos = new THREE.Vector3();
+      mage.getWorldPosition(worldPos);
+      worldPos.y += 56;
+      worldPos.x += (Math.random() - 0.5) * 4;
+      worldPos.z += (Math.random() - 0.5) * 4;
+      const p = spawnCharParticle(worldPos);
+      const spreadAngle = Math.random() * Math.PI * 1.2 - Math.PI * 0.6;
+      const speed = 1.5 + Math.random() * 3.0;
+      p.vel.set(Math.cos(spreadAngle) * speed * 0.5, 2.0 + Math.random() * 4.0, Math.sin(spreadAngle) * speed * 0.5);
+      p.sprite.scale.setScalar(p.startScale * 1.3);
+      p.sprite.material.rotation = Math.random() * Math.PI;
+      scene.add(p.sprite);
+      if (mageParticles[i]) mageParticles[i].particles.push(p);
+    }
+
+    // Side bursts
+    if (isActive && mageParticles[i] && Math.random() < 0.3) {
+      const handPos = new THREE.Vector3();
+      mage.getWorldPosition(handPos);
+      handPos.set(handPos.x + (Math.random() > 0.5 ? 16 : -16), handPos.y + 14, handPos.z);
+      const p = spawnCharParticle(handPos);
+      p.vel.set((Math.random() - 0.5) * 4, 0.5 + Math.random() * 1.5, (Math.random() - 0.5) * 4);
+      p.sprite.scale.setScalar(p.startScale * 0.8);
+      scene.add(p.sprite);
+      if (mageParticles[i]) mageParticles[i].particles.push(p);
+    }
+  });
+
+  // Update particles
+  for (let i = 0; i < mageParticles.length; i++) {
+    const entry = mageParticles[i];
+    if (!entry) continue;
+    for (let pIdx = entry.particles.length - 1; pIdx >= 0; pIdx--) {
+      const p = entry.particles[pIdx];
+      p.life += dt;
+      p.sprite.position.x += p.vel.x * dt * 36;
+      p.sprite.position.y += p.vel.y * dt * 36;
+      p.sprite.position.z += p.vel.z * dt * 36;
+      p.vel.y -= 0.6 * dt;
+      const lifeRatio = p.life / p.maxLife;
+      p.sprite.material.opacity = lifeRatio > 0.6 ? (1 - lifeRatio) * 2.5 : 1 - lifeRatio;
+      p.sprite.scale.setScalar(p.startScale * (1 - lifeRatio * 0.6));
+      if (p.sprite.material.rotation !== undefined) p.sprite.material.rotation += dt * 3;
+      if (lifeRatio >= 1) {
+        scene.remove(p.sprite);
+        if (p.sprite.material) p.sprite.material.dispose();
+        entry.particles.splice(pIdx, 1);
+      }
+    }
+    while (entry.particles.length > 200) {
+      const p = entry.particles.shift();
+      scene.remove(p.sprite);
+      if (p.sprite.material) p.sprite.material.dispose();
+    }
+  }
+
+  // Ambient particles
+  const positions = ambientParticles.geometry.attributes.position.array;
+  for (let i = 0; i < particleCount; i++) {
+    positions[i*3+1] += Math.sin(t * ambientSpeeds[i] + i * 0.1) * 0.05;
+    if (positions[i*3+1] > 180) positions[i*3+1] = 10;
+    if (positions[i*3+1] < 5) positions[i*3+1] = 150;
+  }
+  ambientParticles.geometry.attributes.position.needsUpdate = true;
+
+  // Floor runes animation
+  floorGroup.children.forEach(floor => {
+    floor.children.forEach(child => {
+      if (child.isSprite && child.userData) {
+        const ud = child.userData;
+        child.position.y = ud.yBase + Math.sin(t * ud.speed + ud.phase) * 3;
+        child.material.rotation = t * 0.1;
+      }
+    });
+  });
+
+  controls.update();
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+
+// ─── RESIZE ───
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ─── START ───
+document.getElementById('loading').textContent = '✦ CONJURING ✦';
+refreshAgents();
+setInterval(refreshAgents, 8000);
+animate();
+
+// ─── BROADCAST CHANNEL ───
+const bc = new BroadcastChannel('jp-agents-room');
+bc.onmessage = (event) => {
+  if (event.data && event.data.type === 'agents-updated') refreshAgents();
+};
+window.addEventListener('beforeunload', () => bc.close());
+
+// ─── CLICK RAYCASTER ───
+renderer.domElement.addEventListener('click', (event) => {
+  if (isFocusMode) { unfocusAgent(); return; }
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(pointer, camera);
+  const meshes = clickables.map(c => c.mesh);
+  const intersects = raycaster.intersectObjects(meshes);
+
+  if (intersects.length > 0) {
+    const hitMesh = intersects[0].object;
+    const clickable = clickables.find(c => c.mesh === hitMesh);
+    if (clickable) focusAgent(clickable.agentIndex);
+  }
+});
+
+// ─── ESC KEY ───
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isFocusMode) unfocusAgent();
+});
+
+// ─── FI CLOSE BUTTON ───
+document.getElementById('fi-close-btn').addEventListener('click', unfocusAgent);
+  </script>
+</body>
+</html>

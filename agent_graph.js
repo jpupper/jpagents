@@ -321,7 +321,81 @@ const summarizeRepo = tool(
     }
 );
 
-const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles, searchKnowledge];
+const webFetch = tool(
+    async ({ url, maxBytes, timeoutMs, allowLocal }, config) => {
+        try {
+            return await callMCP("web_fetch", { url, maxBytes, timeoutMs, allowLocal }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_fetch",
+        description: "Descarga una URL y devuelve texto limpio (HTML->texto) con límites de tamaño.",
+        schema: z.object({
+            url: z.string().describe("URL http/https"),
+            maxBytes: z.number().optional().describe("Máximo de bytes a leer del body"),
+            timeoutMs: z.number().optional().describe("Timeout en ms"),
+            allowLocal: z.boolean().optional().describe("Permite localhost/IPs privadas")
+        }),
+    }
+);
+
+const webSearch = tool(
+    async ({ query, numResults, timeoutMs, provider, searxngUrls }, config) => {
+        try {
+            return await callMCP("web_search", { query, numResults, timeoutMs, provider, searxngUrls }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_search",
+        description: "Busca en internet y devuelve resultados (título/url/snippet).",
+        schema: z.object({
+            query: z.string().describe("Consulta a buscar"),
+            numResults: z.number().optional().describe("Cantidad de resultados (máx 10)"),
+            timeoutMs: z.number().optional().describe("Timeout en ms"),
+            provider: z.enum(["searxng", "duckduckgo_instant_answer"]).optional(),
+            searxngUrls: z.array(z.string()).optional().describe("Lista opcional de instancias SearXNG base URL")
+        }),
+    }
+);
+
+const webIndex = tool(
+    async ({ url, mode, maxPages, maxDepth, sameOrigin, maxBytesPerPage, maxCharsTotal, maxFiles, maxFileBytes, includeBinary, timeoutMs, allowLocal }, config) => {
+        try {
+            return await callMCP(
+                "web_index",
+                { url, mode, maxPages, maxDepth, sameOrigin, maxBytesPerPage, maxCharsTotal, maxFiles, maxFileBytes, includeBinary, timeoutMs, allowLocal },
+                config.configurable.thread_id,
+                config.configurable.projectId
+            );
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_index",
+        description: "Indexa un sitio (crawling) o un repo de GitHub (archivos clave) a partir de una URL.",
+        schema: z.object({
+            url: z.string().describe("URL del sitio o repositorio"),
+            mode: z.enum(["auto", "site", "github_repo"]).optional(),
+            maxPages: z.number().optional(),
+            maxDepth: z.number().optional(),
+            sameOrigin: z.boolean().optional(),
+            maxBytesPerPage: z.number().optional(),
+            maxCharsTotal: z.number().optional(),
+            maxFiles: z.number().optional(),
+            maxFileBytes: z.number().optional(),
+            includeBinary: z.boolean().optional(),
+            timeoutMs: z.number().optional(),
+            allowLocal: z.boolean().optional()
+        }),
+    }
+);
+
+const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles, searchKnowledge, webFetch, webSearch, webIndex];
 const toolNode = new ToolNode(tools);
 
 // Define el esquema de estado del grafo

@@ -37,6 +37,7 @@
       </div>
       <div class="sidebar-monitor">
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
+        <button id="agents-room-btn" class="btn-monitor" title="Agents Room 3D" style="margin-top: 6px;">🏰 Agents Room</button>
         <button id="hermes-panel-btn" class="btn-monitor" title="Panel de Control Hermes" style="margin-top: 6px;">⚡ Hermes Control</button>
       </div>
       <div class="sidebar-footer">
@@ -67,8 +68,8 @@
             <label for="deepseek-thinking-toggle-chat">🧠 Thinking</label>
           </div>
         </div>
-        <div class="config-group folder-selector">
-          <label>Directorio:</label>
+          <div class="config-group">
+            <label>Directorio:</label>
           <div class="input-group">
             <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
             <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
@@ -115,6 +116,7 @@
         <nav class="tabs-nav" id="tabs-nav">
           <div class="tab active" data-tab="chat">Chat</div>
           <div class="tab" data-tab="terminal">Terminal</div>
+          <div class="tab" data-tab="hermes" id="hermes-tab-nav" style="display:none;">⚡ Hermes</div>
           <div class="tab" data-tab="matrix">Matrix Agentic Tree</div>
         </nav>
 
@@ -220,7 +222,15 @@
           </div>
 
           <div class="monitor-container">
+            <!-- LISTA DE AGENTES -->
             <div id="admin-table-view" class="monitor-table-container">
+              <div class="monitor-toolbar">
+                <h2>📋 Lista de Agentes</h2>
+                <div class="monitor-toolbar-actions">
+                  <button id="magic-refresh-btn" class="btn-icon" title="Actualizar">🔄</button>
+                  <span class="magic-count" id="magic-count">0 agentes</span>
+                </div>
+              </div>
               <table class="monitor-table">
                 <thead>
                   <tr>
@@ -228,7 +238,6 @@
                     <th>Proyecto</th>
                     <th>Estado</th>
                     <th>Último Avance</th>
-                    <th>Instrucción Directa</th>
                     <th>Acción</th>
                   </tr>
                 </thead>
@@ -323,26 +332,72 @@
             </div>
         </div>
 
+        <!-- Hermes View -->
+        <div id="hermes-tab-content" class="tab-content hidden">
+            <div class="hermes-header">
+                <div class="hermes-title">
+                    ⚡ Hermes — <input type="text" id="hermes-agent-name" class="hermes-name-input" placeholder="Nombre del agente..." value="Hermes Agent" maxlength="30" />
+                </div>
+                <div class="hermes-status" id="hermes-status">○ Detenido</div>
+                <div class="hermes-actions">
+                    <button id="hermes-start-btn-tab" class="btn-primary-sm">▶ Iniciar</button>
+                    <button id="hermes-stop-btn-tab" class="btn-stop-hermes hidden">⏹ Detener</button>
+                </div>
+            </div>
+            <div id="hermes-output" class="hermes-output">
+                <div class="hermes-line system">Presioná ▶ Iniciar para arrancar Hermes en este proyecto.</div>
+            </div>
+            <div class="hermes-input-wrapper" id="hermes-input-area" style="display:none;">
+                <input type="text" id="hermes-input" placeholder="Escribí un mensaje para Hermes..." autocomplete="off" disabled />
+            </div>
+        </div>
+        <!-- /Hermes View -->
+
         <!-- Chat View -->
         <div id="chat-tab-content" class="tab-content hidden">
           <div id="chat-header" class="chat-header">
-            <div class="chat-header-info">
-              <span id="chat-agent-name">Agente</span>
-              <div id="chat-thinking-indicator" class="thinking-indicator hidden">
-                <div class="dot busy"></div>
-                <span id="chat-thinking-status">Pensando...</span>
-              </div>
-            </div>
-            <div class="chat-header-actions">
-                <div class="chat-model-selector-container">
-                    <label>Modelo:</label>
-                    <select id="agent-model-select" class="model-select-compact">
-                        <option value="">Default</option>
-                    </select>
+            <div class="chat-header-top">
+              <div class="chat-header-info">
+                <input type="text" id="chat-agent-name-input" class="chat-name-input" placeholder="Nombre del agente..." maxlength="30" />
+                <div id="chat-thinking-indicator" class="thinking-indicator hidden">
+                  <div class="dot busy"></div>
+                  <span id="chat-thinking-status">Pensando...</span>
                 </div>
-                <select id="agent-skill-select" class="skill-select">
-                    <option value="">Cargar Skill...</option>
-                </select>
+              </div>
+              <div class="chat-header-actions">
+                  <!-- Toggle Hermes / Local -->
+                  <div id="hermes-toggle-container" class="hermes-toggle" title="Usar Hermes Agent en vez del agente local">
+                    <button id="hermes-toggle-btn" class="btn-hermes-toggle off">
+                      <span class="toggle-icon">⚡</span>
+                      <span class="toggle-label">Local</span>
+                    </button>
+                    <button id="hermes-play-btn" class="btn-hermes-play hidden" title="Iniciar Hermes">
+                      <span class="play-icon">▶</span>
+                    </button>
+                    <button id="hermes-stop-btn-chat" class="btn-hermes-stop hidden" title="Detener Hermes">
+                      <span class="stop-icon">⏹</span>
+                    </button>
+                    <span id="hermes-status-dot" class="hermes-status-dot"></span>
+                  </div>
+                  <!-- Config dropdown compacto: Modelo + Skill en ruedita -->
+                  <div id="agent-config-dropdown" class="agent-config-dropdown">
+                    <button id="agent-config-trigger" class="btn-gear-config" title="Configuración del Agente">⚙️</button>
+                    <div id="agent-config-menu" class="agent-config-menu hidden">
+                      <div class="config-menu-row">
+                        <label>Modelo:</label>
+                        <select id="agent-model-select" class="model-select-compact">
+                          <option value="">Default (Proyecto/Global)</option>
+                        </select>
+                      </div>
+                      <div class="config-menu-row">
+                        <label>Skill:</label>
+                        <select id="agent-skill-select" class="skill-select">
+                          <option value="">Cargar Skill...</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+              </div>
             </div>
             <div id="active-skills-list" class="active-skills-list">
                 <!-- Active skills tags will appear here -->
