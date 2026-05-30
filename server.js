@@ -251,6 +251,41 @@ app.post('/api/sessions/archive', async (req, res) => {
     }
 });
 
+// Búsqueda unificada: proyectos activos + archivados
+app.get('/api/sessions/search', async (req, res) => {
+    try {
+        const q = (req.query.q || '').toLowerCase().trim();
+        if (!q) {
+            return res.json({ active: [], archived: [] });
+        }
+
+        // Buscar en sesiones activas
+        const sessionsCol = getCollection('sessions');
+        const activeData = await sessionsCol.findOne({ _id: 'global_state' });
+        const activeProjects = (activeData?.state?.projects || []).filter(p => {
+            const name = (p.name || '').toLowerCase();
+            const folder = (p.folder || '').toLowerCase();
+            const id = (p.id || '').toLowerCase();
+            return name.includes(q) || folder.includes(q) || id.includes(q);
+        });
+
+        // Buscar en archivadas
+        const archiveCol = getCollection('archived_sessions');
+        const allArchived = await archiveCol.find({}).sort({ archivedAt: -1 }).toArray();
+        const archivedProjects = allArchived.filter(p => {
+            const name = (p.name || '').toLowerCase();
+            const folder = (p.folder || '').toLowerCase();
+            const id = (p.projectId || '').toLowerCase();
+            return name.includes(q) || folder.includes(q) || id.includes(q);
+        });
+
+        res.json({ active: activeProjects, archived: archivedProjects });
+    } catch (e) {
+        console.error('[SEARCH] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/sessions/archived', async (req, res) => {
     try {
         const collection = getCollection('archived_sessions');
@@ -500,46 +535,90 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     // ── Guarda de concurrencia: si ya hay un pick en progreso, esperar a que termine ──
     if (pickFolderInProgress) {
         console.log('[SERVER] ⚠️ Pick-folder ya en progreso (PID ' + pickFolderChildPid + ') — esperando 2s y reintentando...');
-        // No matamos el proceso existente — la UX es mejor si esperamos a que el usuario termine
         await new Promise(r => setTimeout(r, 2000));
         if (pickFolderInProgress) {
-            // Si después de 2s sigue activo, lo matamos y procedemos
             console.log('[SERVER] ⚠️ Pick-folder sigue activo tras espera — matando proceso anterior...');
             await killPickFolderProcess();
             await new Promise(r => setTimeout(r, 500));
-        } else {
-            // Ya terminó, podemos proceder
+            if (pickFolderInProgress) {
+                console.log('[SERVER] ⚠️ Otra request ya inició un pick-folder. Abortando este para evitar doble diálogo.');
+                return res.json({ path: '', conflict: true });
+            }
         }
     }
 
-    console.log('[SERVER] Solicitando selector de carpetas nativo (Shell.Application)...');
+    console.log('[SERVER] Solicitando selector de carpetas nativo (WinForms TopMost owner)...');
     pickFolderInProgress = true;
 
-    // Shell.Application BrowseForFolder: nativo, sin Windows Forms, ultra confiable
+    // ── PowerShell script robusto con dueño TopMost ──
+    // Creamos un form invisible TopMost como "owner" del FolderBrowserDialog.
+    // Esto fuerza al diálogo a aparecer SIEMPRE en primer plano, solucionando
+    // el bug intermitente donde BrowseForFolder se escondía detrás de ventanas
+    // o directamente no se mostraba por falta de ventana padre en el Z-order.
     const psCommand = `
-        $shell = New-Object -ComObject Shell.Application;
-        $defaultPath = "D:\\Programacion\\jpagents\\proyects";
-        $folder = $shell.BrowseForFolder(0, "Selecciona la carpeta raiz de tu proyecto", 0, $defaultPath);
-        if ($folder) {
-            $folder.Self.Path
-        }
+        Add-Type -AssemblyName System.Windows.Forms;
+        Add-Type @"
+            using System;
+            using System.Runtime.InteropServices;
+            using System.Drawing;
+            using System.Windows.Forms;
+            public class HermesFolderPicker {
+                [DllImport("user32.dll")]
+                public static extern bool AllowSetForegroundWindow(int dwProcessId);
+                [DllImport("user32.dll")]
+                public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+                public static string Pick(string desc, string defPath) {
+                    AllowSetForegroundWindow(-1);
+                    Form owner = new Form();
+                    owner.TopMost = true;
+                    owner.ShowInTaskbar = false;
+                    owner.FormBorderStyle = FormBorderStyle.None;
+                    owner.StartPosition = FormStartPosition.Manual;
+                    owner.Location = new Point(-32000, -32000);
+                    owner.Width = 1;
+                    owner.Height = 1;
+                    owner.Show();
+                    SetForegroundWindow(owner.Handle);
+
+                    FolderBrowserDialog dlg = new FolderBrowserDialog();
+                    dlg.Description = desc;
+                    dlg.SelectedPath = defPath;
+                    dlg.ShowNewFolderButton = true;
+
+                    string path = null;
+                    if (dlg.ShowDialog(owner) == DialogResult.OK) {
+                        path = dlg.SelectedPath;
+                    }
+
+                    owner.Close();
+                    owner.Dispose();
+                    dlg.Dispose();
+                    return path;
+                }
+            }
+"@;
+        [HermesFolderPicker]::Pick("Selecciona la carpeta raiz de tu proyecto", "D:\\\\Programacion\\\\jpagents\\\\proyects");
     `.trim();
 
+    // -STA es CRÍTICO: Windows.Forms requiere Single-Threaded Apartment
+    // Sin -STA, ShowDialog() lanza excepción y el diálogo nunca aparece.
     const args = [
+        '-STA',
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-Command',
         psCommand
     ];
 
-    // Usar spawn en vez de execFile para poder trackear y matar el proceso hijo
     const child = spawn('powershell.exe', args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
+        stdio: ['ignore', 'pipe', 'pipe']
+        // NO windowsHide: el form TopMost necesita que el proceso tenga
+        // presencia en el desktop para que SetForegroundWindow funcione.
     });
 
     pickFolderChildPid = child.pid;
-    console.log('[SERVER] PowerShell (Shell.Application) spawn con PID:', child.pid);
+    console.log('[SERVER] PowerShell (HermesFolderPicker) spawn con PID:', child.pid);
 
     let stdout = '';
     let stderr = '';
@@ -547,7 +626,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     child.stdout.on('data', (data) => { stdout += data.toString(); });
     child.stderr.on('data', (data) => { stderr += data.toString(); });
 
-    // Timeout de 25s — suficiente para que el usuario elija, no tan largo que se sienta colgado
+    // Timeout de 25s — suficiente para que el usuario elija
     const timeout = setTimeout(() => {
         console.log('[SERVER] ⏰ Timeout pick-folder (25s) — matando proceso...');
         killPickFolderProcess();
@@ -579,10 +658,17 @@ app.get('/api/utils/pick-folder', async (req, res) => {
         if (res.headersSent) return;
 
         const pickedPath = stdout.trim();
-        if (stderr) {
-            console.log('[SERVER] PowerShell stderr:', stderr.trim());
+        const stderrStr = stderr.trim();
+        
+        // Si el proceso terminó con error (código != 0 o stderr presente), reportarlo
+        if (code !== 0 || stderrStr) {
+            const errDetail = stderrStr || `exit code ${code}`;
+            console.log('[SERVER] ⚠️ FolderPicker error:', errDetail);
+            console.log('[SERVER] FolderPicker Result:', pickedPath || `(Error, exit code: ${code})`);
+            return res.json({ path: '', error: 'El selector de carpetas falló', details: errDetail });
         }
-        console.log('[SERVER] Shell.Application Result:', pickedPath || `(Cancelado, exit code: ${code})`);
+        
+        console.log('[SERVER] FolderPicker Result:', pickedPath || `(Cancelado, exit code: ${code})`);
         res.json({ path: pickedPath || '' });
     });
 });
@@ -1395,6 +1481,19 @@ app.get('/api/admin/agents', async (req, res) => {
                             folder: project.folder || '',
                             isHermes: chat.useHermes === true
                         });
+
+                        // ─── Enriquecer con datos de tokens del bridge si existe ───
+                        const bridgeInst = hermesInstances.find(inst => 
+                            inst.projectId === project.id && inst.chatId === chat.id
+                        );
+                        if (bridgeInst) {
+                            const lastIdx = agents.length - 1;
+                            agents[lastIdx].cumulativeTokens = bridgeInst.cumulativeTokens || 0;
+                            agents[lastIdx].cumulativeInputTokens = bridgeInst.cumulativeInputTokens || 0;
+                            agents[lastIdx].cumulativeOutputTokens = bridgeInst.cumulativeOutputTokens || 0;
+                            agents[lastIdx].cumulativeCost = bridgeInst.cumulativeCost || 0;
+                            agents[lastIdx].cumulativeApiCalls = bridgeInst.cumulativeApiCalls || 0;
+                        }
                     }
                 }
             }
@@ -1851,10 +1950,18 @@ function spawnNewProcess() {
             shell: true
         });
         child.unref();
-        process.exit();
+        
+        // Give the new process time to bind before we exit
+        setTimeout(() => {
+            console.log('[SYSTEM] Old process exiting after spawning replacement.');
+            process.exit(0);
+        }, 2000);
     } catch (e) {
         console.error('[SYSTEM] Failed to spawn new process:', e);
-        process.exit(1);
+        console.error('[SYSTEM] The server will CONTINUE running despite restart failure.');
+        writeCrashLog('[SYSTEM] spawnNewProcess failed', e);
+        // CRITICAL BUGFIX: Do NOT process.exit(1) here — that kills the whole server!
+        // Instead, stay alive and log the error.
     }
 }
 
@@ -2570,6 +2677,7 @@ app.use((err, req, res, next) => {
 process.on('uncaughtException', (err) => {
     console.error('[CRITICAL] Uncaught Exception:', err);
     console.error('[CRITICAL] El servidor sigue vivo — intentando continuar...');
+    writeCrashLog('uncaughtException', err);
 });
 
 // BUGFIX: En Node 15+, unhandled rejections MATAN el proceso por defecto.
@@ -2577,7 +2685,26 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
     console.error('[CRITICAL] El servidor sigue vivo — rechazo no capturado pero no fatal.');
+    writeCrashLog('unhandledRejection', reason);
 });
+
+// Helper: write crash info to a file so we can debug later
+function writeCrashLog(source, error) {
+    try {
+        const crashFile = path.join(process.cwd(), 'crash.log');
+        const entry = {
+            time: new Date().toISOString(),
+            source,
+            message: error?.message || String(error),
+            stack: error?.stack || '',
+            pid: process.pid,
+            memory: process.memoryUsage()
+        };
+        fs.appendFile(crashFile, JSON.stringify(entry) + '\n').catch(() => {});
+    } catch (_) {
+        // best effort
+    }
+}
 
 // BUGFIX: Capturar 'warning' events que puedan preceder a crashes
 process.on('warning', (warning) => {
@@ -2895,6 +3022,19 @@ async function startServer() {
             reason: 'server-start',
             delay: 0
         });
+    });
+    
+    serverInstance.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`[SERVER] ERROR: Puerto ${port} en uso. Reintentando en 3s...`);
+            setTimeout(() => {
+                serverInstance.close();
+                startServer();
+            }, 3000);
+        } else {
+            console.error('[SERVER] Error al iniciar servidor:', err);
+            writeCrashLog('serverListenError', err);
+        }
     });
 }
 

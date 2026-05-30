@@ -798,6 +798,8 @@ const openWebBtn = document.getElementById('open-web-btn');
 const matrixTabContent = document.getElementById('matrix-tab-content');
 
 let currentAttachedImages = [];
+let lastRenderedChatId = null;
+let lastRenderedProjectId = null;
 let skillsList = [];
 let skillsCache = {}; // Cache for skill contents: { name: content }
 let hermesSkillsList = []; // Hermes skills: [{ name, category, description }]
@@ -1223,16 +1225,42 @@ function setupOpenFolderExplorer() {
     const btn = document.getElementById('open-folder-explorer');
     if (btn) {
         btn.onclick = async () => {
-            // 1. Matar cualquier selector de carpeta que esté abierto
-            try {
-                await fetch(`${API_BASE}/utils/kill-pick-folder`, { method: 'POST' });
-            } catch (e) {
-                // Best-effort: si falla, seguimos adelante
+            // 1. Matar cualquier selector de carpeta que esté abierto (con retry)
+            let killed = false;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const killCtrl = new AbortController();
+                    const killTimeout = setTimeout(() => killCtrl.abort(), 3000);
+                    const killRes = await fetch(`${API_BASE}/utils/kill-pick-folder`, {
+                        method: 'POST',
+                        signal: killCtrl.signal
+                    });
+                    clearTimeout(killTimeout);
+                    if (killRes.ok) killed = true;
+                } catch (e) {
+                    console.warn(`[setupOpenFolderExplorer] kill-pick-folder intento ${attempt + 1} falló:`, e.message);
+                }
+                if (killed) break;
+                if (attempt === 0) await new Promise(r => setTimeout(r, 400)); // esperar y reintentar
+            }
+            if (!killed) {
+                console.warn('[setupOpenFolderExplorer] No se pudo matar el diálogo anterior — puede haber conflicto.');
             }
             // 2. Pequeña pausa para asegurar que el proceso anterior se limpió
             await new Promise(r => setTimeout(r, 300));
-            // 3. Abrir un selector de carpeta NUEVO
-            nativePickFolder();
+            // 3. Abrir un selector de carpeta NUEVO (con await para atrapar errores)
+            try {
+                await nativePickFolder();
+            } catch (e) {
+                const errMsg = e.message || 'Error desconocido';
+                console.error('Error abriendo selector de carpeta:', errMsg);
+                alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
+                    'Error: ' + errMsg + '\n\n' +
+                    'Posibles causas:\n' +
+                    '• El diálogo fue cancelado o cerrado\n' +
+                    '• El servidor no respondió a tiempo\n' +
+                    '• Intentá de nuevo — suele funcionar al segundo intento.');
+            }
         };
     }
 }
@@ -2169,7 +2197,7 @@ function checkVisionCapability() {
 }
 
 function renderProjectList() {
-    chatList.innerHTML = state.projects.map(p => {
+    chatList.innerHTML = state.projects.map((p, idx) => {
         const isThinking = p.chats && p.chats.some(c => c.isThinking);
         const corruptedClass = p.isCorrupted ? 'corrupted' : '';
         const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
@@ -2186,8 +2214,16 @@ function renderProjectList() {
         return `
             <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
                  data-id="${p.id}" 
+                 data-idx="${idx}"
                  title="${corruptedTitle}"
+                 draggable="true"
+                 ondragstart="window.onProjectDragStart(event, '${p.id}')"
+                 ondragend="window.onProjectDragEnd(event)"
+                 ondragover="window.onProjectDragOver(event)"
+                 ondragleave="window.onProjectDragLeave(event)"
+                 ondrop="window.onProjectDrop(event, '${p.id}')"
                  onclick="window.switchProject('${p.id}', event)">
+                <span class="drag-grip" title="Arrastrar para reordenar">⠿</span>
                 <div class="chat-item-main">
                     <div class="name-row">
                         <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
@@ -2245,12 +2281,22 @@ function renderTabs() {
 
     // 2. Chats Tabs
     const chats = project.chats || [];
-    chats.forEach(chat => {
+    chats.forEach((chat, idx) => {
         const summonedClass = chat.isNew ? 'summoned-anim' : '';
         if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
 
         tabsHtml += `
-            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" onclick="window.switchTab('${chat.id}')">
+            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" 
+                 data-tab-id="${chat.id}"
+                 data-tab-type="chat"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${chat.id}', 'chat')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
+                 onclick="window.switchTab('${chat.id}')">
                 <span>🤖 ${chat.name}</span>
                 <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
@@ -2260,10 +2306,20 @@ function renderTabs() {
 
     // 3. File Tabs
     const openFiles = project.openFiles || [];
-    openFiles.forEach(file => {
+    openFiles.forEach((file, idx) => {
         const sanitizedPath = file.path.replace(/\\/g, '/');
         tabsHtml += `
-            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" onclick="window.switchTab('${sanitizedPath}')">
+            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
+                 data-tab-id="${sanitizedPath}"
+                 data-tab-type="file"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${sanitizedPath}', 'file')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${sanitizedPath}', 'file')"
+                 onclick="window.switchTab('${sanitizedPath}')">
                 <span>📄 ${file.name}</span>
                 <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">&times;</span>
             </div>
@@ -2578,8 +2634,11 @@ function updateViewVisibility() {
         chatTabContent.classList.remove('hidden');
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
-            // Solo renderizar mensajes si la vista estaba oculta (cambio de tab real)
-            if (wasHidden) {
+            // Solo renderizar mensajes si la vista estaba oculta (cambio de tab real) o si cambió el chat/proyecto
+            const chatOrProjectChanged = chat.id !== lastRenderedChatId || project.id !== lastRenderedProjectId;
+            if (wasHidden || chatOrProjectChanged) {
+                lastRenderedChatId = chat.id;
+                lastRenderedProjectId = project.id;
                 renderMessages(false);
                 renderAgentSkills();
             }
@@ -2645,7 +2704,7 @@ function updateViewVisibility() {
                     if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
                 });
                 // Iniciar health-check periódico (30s) para esta ventana de chat
-                startHealthCheck(project.id, chat.id);
+                if (window.startHealthCheck) window.startHealthCheck(project.id, chat.id);
             } else {
                 // Si no usa Hermes, ocultar botones
                 const hermesPlayBtn = document.getElementById('hermes-play-btn');
@@ -3001,6 +3060,9 @@ window.closeFileTab = (path) => {
 };
 
 window.switchProject = (id, event = null) => {
+    // Don't switch if we just finished a drag
+    if (draggedProjectId) return;
+    
     if (event) {
         // If it's the active project and we clicked the name, let contenteditable work
         if (event.target.classList.contains('session-name') && id === state.activeProjectId) return;
@@ -3329,6 +3391,7 @@ function renderMessages(shouldRenderLayout = false) {
 
         // Si es un mensaje de progreso de Hermes (activo o finalizado)
         if (m.isProgress) {
+            div.id = m.id;
             const isMinimized = m.minimized === true;
             const isFinished = m.finished === true;
             const progressLines = m.content.split('\n').filter(l => l.trim());
@@ -6302,9 +6365,9 @@ async function nativePickFolder() {
     const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
     btns.forEach(b => b.innerHTML = '⏳');
     try {
-        // AbortController con timeout de 30s para no quedarse colgado
+        // AbortController con timeout de 28s (servidor tiene 25s, damos 3s de margen)
         const ctrl = new AbortController();
-        const timeoutId = setTimeout(() => ctrl.abort(), 30000);
+        const timeoutId = setTimeout(() => ctrl.abort(), 28000);
         const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
         clearTimeout(timeoutId);
         if (res && res.ok) {
@@ -6312,16 +6375,36 @@ async function nativePickFolder() {
             if (data.path) {
                 folderPathInput.value = data.path;
                 window.scanFolder(data.path);
+            } else if (data.conflict) {
+                // Otro diálogo sigue abierto — feedback inmediato
+                console.warn('[nativePickFolder] Conflicto: otro selector sigue activo.');
+                if (typeof showToast === 'function') {
+                    showToast('⚠️ Ya hay un selector de carpeta abierto. Cerrá el diálogo anterior y probá de nuevo.', 'warning');
+                }
+                // No tiramos error — el usuario solo necesita saber qué pasó
+            } else if (data.error) {
+                // El servidor reportó un error explícito (stderr, timeout interno, etc.)
+                const msg = data.error + (data.details ? ': ' + data.details : '');
+                console.error('[nativePickFolder] Error del servidor:', msg);
+                throw new Error(msg);
             }
+            // Si no hay path, error, ni conflict → el usuario canceló el diálogo (OK)
         } else if (res) {
             const errorData = await res.json().catch(() => ({}));
-            console.error("No se pudo abrir el selector de carpetas:", errorData.error);
+            const msg = errorData.error || 'Error desconocido del servidor';
+            console.error("No se pudo abrir el selector de carpetas:", msg);
+            throw new Error(msg);
+        } else {
+            throw new Error('No se recibió respuesta del servidor');
         }
     } catch (e) {
         if (e.name === 'AbortError') {
-            console.error("⏰ Timeout: el selector de carpetas tardó más de 30s. Reintentá.");
+            const msg = '⏰ Timeout: el selector tardó más de 28s. Reintentá.';
+            console.error(msg);
+            throw new Error(msg);
         } else {
             console.error("Exception in nativePickFolder:", e);
+            throw e; // Re-lanzar para que el caller pueda mostrar feedback
         }
     }
     finally {
@@ -6483,6 +6566,9 @@ function setupEventListeners() {
             healthCheckInterval = null;
         }
     }
+    // Exponer para que updateViewVisibility() pueda llamarlas
+    window.startHealthCheck = startHealthCheck;
+    window.stopHealthCheck = stopHealthCheck;
 
     // Función para iniciar Hermes (async, espera resultado)
     async function startHermesForChat(projectId, chatId, workdir, model, agentName) {
@@ -6616,8 +6702,19 @@ function setupEventListeners() {
             chatNameInput.removeAttribute('data-manual');
         });
     }
-    scanFolderBtn.onclick = nativePickFolder;
-    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
+    // Wrapper para dar feedback visual si falla el selector de carpeta
+    const safePickFolder = async () => {
+        try { await nativePickFolder(); }
+        catch (e) {
+            alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
+                'Posibles causas:\n' +
+                '• El diálogo fue cancelado o cerrado\n' +
+                '• El servidor no respondió a tiempo\n' +
+                '• Intentá de nuevo — suele funcionar al segundo intento.');
+        }
+    };
+    scanFolderBtn.onclick = safePickFolder;
+    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = safePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
     const thinkingToggleChat = document.getElementById('deepseek-thinking-toggle-chat');
@@ -7665,69 +7762,75 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-100).join('\n');
                             }
 
-                            // --- UPDATE DOM DIRECTLY: no usar renderMessages() que es muy pesado ---
-                            // Buscar el elemento del progreso en el DOM actual
-                            const progressEl = chatMessages.querySelector(`.hermes-progress`);
-                            if (progressEl) {
-                                const summaryEl = progressEl.querySelector('.progress-summary');
-                                const detailPre = progressEl.querySelector('.hermes-progress-detail pre');
-                                if (summaryEl) {
-                                    const firstLine = progressChatMsg.content.split('\n').find(l => l.trim()) || '⚡ Procesando...';
-                                    summaryEl.textContent = firstLine;
-                                }
-                                if (detailPre) {
-                                    const progressLines = progressChatMsg.content.split('\n').filter(l => l.trim());
-                                    const detailContent = progressLines.slice(1).join('\n');
-                                    detailPre.innerHTML = formatProgressLines(detailContent);
-                                }
-                            } else {
-                                // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
-                                if (!progressRenderTimer) {
-                                    progressRenderTimer = setTimeout(() => {
-                                        progressRenderTimer = null;
-                                        // Solo actualizar mensajes, no sidebar/tabs
-                                        const chat = getActiveChat();
-                                        if (!chat) return;
-                                        chatMessages.innerHTML = '';
-                                        chat.messages.forEach(m => {
-                                            if (m.isProgress && m.finished && m._hidden) return;
-                                            const div = document.createElement('div');
-                                            div.className = `message ${m.role}`;
-                                            if (m.isProgress) {
-                                                const isFinished = m.finished === true;
-                                                const progressLines = m.content.split('\n').filter(l => l.trim());
-                                                const summary = progressLines[0] || '⚡ Procesando...';
-                                                const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
-                                                const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
-                                                const displaySummary = errorLine || doneLine || summary;
-                                                const detailContent = progressLines.slice(1).join('\n');
-                                                const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
-                                                div.className = `message system hermes-progress ${stateClass}`;
-                                                div.innerHTML = `
-                                                    <div class="hermes-progress-toggle maximized">
-                                                        <span class="progress-arrow">▼</span>
-                                                        <span class="progress-summary">${escapeHtml(displaySummary)}</span>
-                                                    </div>
-                                                    <div class="hermes-progress-detail">
-                                                        <pre>${formatProgressLines(detailContent)}</pre>
-                                                    </div>
-                                                `;
-                                            } else {
-                                                div.innerHTML = formatMarkdown(m.content);
+                            // --- UPDATE DOM DIRECTLY: only if this chat is the currently active chat ---
+                            const activeChat = getActiveChat();
+                            if (activeChat && activeChat.id === chat.id) {
+                                // Buscar el elemento del progreso por ID específico en el DOM actual
+                                const progressEl = chatMessages.querySelector(`#${progressMsgId}`);
+                                if (progressEl) {
+                                    const summaryEl = progressEl.querySelector('.progress-summary');
+                                    const detailPre = progressEl.querySelector('.hermes-progress-detail pre');
+                                    if (summaryEl) {
+                                        const firstLine = progressChatMsg.content.split('\n').find(l => l.trim()) || '⚡ Procesando...';
+                                        summaryEl.textContent = firstLine;
+                                    }
+                                    if (detailPre) {
+                                        const progressLines = progressChatMsg.content.split('\n').filter(l => l.trim());
+                                        const detailContent = progressLines.slice(1).join('\n');
+                                        detailPre.innerHTML = formatProgressLines(detailContent);
+                                    }
+                                } else {
+                                    // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
+                                    if (!progressRenderTimer) {
+                                        progressRenderTimer = setTimeout(() => {
+                                            progressRenderTimer = null;
+                                            
+                                            // Verificar de nuevo si sigue activo este chat
+                                            const currentActiveChat = getActiveChat();
+                                            if (currentActiveChat && currentActiveChat.id === chat.id) {
+                                                chatMessages.innerHTML = '';
+                                                chat.messages.forEach(m => {
+                                                    if (m.isProgress && m.finished && m._hidden) return;
+                                                    const div = document.createElement('div');
+                                                    div.className = `message ${m.role}`;
+                                                    if (m.isProgress) {
+                                                        div.id = m.id;
+                                                        const isFinished = m.finished === true;
+                                                        const progressLines = m.content.split('\n').filter(l => l.trim());
+                                                        const summary = progressLines[0] || '⚡ Procesando...';
+                                                        const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+                                                        const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+                                                        const displaySummary = errorLine || doneLine || summary;
+                                                        const detailContent = progressLines.slice(1).join('\n');
+                                                        const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+                                                        div.className = `message system hermes-progress ${stateClass}`;
+                                                        div.innerHTML = `
+                                                            <div class="hermes-progress-toggle maximized">
+                                                                <span class="progress-arrow">▼</span>
+                                                                <span class="progress-summary">${escapeHtml(displaySummary)}</span>
+                                                            </div>
+                                                            <div class="hermes-progress-detail">
+                                                                <pre>${formatProgressLines(detailContent)}</pre>
+                                                            </div>
+                                                        `;
+                                                    } else {
+                                                        div.innerHTML = formatMarkdown(m.content);
+                                                    }
+                                                    chatMessages.appendChild(div);
+                                                });
+                                                chatMessages.scrollTop = chatMessages.scrollHeight;
                                             }
-                                            chatMessages.appendChild(div);
-                                        });
-                                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                                    }, 200);
+                                        }, 200);
+                                    }
                                 }
-                            }
 
-                            // Actualizar el indicador de thinking también (rápido, textContent)
-                            const statusEl = document.getElementById('chat-thinking-status');
-                            if (statusEl) {
-                                const lastClean = lines.filter(l => l.trim()).pop() || '';
-                                const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
-                                if (short) statusEl.textContent = '⚡ ' + short;
+                                // Actualizar el indicador de thinking también (rápido, textContent)
+                                const statusEl = document.getElementById('chat-thinking-status');
+                                if (statusEl) {
+                                    const lastClean = lines.filter(l => l.trim()).pop() || '';
+                                    const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
+                                    if (short) statusEl.textContent = '⚡ ' + short;
+                                }
                             }
                         }
                     }
@@ -7808,7 +7911,8 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
                 images,
                 history: historyMessages,
                 skills: activeSkills.length > 0 ? activeSkills : undefined
-            })
+            }),
+            signal: controller.signal
         });
 
         if (!res.ok) {
@@ -8155,4 +8259,240 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
     refreshAgentList();
 
     console.log('[AGENT-LIST] Monitor de agentes cargado.');
+})();
+
+// ═══════════════════════════════════════════════════════════════
+//  DRAG & DROP — Reordenar Proyectos (Sidebar)
+// ═══════════════════════════════════════════════════════════════
+let draggedProjectId = null;
+
+window.onProjectDragStart = (e, projectId) => {
+    draggedProjectId = projectId;
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', projectId);
+};
+
+window.onProjectDragEnd = (e) => {
+    e.target.classList.remove('dragging');
+    document.querySelectorAll('.chat-item').forEach(el => el.classList.remove('drag-over'));
+    draggedProjectId = null;
+};
+
+window.onProjectDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = e.currentTarget;
+    if (target.dataset.id !== draggedProjectId) {
+        target.classList.add('drag-over');
+    }
+};
+
+window.onProjectDragLeave = (e) => {
+    e.currentTarget.classList.remove('drag-over');
+};
+
+window.onProjectDrop = (e, targetId) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    
+    if (!draggedProjectId || draggedProjectId === targetId) return;
+    
+    const fromIdx = state.projects.findIndex(p => p.id === draggedProjectId);
+    const toIdx = state.projects.findIndex(p => p.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    
+    // Reorder
+    const [moved] = state.projects.splice(fromIdx, 1);
+    state.projects.splice(toIdx, 0, moved);
+    
+    renderProjectList();
+    saveData();
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  DRAG & DROP — Reordenar Tabs
+// ═══════════════════════════════════════════════════════════════
+let draggedTabId = null;
+let draggedTabType = null;
+
+window.onTabDragStart = (e, tabId, tabType) => {
+    draggedTabId = tabId;
+    draggedTabType = tabType;
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', tabId);
+};
+
+window.onTabDragEnd = (e) => {
+    e.target.classList.remove('dragging');
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('drag-over'));
+    draggedTabId = null;
+    draggedTabType = null;
+};
+
+window.onTabDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = e.currentTarget;
+    if (target.dataset.tabId !== draggedTabId) {
+        target.classList.add('drag-over');
+    }
+};
+
+window.onTabDragLeave = (e) => {
+    e.currentTarget.classList.remove('drag-over');
+};
+
+window.onTabDrop = (e, targetTabId, targetTabType) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    
+    const p = getActiveProject();
+    if (!p || !draggedTabId || draggedTabId === targetTabId) return;
+    if (draggedTabType !== targetTabType) return; // No mezclar chats con files
+    
+    if (draggedTabType === 'chat') {
+        const fromIdx = (p.chats || []).findIndex(c => c.id === draggedTabId);
+        const toIdx = (p.chats || []).findIndex(c => c.id === targetTabId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const [moved] = p.chats.splice(fromIdx, 1);
+        p.chats.splice(toIdx, 0, moved);
+    } else if (draggedTabType === 'file') {
+        const fromIdx = (p.openFiles || []).findIndex(f => f.path.replace(/\\/g, '/') === draggedTabId);
+        const toIdx = (p.openFiles || []).findIndex(f => f.path.replace(/\\/g, '/') === targetTabId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const [moved] = p.openFiles.splice(fromIdx, 1);
+        p.openFiles.splice(toIdx, 0, moved);
+    }
+    
+    renderTabs();
+    saveData();
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  MINI BUSCADOR — Proyectos Activos + Archivados
+// ═══════════════════════════════════════════════════════════════
+let searchTimeout = null;
+let searchDropdownVisible = false;
+
+window.searchProjects = async (query) => {
+    const q = (query || '').trim();
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (!dropdown) return;
+    
+    if (!q || q.length < 1) {
+        dropdown.classList.add('hidden');
+        searchDropdownVisible = false;
+        chatList.style.display = '';
+        return;
+    }
+    
+    // Debounce
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        try {
+            const res = await fetch(`${API_BASE}/sessions/search?q=${encodeURIComponent(q)}`);
+            const data = await res.json();
+            
+            const active = data.active || [];
+            const archived = data.archived || [];
+            
+            let html = '';
+            
+            if (active.length === 0 && archived.length === 0) {
+                html = '<div class="search-result-empty">🔍 No se encontraron proyectos</div>';
+            } else {
+                if (active.length > 0) {
+                    html += '<div class="search-section-label">📌 Activos</div>';
+                    active.forEach(p => {
+                        const chatCount = (p.chats || []).length;
+                        html += `
+                            <div class="search-result-item active-result" 
+                                 onclick="window.gotoSearchResult('${p.id}', 'active')">
+                                <span class="search-result-name">📁 ${escapeHtml(p.name)}</span>
+                                <span class="search-result-meta">${chatCount} agentes | ${escapeHtml(p.folder || 'Sin carpeta')}</span>
+                            </div>
+                        `;
+                    });
+                }
+                
+                if (archived.length > 0) {
+                    html += '<div class="search-section-label">🗄️ Archivados</div>';
+                    archived.forEach(p => {
+                        const date = p.archivedAt ? new Date(p.archivedAt).toLocaleDateString() : '—';
+                        html += `
+                            <div class="search-result-item archived-result" 
+                                 onclick="window.restoreProject('${p.projectId}')">
+                                <span class="search-result-name">📦 ${escapeHtml(p.name)}</span>
+                                <span class="search-result-meta">Archivado: ${date} | ${escapeHtml(p.folder || 'Sin carpeta')}</span>
+                                <span class="search-restore-hint">↩ Click para restaurar</span>
+                            </div>
+                        `;
+                    });
+                }
+            }
+            
+            dropdown.innerHTML = html;
+            dropdown.classList.remove('hidden');
+            searchDropdownVisible = true;
+            chatList.style.display = 'none';
+        } catch (e) {
+            console.error('[SEARCH] Error:', e);
+            dropdown.innerHTML = '<div class="search-result-empty error">Error al buscar</div>';
+            dropdown.classList.remove('hidden');
+        }
+    }, 250);
+};
+
+window.gotoSearchResult = (projectId) => {
+    window.switchProject(projectId);
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (dropdown) dropdown.classList.add('hidden');
+    searchDropdownVisible = false;
+    chatList.style.display = '';
+    const searchInput = document.getElementById('project-search');
+    if (searchInput) searchInput.value = '';
+};
+
+// Initialize search input when DOM is ready
+(function initSearchBar() {
+    const searchInput = document.getElementById('project-search');
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (!searchInput) return;
+    
+    searchInput.addEventListener('input', (e) => {
+        window.searchProjects(e.target.value);
+    });
+    
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            searchInput.value = '';
+            window.searchProjects('');
+        }
+    });
+    
+    // Close dropdown on click outside
+    document.addEventListener('click', (e) => {
+        if (dropdown && searchDropdownVisible) {
+            if (!dropdown.contains(e.target) && e.target !== searchInput) {
+                dropdown.classList.add('hidden');
+                searchDropdownVisible = false;
+                chatList.style.display = '';
+                searchInput.value = '';
+            }
+        }
+    });
+    
+    // Clear search on focus loss
+    searchInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            if (searchDropdownVisible && !dropdown.contains(document.activeElement)) {
+                dropdown.classList.add('hidden');
+                searchDropdownVisible = false;
+                chatList.style.display = '';
+                searchInput.value = '';
+            }
+        }, 200);
+    });
 })();

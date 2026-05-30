@@ -1128,13 +1128,14 @@ app.post("/messages/:sessionId", async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`\x1b[32m[MCP] Server v1.1 running at http://localhost:${port}\x1b[0m`);
+const serverInst = app.listen(port, () => {
+  console.log(`[MCP] Server v1.1 running at http://localhost:${port}`);
 }).on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`\x1b[31m[MCP] ERROR: El puerto ${port} ya está en uso. Prueba matando el proceso anterior.\x1b[0m`);
+    console.error(`[MCP] ERROR: El puerto ${port} ya está en uso. Probá matando el proceso anterior.`);
+    console.error(`[MCP] Intentando continuar — el MCP server no está disponible en este proceso.`);
   } else {
-    console.error(`\x1b[31m[MCP] ERROR CRÍTICO al iniciar:\x1b[0m`, err);
+    console.error(`[MCP] ERROR CRÍTICO al iniciar:`, err);
   }
-  process.exit(1);
+  // CRITICAL BUGFIX: NO process.exit(1) — eso mata todo y concurrentemente reporta exit code 1
 });

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run mcp-server\" \"vite\"",
+    "dev": "concurrently --restart-tries 3 --restart-after 2000 \"npm run server\" \"npm run mcp-server\" \"vite\"",
     "server": "node server.js",
     "mcp-server": "node mcp_server.js",
     "build": "vite build",
@@ -25,6 +25,7 @@
     "cors": "^2.8.6",
     "diff": "^9.0.0",
     "express": "^5.2.1",
+    "grammy": "^1.43.0",
     "lucide-static": "^1.8.0",
     "marked": "^18.0.2",
     "mongodb": "^7.2.0",

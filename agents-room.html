@@ -176,6 +176,36 @@
     @media (max-width: 768px) {
       #calib-panel { width: 220px; }
     }
+
+    /* ─── ARCANE SPEECH BUBBLES ─── */
+    .arcane-bubble {
+      position: absolute;
+      pointer-events: none;
+      white-space: nowrap;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 10px;
+      letter-spacing: 2px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: rgba(10, 5, 30, 0.75);
+      border: 1px solid rgba(168, 85, 247, 0.35);
+      text-shadow: 0 0 8px rgba(168, 85, 247, 0.6), 0 0 16px rgba(168, 85, 247, 0.3);
+      color: rgba(216, 180, 255, 0.9);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 0 20px rgba(168, 85, 247, 0.15), inset 0 0 12px rgba(168, 85, 247, 0.05);
+    }
+    .arcane-bubble.rune {
+      color: rgba(255, 200, 60, 0.85);
+      border-color: rgba(255, 200, 60, 0.35);
+      text-shadow: 0 0 8px rgba(255, 200, 60, 0.5), 0 0 16px rgba(255, 180, 40, 0.3);
+      box-shadow: 0 0 20px rgba(255, 200, 60, 0.15), inset 0 0 12px rgba(255, 200, 60, 0.05);
+    }
+    .arcane-bubble.cyan {
+      color: rgba(0, 229, 255, 0.85);
+      border-color: rgba(0, 229, 255, 0.35);
+      text-shadow: 0 0 8px rgba(0, 229, 255, 0.5), 0 0 16px rgba(0, 200, 255, 0.3);
+      box-shadow: 0 0 20px rgba(0, 229, 255, 0.15), inset 0 0 12px rgba(0, 229, 255, 0.05);
+    }
   </style>
 </head>
 <body>
@@ -235,6 +265,25 @@
       <div class="fi-row">
         <span class="fi-row-label">Mensajes</span>
         <span class="fi-row-value" id="fi-messages">0</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">💰 Tokens</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Total</span>
+        <span class="fi-row-value" id="fi-tokens">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Input / Output</span>
+        <span class="fi-row-value" id="fi-tokens-io">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Costo estimado</span>
+        <span class="fi-row-value" id="fi-cost">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Llamadas API</span>
+        <span class="fi-row-value" id="fi-api-calls">—</span>
       </div>
     </div>
     <div class="fi-section">
@@ -414,6 +463,9 @@ let isProjectMode = false; // Track if project info panel is open
 const agentMap = new Map();
 // Project data from /api/admin/projects
 let projectDataMap = {}; // projKey → project info
+
+// ─── ARCANE BUBBLES ───
+let arcaneBubbles = []; // { el: CSS2DObject, born: timestamp, life: seconds, mageRef }
 
 // ─── SCENE SETUP ───
 const scene = new THREE.Scene();
@@ -647,6 +699,7 @@ function updateFlameScale(flameGroup, activeAgentCount) {
   // Animate core
   const core = flameGroup.getObjectByName('flameCore');
   if (core) {
+    core.userData._baseScale = s;  // store for animation loop
     core.scale.set(s, s, s);
     core.material.opacity = Math.min(0.5 + count * 0.15, 0.85);
   }
@@ -1091,6 +1144,8 @@ function buildMage(agent, index, total, isGhost = false) {
     armR,
     armBaseRotL: armL.rotation.z,
     armBaseRotR: armR.rotation.z,
+    // Arcane bubble spawn timer
+    _arcaneTimer: Math.random() * 1.5, // random offset so bubbles don't all spawn at once
   };
 
   // Start at full scale — scale animation removed to prevent stuck-tiny bug.
@@ -1113,6 +1168,85 @@ function getCharTexture(char) {
 }
 
 // ─── BUILD LABEL ───
+// ─── ARCANE BUBBLE SPAWN ───
+const ARCANE_RUNES = ['ᚠ','ᚢ','ᚦ','ᚨ','ᚱ','ᚲ','ᚷ','ᚹ','ᚺ','ᚾ','ᛁ','ᛃ','ᛇ','ᛈ','ᛉ','ᛊ','ᛏ','ᛒ','ᛖ','ᛗ','ᛚ','ᛜ','ᛞ','ᛟ'];
+const ARCANE_SYMBOLS = ['✦','◆','◇','◈','◉','◎','⦿','⫷','⫸','⟐','⟑','⟡','⊛','⊚','⬡','⬢','⬟'];
+
+const ARCANE_TOOL_WORDS = {
+  'read_file': 'SCRYING',
+  'write_file': 'INSCRIBE',
+  'patch': 'TRANSFIGURE',
+  'terminal': 'CHANNEL',
+  'execute_code': 'WEAVE',
+  'web_search': 'DIVINE',
+  'search_files': 'SEEK',
+  'memory': 'REMEMBER',
+  'delegate_task': 'SUMMON',
+  'browser_navigate': 'TRAVEL',
+  'vision_analyze': 'PERCEIVE',
+  'text_to_speech': 'SPEAK',
+  'cronjob': 'ORDAIN',
+  'process': 'ATTEND',
+};
+
+function spawnArcaneBubble(mage, agentData) {
+  const div = document.createElement('div');
+  const isThinking = agentData.status === 'thinking';
+  const isRunning = agentData.status === 'running';
+  const toolName = agentData.toolName || '';
+
+  // Choose bubble variant
+  const variant = ['default', 'rune', 'cyan'][Math.floor(Math.random() * 3)];
+  div.className = `arcane-bubble ${variant}`;
+
+  // Build arcane text
+  let text = '';
+  const randRunes = () => ARCANE_RUNES[Math.floor(Math.random() * ARCANE_RUNES.length)]
+    + ARCANE_RUNES[Math.floor(Math.random() * ARCANE_RUNES.length)]
+    + ARCANE_RUNES[Math.floor(Math.random() * ARCANE_RUNES.length)];
+
+  if (toolName && ARCANE_TOOL_WORDS[toolName]) {
+    // Show arcane tool name
+    const sym = ARCANE_SYMBOLS[Math.floor(Math.random() * ARCANE_SYMBOLS.length)];
+    text = sym + ' ' + ARCANE_TOOL_WORDS[toolName] + ' ' + sym;
+  } else if (isThinking && agentData.lastMessage?.content) {
+    // Show snippet of what they're thinking
+    const msg = agentData.lastMessage.content.slice(0, 30).replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    if (msg.length > 3) {
+      const words = msg.split(/\s+/).slice(0, 4);
+      text = randRunes() + ' ' + words.join(' ').toUpperCase() + ' ' + randRunes();
+    } else {
+      text = randRunes() + ' ⟡ ' + (isRunning ? 'CASTING' : 'MEDITATING') + ' ⟡ ' + randRunes();
+    }
+  } else {
+    // Pure arcane runes
+    const sym = ARCANE_SYMBOLS[Math.floor(Math.random() * ARCANE_SYMBOLS.length)];
+    if (isRunning) {
+      text = randRunes() + ' ' + sym + ' EXECUTING ' + sym + ' ' + randRunes();
+    } else {
+      text = randRunes() + ' ' + sym + ' PONDERING ' + sym + ' ' + randRunes();
+    }
+  }
+
+  div.textContent = text;
+
+  const label = new CSS2DObject(div);
+  // Position above mage's head (~Y=55 is hat top, bubble above that)
+  const mageWorldPos = new THREE.Vector3();
+  mage.getWorldPosition(mageWorldPos);
+  label.position.set(mageWorldPos.x, mageWorldPos.y + 65, mageWorldPos.z);
+
+  scene.add(label);
+
+  arcaneBubbles.push({
+    el: label,
+    born: performance.now() / 1000,
+    life: 2.5 + Math.random() * 2.0, // 2.5~4.5 seconds
+    mageRef: mage,
+    baseY: mageWorldPos.y + 65,
+  });
+}
+
 function buildLabel(agent, index) {
   const div = document.createElement('div');
   div.style.cssText = `
@@ -1468,6 +1602,12 @@ function rebuildScene() {
   }
   agentMap.clear();
 
+  // Clean up arcane bubbles
+  for (const bubble of arcaneBubbles) {
+    scene.remove(bubble.el);
+  }
+  arcaneBubbles = [];
+
   cleanupScene();
 
   allAgentsWithData = [...agents];
@@ -1806,6 +1946,30 @@ function updateFocusPanel(agent) {
     modelTag.className = 'fi-tag';
     modelTag.textContent = agent.model.slice(0, 15);
     tagsEl.appendChild(modelTag);
+  }
+
+  // ─── Token counter display ───
+  const totalTokens = agent.cumulativeTokens || 0;
+  const inputTokens = agent.cumulativeInputTokens || 0;
+  const outputTokens = agent.cumulativeOutputTokens || 0;
+  const cost = agent.cumulativeCost || 0;
+  const apiCalls = agent.cumulativeApiCalls || 0;
+
+  const tokensEl = document.getElementById('fi-tokens');
+  const tokensIOEl = document.getElementById('fi-tokens-io');
+  const costEl = document.getElementById('fi-cost');
+  const apiCallsEl = document.getElementById('fi-api-calls');
+
+  if (totalTokens > 0) {
+    tokensEl.textContent = '🔢 ' + totalTokens.toLocaleString() + ' tokens';
+    tokensIOEl.textContent = '📥 ' + inputTokens.toLocaleString() + ' / 📤 ' + outputTokens.toLocaleString();
+    costEl.textContent = '≈ $' + cost.toFixed(6) + ' USD';
+    apiCallsEl.textContent = apiCalls.toLocaleString() + ' llamadas';
+  } else {
+    tokensEl.textContent = 'Sin datos aún';
+    tokensIOEl.textContent = '—';
+    costEl.textContent = '—';
+    apiCallsEl.textContent = '—';
   }
   if (agent.projectName) {
     const projTag = document.createElement('span');
@@ -2151,6 +2315,17 @@ function animate() {
     if (!mage.userData) return;
     const ud = mage.userData;
     const isGhost = ud.isGhost;
+
+    // ── Sync agentStatus from agentMap (so status changes are reflected without rebuild) ──
+    if (ud.agentId && agentMap.has(ud.agentId)) {
+      const entry = agentMap.get(ud.agentId);
+      if (entry && entry.agentData && !entry.exiting) {
+        ud.agentStatus = entry.agentData.status;
+        ud.isOff = entry.agentData.status === 'off';
+        ud._agentData = entry.agentData; // cached for bubble spawning
+      }
+    }
+
     const isOff = ud.isOff;
     const isActive = !isGhost && !isOff && (ud.agentStatus === 'running' || ud.agentStatus === 'thinking');
 
@@ -2298,6 +2473,20 @@ function animate() {
       scene.add(p.sprite);
       if (mageParticles[i]) mageParticles[i].particles.push(p);
     }
+
+    // ── Arcane bubble spawning ──
+    if (isActive && !isGhost) {
+      ud._arcaneTimer -= dt;
+      if (ud._arcaneTimer <= 0) {
+        // Reset timer with some randomness (every 1.5~3.5 seconds)
+        ud._arcaneTimer = 1.5 + Math.random() * 2.0;
+        const agentData = ud._agentData || {};
+        // Only spawn if we don't have too many bubbles already
+        if (arcaneBubbles.length < 30) {
+          spawnArcaneBubble(mage, agentData);
+        }
+      }
+    }
   });
 
   // Update particles
@@ -2355,15 +2544,17 @@ function animate() {
         child.position.z = Math.sin(angle) * (fd.baseRadius + Math.cos(t * 0.9) * 2);
       }
     });
-    // Animate flame core scale wobble
+    // Animate flame core scale wobble — usa baseScale para evitar crecimiento acumulativo
     const flame = floor.userData && floor.userData.flame;
     if (flame && flame.visible) {
       const core = flame.getObjectByName('flameCore');
       if (core) {
         core.rotation.y += dt * 0.5;
+        const baseScale = core.userData._baseScale || core.scale.y; // Y = uniform base scale
         const coreWobble = 1 + Math.sin(t * 2.5) * 0.08;
-        core.scale.x *= coreWobble;
-        core.scale.z *= coreWobble;
+        core.scale.setX(baseScale * coreWobble);
+        core.scale.setY(baseScale);
+        core.scale.setZ(baseScale * coreWobble);
       }
       const glowObj = flame.getObjectByName('flameGlow');
       if (glowObj) {
@@ -2371,6 +2562,47 @@ function animate() {
       }
     }
   });
+
+  // ─── ARCANE BUBBLE ANIMATION ───
+  const now = performance.now() / 1000;
+  for (let b = arcaneBubbles.length - 1; b >= 0; b--) {
+    const bubble = arcaneBubbles[b];
+    const age = now - bubble.born;
+    const lifeRatio = age / bubble.life;
+
+    // Remove expired bubbles
+    if (lifeRatio >= 1) {
+      scene.remove(bubble.el);
+      if (bubble.el.element) bubble.el.element.remove();
+      arcaneBubbles.splice(b, 1);
+      continue;
+    }
+
+    // Follow mage XZ position, float up in Y
+    if (bubble.mageRef) {
+      const magePos = new THREE.Vector3();
+      bubble.mageRef.getWorldPosition(magePos);
+      bubble.el.position.x = magePos.x;
+      bubble.el.position.z = magePos.z;
+      // Float up: from baseY to baseY + 70 over the bubble's lifetime
+      const floatY = bubble.baseY + lifeRatio * 70;
+      bubble.el.position.y = floatY;
+    }
+
+    // Fade: fade in quickly, then hold, then fade out
+    let opacity;
+    if (lifeRatio < 0.15) {
+      opacity = lifeRatio / 0.15; // fade in
+    } else if (lifeRatio > 0.65) {
+      opacity = 1 - (lifeRatio - 0.65) / 0.35; // fade out
+    } else {
+      opacity = 1; // visible
+    }
+    bubble.el.element.style.opacity = opacity;
+    // Scale: start small, grow, then shrink slightly
+    const scale = lifeRatio < 0.2 ? 0.5 + lifeRatio * 2.5 : 1 - (lifeRatio - 0.2) * 0.3;
+    bubble.el.element.style.transform = `translate(-50%, 0) scale(${Math.max(0.5, Math.min(1.1, scale))})`;
+  }
 
   controls.update();
   renderer.render(scene, camera);

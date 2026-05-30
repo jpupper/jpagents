@@ -459,6 +459,12 @@ class HermesBridge extends EventEmitter {
                 tokenUsage = await getSessionTokenUsage(sessionId);
                 if (tokenUsage) {
                     console.log(`[HERMES-BRIDGE] 🔢 Tokens: ${tokenUsage.total_tokens} total (${tokenUsage.input_tokens} in + ${tokenUsage.output_tokens} out)`);
+                    // ─── Acumular tokens en la instancia para el panel AGENTS room ───
+                    instance.cumulativeTokens = (instance.cumulativeTokens || 0) + (tokenUsage.total_tokens || 0);
+                    instance.cumulativeInputTokens = (instance.cumulativeInputTokens || 0) + (tokenUsage.input_tokens || 0);
+                    instance.cumulativeOutputTokens = (instance.cumulativeOutputTokens || 0) + (tokenUsage.output_tokens || 0);
+                    instance.cumulativeCost = (instance.cumulativeCost || 0) + (tokenUsage.estimated_cost_usd || 0);
+                    instance.cumulativeApiCalls = (instance.cumulativeApiCalls || 0) + (tokenUsage.api_call_count || 0);
                 }
             } catch (dbErr) {
                 console.warn('[HERMES-BRIDGE] No se pudo leer token usage:', dbErr.message);
@@ -610,10 +616,16 @@ class HermesBridge extends EventEmitter {
             .map(inst => this._sanitizeInstance(inst));
     }
 
-    /**
-     * Obtiene logs de una instancia
-     */
     getLogs(projectId, chatId, limit = 100) {
+        if (typeof chatId === 'number' || !chatId) {
+            const actualLimit = typeof chatId === 'number' ? chatId : 100;
+            const projectInstances = [...this.instances.values()].filter(inst => inst.projectId === projectId);
+            if (projectInstances.length === 0) return [];
+            const allLogs = projectInstances.flatMap(inst => inst.logs || []);
+            allLogs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            return allLogs.slice(-actualLimit);
+        }
+
         const instanceKey = `${projectId}:${chatId}`;
         const instance = this.instances.get(instanceKey);
         if (!instance) return [];
@@ -651,7 +663,12 @@ class HermesBridge extends EventEmitter {
             status: inst.status,
             model: inst.model,
             createdAt: inst.createdAt,
-            logs: inst.logs.slice(-10)
+            logs: inst.logs.slice(-10),
+            cumulativeTokens: inst.cumulativeTokens || 0,
+            cumulativeInputTokens: inst.cumulativeInputTokens || 0,
+            cumulativeOutputTokens: inst.cumulativeOutputTokens || 0,
+            cumulativeCost: inst.cumulativeCost || 0,
+            cumulativeApiCalls: inst.cumulativeApiCalls || 0
         };
     }
 }

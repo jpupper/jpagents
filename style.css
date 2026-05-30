@@ -4748,3 +4748,189 @@ pre code.hljs {
 #monitor-tbody tr:hover {
   background: rgba(124, 77, 255, 0.05);
 }
+
+/* ═══════════════════════════════════════════════════
+   SEARCH BAR — Sidebar mini buscador
+   ═══════════════════════════════════════════════════ */
+.sidebar-search {
+  position: relative;
+  margin-bottom: 10px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 0.8rem;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
+}
+
+.search-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.search-input:focus {
+  border-color: var(--primary-color);
+  background: rgba(124, 77, 255, 0.06);
+}
+
+/* Search Results Dropdown */
+.search-results-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.search-results-dropdown.hidden {
+  display: none;
+}
+
+.search-section-label {
+  padding: 8px 12px 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.search-result-item {
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.15s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.search-result-item:last-child {
+  border-bottom: none;
+}
+
+.search-result-item:hover {
+  background: rgba(124, 77, 255, 0.1);
+}
+
+.search-result-name {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-result-meta {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-result-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.search-result-empty.error {
+  color: #ff5252;
+}
+
+.search-restore-hint {
+  font-size: 0.65rem;
+  color: var(--primary-color);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.search-result-item:hover .search-restore-hint {
+  opacity: 1;
+}
+
+.archived-result {
+  opacity: 0.75;
+}
+
+.archived-result:hover {
+  opacity: 1;
+}
+
+/* ═══════════════════════════════════════════════════
+   DRAG & DROP — Proyectos / Tabs
+   ═══════════════════════════════════════════════════ */
+
+/* Drag grip handle for chat items */
+.drag-grip {
+  cursor: grab;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+  user-select: none;
+  flex-shrink: 0;
+  margin-right: 6px;
+  line-height: 1;
+}
+
+.chat-item:hover .drag-grip,
+.drag-grip:active {
+  opacity: 0.5;
+}
+
+.chat-item:hover .drag-grip:hover {
+  opacity: 0.9;
+  color: var(--primary-color);
+}
+
+/* Dragging state */
+.chat-item.dragging,
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.chat-item.dragging .drag-grip {
+  opacity: 1;
+  color: var(--primary-color);
+}
+
+/* Drop target indicator */
+.chat-item.drag-over {
+  border-top: 2px solid var(--primary-color) !important;
+  background: rgba(124, 77, 255, 0.08) !important;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--primary-color) !important;
+  background: rgba(124, 77, 255, 0.08) !important;
+}
+
+/* Make tabs not selectable during drag */
+.tab[draggable="true"] {
+  cursor: grab;
+}
+
+.tab[draggable="true"]:active {
+  cursor: grabbing;
+}
