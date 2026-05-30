@@ -44,14 +44,62 @@
     .agent-row .a-model { color: rgba(255,255,255,0.2); font-size: 0.5rem; }
     .agent-row .a-tag { font-size: 0.45rem; padding: 1px 4px; border-radius: 3px; background: rgba(124,77,255,0.15); color: rgba(124,77,255,0.6); }
     .agent-row .a-tag.ghost { background: rgba(0,229,255,0.1); color: rgba(0,229,255,0.5); }
-    #refresh-btn {
-      position: fixed; top: 16px; right: 16px; z-index: 20; pointer-events: auto;
+
+    /* ─── Toolbar ─── */
+    #toolbar {
+      position: fixed; top: 16px; right: 16px; z-index: 25;
+      display: flex; gap: 8px; pointer-events: auto;
+    }
+    #toolbar button {
       background: rgba(124,77,255,0.1); border: 1px solid rgba(124,77,255,0.2);
       color: rgba(255,255,255,0.5); padding: 6px 14px; border-radius: 8px;
       cursor: pointer; font-family: 'SF Mono', monospace; font-size: 0.65rem;
-      transition: all 0.2s;
+      transition: all 0.2s; letter-spacing: 1px;
     }
-    #refresh-btn:hover { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.4); }
+    #toolbar button:hover { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.4); color: rgba(255,255,255,0.7); }
+    #toolbar button.active { background: rgba(124,77,255,0.25); border-color: #7c4dff; color: rgba(255,255,255,0.8); }
+
+    /* ─── Calibration Panel ─── */
+    #calib-panel {
+      position: fixed; left: -280px; top: 0; bottom: 0; width: 260px; z-index: 22;
+      background: rgba(8,8,15,0.93); border-right: 1px solid rgba(124,77,255,0.2);
+      backdrop-filter: blur(16px); transition: left 0.35s cubic-bezier(0.4,0,0.2,1);
+      padding: 24px 18px; font-family: 'SF Mono', 'Consolas', monospace;
+      box-shadow: 8px 0 32px rgba(0,0,0,0.5); overflow-y: auto;
+    }
+    #calib-panel.open { left: 0; }
+    #calib-panel h3 {
+      color: rgba(124,77,255,0.8); font-size: 0.7rem; letter-spacing: 3px;
+      text-transform: uppercase; margin-bottom: 18px; font-weight: 600;
+    }
+    .calib-group { margin-bottom: 18px; }
+    .calib-label {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.6rem; color: rgba(255,255,255,0.5); margin-bottom: 6px;
+    }
+    .calib-label .calib-val { color: rgba(124,77,255,0.7); font-size: 0.7rem; }
+    .calib-slider {
+      -webkit-appearance: none; width: 100%; height: 4px; border-radius: 2px;
+      background: rgba(124,77,255,0.15); outline: none; cursor: pointer;
+    }
+    .calib-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: #7c4dff; cursor: pointer; box-shadow: 0 0 8px rgba(124,77,255,0.4);
+    }
+    .calib-slider::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #7c4dff; cursor: pointer; border: none;
+    }
+    .calib-desc { font-size: 0.5rem; color: rgba(255,255,255,0.2); letter-spacing: 0.5px; margin-top: 3px; }
+    .calib-reset {
+      display: block; margin-top: 20px; width: 100%; padding: 8px;
+      background: rgba(124,77,255,0.08); border: 1px solid rgba(124,77,255,0.15);
+      color: rgba(255,255,255,0.4); border-radius: 6px; cursor: pointer;
+      font-family: 'SF Mono', monospace; font-size: 0.55rem; letter-spacing: 2px;
+      transition: all 0.2s; text-transform: uppercase;
+    }
+    .calib-reset:hover { background: rgba(124,77,255,0.15); border-color: rgba(124,77,255,0.3); color: rgba(255,255,255,0.6); }
+
     #focus-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.5);
       z-index: 15; opacity: 0; pointer-events: none; transition: opacity 0.4s;
@@ -93,13 +141,47 @@
       font-family: 'SF Mono', monospace;
     }
     #unfocus-hint.open { opacity: 1; }
+    @media (max-width: 768px) {
+      #calib-panel { width: 220px; }
+    }
   </style>
 </head>
 <body>
   <div id="loading">✦ INVOCANDO ✦</div>
   <div id="room-title">✦ AGENTS ROOM ✦</div>
+
+  <div id="toolbar">
+    <button id="calib-btn" title="Calibrar escena">◈ Calibrar</button>
+    <button id="refresh-btn">⟳ Actualizar</button>
+  </div>
+
+  <div id="calib-panel">
+    <h3>◈ Calibrar Escena</h3>
+
+    <div class="calib-group">
+      <div class="calib-label">
+        <span>Separación de nodos</span>
+        <span class="calib-val" id="polar-radius-val">180</span>
+      </div>
+      <input type="range" class="calib-slider" id="polar-radius-slider"
+             min="60" max="350" value="180" step="5">
+      <div class="calib-desc">Distancia de los pedestales desde el centro</div>
+    </div>
+
+    <div class="calib-group">
+      <div class="calib-label">
+        <span>Órbita de magos</span>
+        <span class="calib-val" id="orbit-radius-val">42</span>
+      </div>
+      <input type="range" class="calib-slider" id="orbit-radius-slider"
+             min="20" max="120" value="42" step="2">
+      <div class="calib-desc">Separación de cada mago a su pedestal</div>
+    </div>
+
+    <button class="calib-reset" id="calib-reset">⟲ Restaurar defecto</button>
+  </div>
+
   <div id="data-panel">Cargando...</div>
-  <button id="refresh-btn" onclick="window.refreshAgents()">⟳ Actualizar</button>
   <div id="focus-backdrop"></div>
   <div id="focus-info-panel">
     <div class="fi-header">
@@ -158,9 +240,9 @@
   </script>
 
   <script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/renderers/CSS2DRenderer.js';
 
 // ─── CONFIG ───
 const API = 'http://localhost:3001/api';
@@ -168,15 +250,78 @@ let agents = [];
 let allAgentsWithData = [];
 let mageGroup = new THREE.Group();
 let floorGroup = new THREE.Group();
-let projectColors = {}; // projectId -> color hue
+let projectColors = {};
 let projectCount = 0;
+
+// ─── CALIBRACIÓN ───
+// Estos valores se modifican desde el panel de calibración
+const calibState = {
+  polarRadius: 180,
+  orbitRadius: 42,
+};
+let calibPanelOpen = false;
+// Guardamos originales para reset
+const CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42 };
+
+// ─── GEOMETRY POOL ───
+// Todas las geometrías reusables se crean UNA VEZ y se comparten entre magos.
+// Esto elimina el overhead de GPU allocation/blas/shader-compile en cada rebuildScene.
+const GEO = {};
+function initGeometryPool() {
+  // Cilindros
+  GEO.cy10x14x30 = new THREE.CylinderGeometry(10, 14, 30, 10);
+  GEO.cy1x2x14 = new THREE.CylinderGeometry(2, 2.5, 14, 6);
+  GEO.cy14x14x1 = new THREE.CylinderGeometry(14, 14, 1.5, 12);
+  GEO.cy10x22 = new THREE.ConeGeometry(10, 22, 10);
+  GEO.cy18x22x6 = new THREE.CylinderGeometry(18, 22, 6, 16);
+  GEO.cy16x16x1 = new THREE.CylinderGeometry(16, 16, 1.5, 16);
+  GEO.cy7x9x3 = new THREE.CylinderGeometry(7, 9, 3, 8);
+  GEO.cy4x5x10 = new THREE.CylinderGeometry(4, 5, 10, 8);
+  GEO.cy8x8x1 = new THREE.CylinderGeometry(8, 8, 1.5, 8);
+  GEO.cy4x12x60 = new THREE.CylinderGeometry(4, 12, 60, 12, 1, true);
+  GEO.cy1x8x80 = new THREE.CylinderGeometry(1.5, 8, 80, 12, 1, true);
+  // Esferas
+  GEO.sphere6 = new THREE.SphereGeometry(6, 12, 12);
+  GEO.sphere25 = new THREE.SphereGeometry(2.5, 6, 6);
+  GEO.sphere22h = new THREE.SphereGeometry(2.2, 6, 6);
+  GEO.sphere18 = new THREE.SphereGeometry(1.8, 8, 8);
+  GEO.sphere24 = new THREE.SphereGeometry(24, 16, 16);
+  GEO.sphere22 = new THREE.SphereGeometry(22, 16, 16);
+  GEO.sphere35 = new THREE.SphereGeometry(35, 20, 20);
+  GEO.sphere20 = new THREE.SphereGeometry(20, 16, 16);
+  GEO.sphere12g = new THREE.SphereGeometry(12, 12, 12);
+  // Torus
+  GEO.torus12x1 = new THREE.TorusGeometry(12, 1.5, 8, 16);
+  GEO.torus20x1 = new THREE.TorusGeometry(20, 0.8, 8, 32);
+  GEO.torus6x1 = new THREE.TorusGeometry(6, 0.8, 8, 16);
+  // Conos
+  GEO.cone5x8 = new THREE.ConeGeometry(5, 8, 6);
+  // Cajas
+  GEO.box14x2x10 = new THREE.BoxGeometry(14, 2, 10);
+  GEO.box12x1x8 = new THREE.BoxGeometry(12, 1.2, 8);
+  GEO.box8x0x5 = new THREE.BoxGeometry(8, 0.2, 5);
+  // Anillos
+  GEO.ring448 = new THREE.RingGeometry(448, 460, 64);
+  GEO.ring36 = new THREE.RingGeometry(36, 38, 48);
+  GEO.ring8 = new THREE.RingGeometry(8, 18, 32);
+  GEO.ring2x8 = new THREE.RingGeometry(2, 8, 32);
+  GEO.ring12 = new THREE.RingGeometry(12, 28, 48);
+  // Círculos
+  GEO.circle450 = new THREE.CircleGeometry(450, 48);
+  GEO.circle24 = new THREE.CircleGeometry(24, 24);
+}
+initGeometryPool();
 
 // ─── FOCUS / RAYCASTER ───
 let focusState = null;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
-const clickables = [];
+let clickables = [];
 let isFocusMode = false;
+
+// ─── AGENT TRACKING ───
+// Mapa agentId → {mage, label, nodeRef, agentData, exiting}
+const agentMap = new Map();
 
 // ─── SCENE SETUP ───
 const scene = new THREE.Scene();
@@ -237,7 +382,14 @@ rimLight.position.set(0, -50, -300);
 scene.add(rimLight);
 
 // ─── STARFIELD BACKGROUND ───
+let starfieldGeo = null;
+let starfieldMat = null;
 function createStarfield() {
+  if (starfieldGeo && starfieldMat) {
+    const stars = new THREE.Points(starfieldGeo, starfieldMat);
+    scene.add(stars);
+    return stars;
+  }
   const starsGeo = new THREE.BufferGeometry();
   const starCount = 3000;
   const positions = new Float32Array(starCount * 3);
@@ -259,38 +411,28 @@ function createStarfield() {
   starsGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   starsGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
   starsGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  starfieldGeo = starsGeo;
 
-  const starMat = new THREE.PointsMaterial({
-    size: 1.5,
-    transparent: true,
-    opacity: 0.6,
-    vertexColors: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    sizeAttenuation: true,
+  starfieldMat = new THREE.PointsMaterial({
+    size: 1.5, transparent: true, opacity: 0.6,
+    vertexColors: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, sizeAttenuation: true,
   });
-  const stars = new THREE.Points(starsGeo, starMat);
+  const stars = new THREE.Points(starfieldGeo, starfieldMat);
   scene.add(stars);
   return stars;
 }
 const starfield = createStarfield();
 
-// Nebula-like ambient glow
 function createNebula() {
   const nebulaMat = new THREE.MeshBasicMaterial({
-    color: 0x1a1040,
-    transparent: true,
-    opacity: 0.08,
-    side: THREE.BackSide,
+    color: 0x1a1040, transparent: true, opacity: 0.08, side: THREE.BackSide,
   });
   const nebula = new THREE.Mesh(new THREE.SphereGeometry(600, 32, 32), nebulaMat);
   scene.add(nebula);
 
   const nebulaMat2 = new THREE.MeshBasicMaterial({
-    color: 0x0a2040,
-    transparent: true,
-    opacity: 0.05,
-    side: THREE.BackSide,
+    color: 0x0a2040, transparent: true, opacity: 0.05, side: THREE.BackSide,
   });
   const nebula2 = new THREE.Mesh(new THREE.SphereGeometry(550, 32, 32), nebulaMat2);
   nebula2.position.set(-100, 50, -100);
@@ -299,44 +441,40 @@ function createNebula() {
 createNebula();
 
 // ─── GROUND FLOOR (shared by all projects) ───
+let groundFloorCache = null;
 function createGroundFloor() {
+  if (groundFloorCache) return groundFloorCache;
   const group = new THREE.Group();
   const yPos = -2;
 
   const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x0a0a18,
-    roughness: 0.9,
-    metalness: 0.1,
+    color: 0x0a0a18, roughness: 0.9, metalness: 0.1,
   });
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(450, 48), floorMat);
+  const floor = new THREE.Mesh(GEO.circle450, floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = yPos;
   floor.receiveShadow = true;
   group.add(floor);
 
-  // Outer glow ring
   const borderMat = new THREE.MeshBasicMaterial({
-    color: 0x7c4dff,
-    transparent: true,
-    opacity: 0.06,
-    side: THREE.DoubleSide,
+    color: 0x7c4dff, transparent: true, opacity: 0.06, side: THREE.DoubleSide,
   });
-  const border = new THREE.Mesh(new THREE.RingGeometry(448, 460, 64), borderMat);
+  const border = new THREE.Mesh(GEO.ring448, borderMat);
   border.rotation.x = -Math.PI / 2;
   border.position.y = yPos + 0.5;
   group.add(border);
 
-  // Subtle grid across the whole floor
   const gridHelper = new THREE.GridHelper(900, 36, 0x3a2a6a, 0x2a1a4a);
   gridHelper.position.y = yPos + 0.5;
   gridHelper.material.transparent = true;
   gridHelper.material.opacity = 0.05;
   group.add(gridHelper);
 
+  groundFloorCache = group;
   return group;
 }
 
-// ─── PROJECT NODE (small pedestal for each project) ───
+// ─── PROJECT NODE CREATION ───
 function createProjectNode(projectName, projectId, hue) {
   const group = new THREE.Group();
   const yPos = 0;
@@ -344,113 +482,69 @@ function createProjectNode(projectName, projectId, hue) {
   const color = new THREE.Color(`hsl(${hue}, 45%, 18%)`);
   const colorLight = new THREE.Color(`hsl(${hue}, 55%, 35%)`);
 
-  // Pedestal base
   const baseMat = new THREE.MeshStandardMaterial({
-    color: color,
-    roughness: 0.6,
-    metalness: 0.3,
+    color, roughness: 0.6, metalness: 0.3,
   });
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(18, 22, 6, 16), baseMat);
+  const base = new THREE.Mesh(GEO.cy18x22x6, baseMat);
   base.position.y = 3;
   base.castShadow = true;
   base.receiveShadow = true;
   group.add(base);
 
-  // Pedestal top platform (glowing)
   const topMat = new THREE.MeshStandardMaterial({
-    color: colorLight,
-    roughness: 0.4,
-    metalness: 0.5,
-    emissive: colorLight,
-    emissiveIntensity: 0.05,
+    color: colorLight, roughness: 0.4, metalness: 0.5,
+    emissive: colorLight, emissiveIntensity: 0.05,
   });
-  const top = new THREE.Mesh(new THREE.CylinderGeometry(16, 16, 1.5, 16), topMat);
+  const top = new THREE.Mesh(GEO.cy16x16x1, topMat);
   top.position.y = 7;
   group.add(top);
 
-  // Glow ring around pedestal
   const ringMat = new THREE.MeshBasicMaterial({
-    color: colorLight,
-    transparent: true,
-    opacity: 0.2,
-    side: THREE.DoubleSide,
+    color: colorLight, transparent: true, opacity: 0.2, side: THREE.DoubleSide,
   });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(20, 0.8, 8, 32), ringMat);
+  const ring = new THREE.Mesh(GEO.torus20x1, ringMat);
   ring.position.y = 7.5;
   ring.rotation.x = Math.PI / 2;
   group.add(ring);
 
-  // Inner glow on floor under pedestal
   const glowFloorMat = new THREE.MeshBasicMaterial({
-    color: colorLight,
-    transparent: true,
-    opacity: 0.08,
-    side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
+    color: colorLight, transparent: true, opacity: 0.08,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const glowFloor = new THREE.Mesh(new THREE.CircleGeometry(24, 24), glowFloorMat);
+  const glowFloor = new THREE.Mesh(GEO.circle24, glowFloorMat);
   glowFloor.rotation.x = -Math.PI / 2;
   glowFloor.position.y = -1.5;
   group.add(glowFloor);
 
-  // Light pillar (subtle)
   const pillarMat = new THREE.MeshBasicMaterial({
-    color: colorLight,
-    transparent: true,
-    opacity: 0.03,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    color: colorLight, transparent: true, opacity: 0.03, side: THREE.DoubleSide,
+    depthWrite: false, blending: THREE.AdditiveBlending,
   });
-  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(4, 12, 60, 12, 1, true), pillarMat);
+  const pillar = new THREE.Mesh(GEO.cy4x12x60, pillarMat);
   pillar.position.y = 35;
   group.add(pillar);
 
-  // Project name label above pedestal
-  const nameDiv = document.createElement('div');
-  nameDiv.style.cssText = `
-    color: rgba(255,255,255,0.35);
-    font-family: 'SF Mono', 'Consolas', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    text-shadow: 0 0 20px rgba(124,77,255,0.15);
-    background: rgba(0,0,0,0.3);
-    padding: 4px 12px;
-    border-radius: 4px;
-    backdrop-filter: blur(4px);
-  `;
-  nameDiv.textContent = projectName || 'Default';
-  const nameLabel = new CSS2DObject(nameDiv);
-  nameLabel.position.set(0, 60, 0);
-  group.add(nameLabel);
+  group.userData.projectName = projectName || 'Default';
+  group.userData.hue = hue;
 
-  // Orbiting ring (visible indicator of the orbit path)
+  // Orbiting ring
   const orbitRingMat = new THREE.MeshBasicMaterial({
-    color: colorLight,
-    transparent: true,
-    opacity: 0.06,
-    side: THREE.DoubleSide,
-    depthWrite: false,
+    color: colorLight, transparent: true, opacity: 0.06, side: THREE.DoubleSide,
   });
-  const orbitRing = new THREE.Mesh(new THREE.RingGeometry(36, 38, 48), orbitRingMat);
+  const orbitRing = new THREE.Mesh(GEO.ring36, orbitRingMat);
   orbitRing.rotation.x = -Math.PI / 2;
   orbitRing.position.y = -1;
   group.add(orbitRing);
 
-  // Small runic symbols floating around pedestal
+  // Runic symbols
   const runeChars = ['✦', '◇', '⬡', '△'];
   for (let i = 0; i < 4; i++) {
     const angle = (i / 4) * Math.PI * 2 + Math.random() * 0.3;
     const r = 28;
     const runeMat = new THREE.SpriteMaterial({
       map: getCharTexture(runeChars[i % runeChars.length]),
-      transparent: true,
-      opacity: 0.06,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      transparent: true, opacity: 0.06,
+      blending: THREE.AdditiveBlending, depthWrite: false,
       color: new THREE.Color(`hsl(${hue}, 60%, 60%)`),
     });
     const rune = new THREE.Sprite(runeMat);
@@ -460,7 +554,6 @@ function createProjectNode(projectName, projectId, hue) {
     group.add(rune);
   }
 
-  // Ambient point light
   const pointLight = new THREE.PointLight(colorLight, 0.4, 100);
   pointLight.position.set(0, 30, 0);
   group.add(pointLight);
@@ -500,23 +593,19 @@ ambientParticlesGeo.setAttribute('position', new THREE.BufferAttribute(ambientPo
 ambientParticlesGeo.setAttribute('size', new THREE.BufferAttribute(ambientSizes, 1));
 
 const ambientParticleMat = new THREE.PointsMaterial({
-  size: 4,
-  map: particleTexture,
-  transparent: true,
-  opacity: 0.15,
-  blending: THREE.AdditiveBlending,
-  depthWrite: false,
-  color: 0x7c4dff,
+  size: 4, map: particleTexture, transparent: true, opacity: 0.15,
+  blending: THREE.AdditiveBlending, depthWrite: false, color: 0x7c4dff,
 });
 const ambientParticles = new THREE.Points(ambientParticlesGeo, ambientParticleMat);
 scene.add(ambientParticles);
 
 // ─── BUILD MAGE ───
+// Usa geometrías del pool GEO para evitar crear nuevas cada vez.
 function buildMage(agent, index, total, isGhost = false) {
   const group = new THREE.Group();
 
   const hue = (index * 47 + 264) % 360;
-  const ghostHue = 187; // cyan for ghosts
+  const ghostHue = 187;
   const mHue = isGhost ? ghostHue : hue;
   const isOff = agent.status === 'off';
   const statusHue = isGhost ? 187 :
@@ -528,71 +617,65 @@ function buildMage(agent, index, total, isGhost = false) {
 
   const bodyOpacity = isGhost ? 0.45 : 1;
   const emissiveIntensity = isGhost ? 0.15 : (isOff ? 0 : 0.1);
-  const satFactor = isOff ? 0.15 : 1; // desaturar colores si apagado
+  const satFactor = isOff ? 0.15 : 1;
 
-  // ── Body (robe) ──
+  // Body (robe)
   const bodyMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(`hsl(${mHue}, ${60 * satFactor}%, ${isGhost ? 40 : isOff ? 18 : 25}%)`),
-    roughness: 0.7,
-    metalness: 0.1,
-    transparent: isGhost,
-    opacity: bodyOpacity,
+    roughness: 0.7, metalness: 0.1, transparent: isGhost, opacity: bodyOpacity,
   });
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(10, 14, 30, 10), bodyMat);
+  const body = new THREE.Mesh(GEO.cy10x14x30, bodyMat);
   body.position.y = 15; body.castShadow = true;
   group.add(body);
 
-  // ── Robe trim ──
+  // Robe trim
   const trimMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(`hsl(${mHue}, ${70 * satFactor}%, ${isGhost ? 50 : isOff ? 22 : 35}%)`),
     roughness: 0.5, transparent: isGhost, opacity: bodyOpacity,
   });
-  const trim = new THREE.Mesh(new THREE.TorusGeometry(12, 1.5, 8, 16), trimMat);
+  const trim = new THREE.Mesh(GEO.torus12x1, trimMat);
   trim.position.y = 2; trim.rotation.x = Math.PI / 2;
   group.add(trim);
 
-  // ── Head ──
+  // Head
   const headMat = new THREE.MeshStandardMaterial({
     color: isGhost ? 0x88ccff : (isOff ? 0x888888 : 0xf0d0b0),
     roughness: 0.6, transparent: isGhost, opacity: Math.min(bodyOpacity + 0.1, 1),
   });
-  const head = new THREE.Mesh(new THREE.SphereGeometry(6, 12, 12), headMat);
+  const head = new THREE.Mesh(GEO.sphere6, headMat);
   head.position.y = 32; head.castShadow = true;
   group.add(head);
 
-  // ── Hat ──
+  // Hat
   const hatMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(`hsl(${mHue}, ${80 * satFactor}%, ${isGhost ? 35 : isOff ? 12 : 15}%)`),
     roughness: 0.8, transparent: isGhost, opacity: bodyOpacity,
   });
-  const brim = new THREE.Mesh(new THREE.CylinderGeometry(14, 14, 1.5, 12), hatMat);
-  brim.position.y = 33; group.add(brim);
-  const cone = new THREE.Mesh(new THREE.ConeGeometry(10, 22, 10), hatMat);
-  cone.position.y = 42; cone.castShadow = true;
+  const brim = new THREE.Mesh(GEO.cy14x14x1, hatMat);
+  brim.position.y = 38.5; group.add(brim);
+  const cone = new THREE.Mesh(GEO.cy10x22, hatMat);
+  cone.position.y = 50; cone.castShadow = true;
   group.add(cone);
 
-  // Hat tip with glow
+  // Hat tip
   const tipMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(`hsl(${mHue}, ${isOff ? 0 : 90}%, ${isOff ? 15 : 25}%)`),
-    emissive: isOff ? new THREE.Color(0x222222) : glowColor, emissiveIntensity: emissiveIntensity,
+    emissive: isOff ? new THREE.Color(0x222222) : glowColor,
+    emissiveIntensity: emissiveIntensity,
     transparent: isGhost, opacity: bodyOpacity + 0.2,
   });
-  const tip = new THREE.Mesh(new THREE.SphereGeometry(2.5, 6, 6), tipMat);
-  tip.position.y = 54;
+  const tip = new THREE.Mesh(GEO.sphere25, tipMat);
+  tip.position.y = 61;
   group.add(tip);
 
-  // Ghost effect: additional ethereal glow layer
+  // Ghost aura
   let ghostAura = null;
-  if (isGhost) {
+  if (isGhost && agent.status !== 'idle') {
     const gAuraMat = new THREE.MeshBasicMaterial({
-      color: 0x00e5ff,
-      transparent: true,
-      opacity: 0.2,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      color: 0x00e5ff, transparent: true, opacity: 0.2,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    ghostAura = new THREE.Mesh(new THREE.SphereGeometry(24, 16, 16), gAuraMat);
+    ghostAura = new THREE.Mesh(GEO.sphere24, gAuraMat);
     ghostAura.position.y = 20;
     group.add(ghostAura);
   }
@@ -603,9 +686,9 @@ function buildMage(agent, index, total, isGhost = false) {
     emissive: isOff ? new THREE.Color(0x111111) : new THREE.Color(`hsl(${statusHue}, 90%, 60%)`),
     emissiveIntensity: isOff ? 0 : 0.3,
   });
-  const eye1 = new THREE.Mesh(new THREE.SphereGeometry(1.8, 8, 8), eyeMat);
+  const eye1 = new THREE.Mesh(GEO.sphere18, eyeMat);
   eye1.position.set(-2.5, 32.5, 5.5); group.add(eye1);
-  const eye2 = new THREE.Mesh(new THREE.SphereGeometry(1.8, 8, 8), eyeMat);
+  const eye2 = new THREE.Mesh(GEO.sphere18, eyeMat);
   eye2.position.set(2.5, 32.5, 5.5); group.add(eye2);
 
   // Beard
@@ -613,7 +696,7 @@ function buildMage(agent, index, total, isGhost = false) {
     color: new THREE.Color(`hsl(${mHue}, ${40 * satFactor}%, ${isOff ? 30 : 50}%)`),
     roughness: 0.9, transparent: isGhost, opacity: bodyOpacity,
   });
-  const beard = new THREE.Mesh(new THREE.ConeGeometry(5, 8, 6), beardMat);
+  const beard = new THREE.Mesh(GEO.cone5x8, beardMat);
   beard.position.set(0, 28, 4); beard.rotation.x = 0.2;
   group.add(beard);
 
@@ -622,11 +705,11 @@ function buildMage(agent, index, total, isGhost = false) {
     color: new THREE.Color(`hsl(${mHue}, ${55 * satFactor}%, ${isOff ? 16 : 28}%)`),
     roughness: 0.7, transparent: isGhost, opacity: bodyOpacity,
   });
-  const armL = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.5, 14, 6), armMat);
-  armL.position.set(-11, 18, 0); armL.rotation.z = 0.3;
+  const armL = new THREE.Mesh(GEO.cy1x2x14, armMat);
+  armL.position.set(-13, 18, 0); armL.rotation.z = 0.3;
   group.add(armL);
-  const armR = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.5, 14, 6), armMat);
-  armR.position.set(11, 18, 0); armR.rotation.z = -0.3;
+  const armR = new THREE.Mesh(GEO.cy1x2x14, armMat);
+  armR.position.set(13, 18, 0); armR.rotation.z = -0.3;
   group.add(armR);
 
   // Hands
@@ -634,42 +717,47 @@ function buildMage(agent, index, total, isGhost = false) {
     color: isGhost ? 0x88ccff : (isOff ? 0x777777 : 0xf0d0b0),
     roughness: 0.6, transparent: isGhost, opacity: Math.min(bodyOpacity + 0.15, 1),
   });
-  const handL = new THREE.Mesh(new THREE.SphereGeometry(2.2, 6, 6), handMat);
-  handL.position.set(-14, 13, 0); group.add(handL);
-  const handR = new THREE.Mesh(new THREE.SphereGeometry(2.2, 6, 6), handMat);
-  handR.position.set(14, 13, 0); group.add(handR);
+  const handL = new THREE.Mesh(GEO.sphere22h, handMat);
+  handL.position.set(-15, 13, 0); group.add(handL);
+  const handR = new THREE.Mesh(GEO.sphere22h, handMat);
+  handR.position.set(15, 13, 0); group.add(handR);
 
   if (!isGhost) {
-    // ── Book (for non-ghost mages) ──
+    // Book + pedestal
     const bookGroup = new THREE.Group();
     const pedestalMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(`hsl(${mHue}, ${40 * satFactor}%, ${isOff ? 12 : 15}%)`), roughness: 0.8, metalness: isOff ? 0 : 0.3,
+      color: new THREE.Color(`hsl(${mHue}, ${40 * satFactor}%, ${isOff ? 12 : 15}%)`),
+      roughness: 0.8, metalness: isOff ? 0 : 0.3,
     });
-    const pedBase = new THREE.Mesh(new THREE.CylinderGeometry(7, 9, 3, 8), pedestalMat);
+    const pedBase = new THREE.Mesh(GEO.cy7x9x3, pedestalMat);
     pedBase.position.y = 0; bookGroup.add(pedBase);
-    const pedColumn = new THREE.Mesh(new THREE.CylinderGeometry(4, 5, 10, 8), pedestalMat);
+    const pedColumn = new THREE.Mesh(GEO.cy4x5x10, pedestalMat);
     pedColumn.position.y = 6.5; bookGroup.add(pedColumn);
-    const pedTop = new THREE.Mesh(new THREE.CylinderGeometry(8, 8, 1.5, 8), pedestalMat);
+    const pedTop = new THREE.Mesh(GEO.cy8x8x1, pedestalMat);
     pedTop.position.y = 12; bookGroup.add(pedTop);
     const pedGlowMat = new THREE.MeshStandardMaterial({
-      color: isOff ? new THREE.Color(0x222222) : glowColor, emissive: isOff ? new THREE.Color(0x000000) : glowColor, emissiveIntensity: isOff ? 0 : 0.15,
+      color: isOff ? new THREE.Color(0x222222) : glowColor,
+      emissive: isOff ? new THREE.Color(0x000000) : glowColor,
+      emissiveIntensity: isOff ? 0 : 0.15,
       transparent: true, opacity: isOff ? 0.05 : 0.3,
     });
-    const pedRing = new THREE.Mesh(new THREE.TorusGeometry(6, 0.8, 8, 16), pedGlowMat);
+    const pedRing = new THREE.Mesh(GEO.torus6x1, pedGlowMat);
     pedRing.position.y = 12.5; pedRing.rotation.x = Math.PI / 2;
     bookGroup.add(pedRing);
 
     const bookMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.9 });
-    const bookCover = new THREE.Mesh(new THREE.BoxGeometry(14, 2, 10), bookMat);
+    const bookCover = new THREE.Mesh(GEO.box14x2x10, bookMat);
     bookCover.position.y = 14.5; bookGroup.add(bookCover);
     const pageMat = new THREE.MeshStandardMaterial({ color: 0xfff8e0, roughness: 0.5 });
-    const pages = new THREE.Mesh(new THREE.BoxGeometry(12, 1.2, 8), pageMat);
+    const pages = new THREE.Mesh(GEO.box12x1x8, pageMat);
     pages.position.y = 16; bookGroup.add(pages);
     const runeGlowMat = new THREE.MeshStandardMaterial({
-      color: isOff ? new THREE.Color(0x333333) : glowColor, emissive: isOff ? new THREE.Color(0x111111) : glowColor, emissiveIntensity: isOff ? 0 : 0.2,
+      color: isOff ? new THREE.Color(0x333333) : glowColor,
+      emissive: isOff ? new THREE.Color(0x111111) : glowColor,
+      emissiveIntensity: isOff ? 0 : 0.2,
       transparent: true, opacity: isOff ? 0.1 : 0.6,
     });
-    const runePlate = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 5), runeGlowMat);
+    const runePlate = new THREE.Mesh(GEO.box8x0x5, runeGlowMat);
     runePlate.position.y = 16.8; bookGroup.add(runePlate);
 
     bookGroup.position.set(0, 2, 16);
@@ -677,24 +765,23 @@ function buildMage(agent, index, total, isGhost = false) {
     group.add(bookGroup);
     group.userData.bookGroupRef = bookGroup;
 
-    // ── Glow aura ──
+    // Glow aura
     const auraMat = new THREE.MeshBasicMaterial({
-      color: isOff ? new THREE.Color(0x222222) : glowColor, transparent: true, opacity: isOff ? 0 : 0.06,
+      color: isOff ? new THREE.Color(0x222222) : glowColor,
+      transparent: true, opacity: isOff ? 0 : 0.06,
       side: THREE.DoubleSide, depthWrite: false,
     });
-    const aura = new THREE.Mesh(new THREE.SphereGeometry(22, 16, 16), auraMat);
+    const aura = new THREE.Mesh(GEO.sphere22, auraMat);
     aura.position.y = 20; group.add(aura);
 
-    // Glow light
     const glowLight = new THREE.PointLight(glowColor, isOff ? 0 : 0.4, 60);
     glowLight.position.y = 20; group.add(glowLight);
 
-    // Enhanced effects
     const outerAuraMat = new THREE.MeshBasicMaterial({
       color: glowColor, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const outerAura = new THREE.Mesh(new THREE.SphereGeometry(35, 20, 20), outerAuraMat);
+    const outerAura = new THREE.Mesh(GEO.sphere35, outerAuraMat);
     outerAura.position.y = 20; outerAura.visible = false;
     group.add(outerAura);
 
@@ -702,7 +789,7 @@ function buildMage(agent, index, total, isGhost = false) {
       color: glowColor, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const innerGlow = new THREE.Mesh(new THREE.SphereGeometry(20, 16, 16), innerGlowMat);
+    const innerGlow = new THREE.Mesh(GEO.sphere20, innerGlowMat);
     innerGlow.position.y = 20; innerGlow.visible = false;
     group.add(innerGlow);
 
@@ -710,7 +797,7 @@ function buildMage(agent, index, total, isGhost = false) {
       color: glowColor, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(12, 12, 12), coreGlowMat);
+    const coreGlow = new THREE.Mesh(GEO.sphere12g, coreGlowMat);
     coreGlow.position.y = 20; coreGlow.visible = false;
     group.add(coreGlow);
 
@@ -718,7 +805,7 @@ function buildMage(agent, index, total, isGhost = false) {
       color: glowColor, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const groundRing = new THREE.Mesh(new THREE.RingGeometry(8, 18, 32), groundRingMat);
+    const groundRing = new THREE.Mesh(GEO.ring8, groundRingMat);
     groundRing.rotation.x = -Math.PI / 2; groundRing.position.y = -1; groundRing.visible = false;
     group.add(groundRing);
 
@@ -729,7 +816,7 @@ function buildMage(agent, index, total, isGhost = false) {
         color: glowColor, transparent: true, opacity: 0.0,
         side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
       });
-      const ring = new THREE.Mesh(new THREE.RingGeometry(2, 8, 32), rMat);
+      const ring = new THREE.Mesh(GEO.ring2x8, rMat);
       ring.rotation.x = -Math.PI / 2; ring.position.y = -0.5; ring.visible = false;
       ring.userData = { phaseOffset: ri * 0.2 };
       group.add(ring); energyRings.push(ring);
@@ -740,7 +827,7 @@ function buildMage(agent, index, total, isGhost = false) {
       color: glowColor, transparent: true, opacity: 0.0,
       depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 8, 80, 12, 1, true), beamMat);
+    const beam = new THREE.Mesh(GEO.cy1x8x80, beamMat);
     beam.position.y = 85; beam.visible = false;
     group.add(beam);
 
@@ -749,7 +836,7 @@ function buildMage(agent, index, total, isGhost = false) {
       color: glowColor, transparent: true, opacity: 0.0,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const runeCircle = new THREE.Mesh(new THREE.RingGeometry(12, 28, 48), runeCircleMat);
+    const runeCircle = new THREE.Mesh(GEO.ring12, runeCircleMat);
     runeCircle.rotation.x = -Math.PI / 2; runeCircle.position.y = -0.8; runeCircle.visible = false;
     group.add(runeCircle);
 
@@ -771,8 +858,7 @@ function buildMage(agent, index, total, isGhost = false) {
     });
   }
 
-  // ── Position in project-based layout ──
-  // (will be set by rebuildScene)
+  // Animation metadata
   group.userData = {
     ...group.userData,
     agentStatus: agent.status,
@@ -787,7 +873,15 @@ function buildMage(agent, index, total, isGhost = false) {
     ringWavePhase: 0,
     glowBeatPhase: Math.random() * Math.PI * 2,
     targetPos: new THREE.Vector3(0, 0, 0),
+    // Enter animation state
+    animEnter: 0,      // 0..1 fade-in progress (0=invisible, 1=done)
+    animExit: 0,       // 0..1 fade-out progress (0=done, 1=visible)
+    agentId: agent.id || agent.pid,
   };
+
+  // Start invisible — animateIn will reveal it
+  group.scale.set(0.001, 0.001, 0.001);
+  group.userData.animEnter = 0;
 
   return group;
 }
@@ -818,29 +912,46 @@ function buildLabel(agent, index) {
 
   const nameEl = document.createElement('div');
   nameEl.style.cssText = `color: ${nameColor}; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 20px rgba(124,77,255,0.3);`;
-  nameEl.textContent = agent.name || agent.id.slice(0, 10);
+  const displayName = agent.sessionTitle || agent.name || agent.id.slice(0, 10);
+  nameEl.textContent = displayName;
   div.appendChild(nameEl);
 
-  // Línea de estado
+  if (agent.toolName && agent.status === 'thinking') {
+    const toolEl = document.createElement('div');
+    toolEl.style.cssText = `color: rgba(0,229,255,0.5); font-size: 8px; letter-spacing: 0.5px; margin-top: 1px;`;
+    toolEl.textContent = `⚡ ${agent.toolName}`;
+    div.appendChild(toolEl);
+  }
+
   const statusEl = document.createElement('div');
   const isOff = agent.status === 'off';
   const statusColor = agent.isExternal ? '#00e5ff' :
     isOff ? '#666' :
     agent.status === 'thinking' ? '#00e5ff' : agent.status === 'running' ? '#a855f7' : agent.status === 'error' ? '#ff4444' : '#7c4dff';
-  const statusText = agent.isExternal ? '👻 externo' :
-    isOff ? '⏻ apagado' :
-    agent.status === 'thinking' ? '⟳ pensando' : agent.status === 'running' ? '⚡ trabajando' : agent.status === 'error' ? '✕ error' : '◉ idle';
+  const ghostSuffix = agent.sessionTitle ? '' : `(PID ${agent.pid || ''}) `;
+  const statusText = agent.isExternal ?
+    (isOff ? '⏻ apagado' :
+     agent.status === 'thinking' ? `⟳ ${ghostSuffix}pensando` :
+     agent.status === 'running' ? `⚡ ${ghostSuffix}trabajando` :
+     agent.status === 'error' ? `✕ ${ghostSuffix}error` : `◉ ${ghostSuffix}idle`)
+    : (isOff ? '⏻ apagado' :
+    agent.status === 'thinking' ? '⟳ pensando' : agent.status === 'running' ? '⚡ trabajando' : agent.status === 'error' ? '✕ error' : '◉ idle');
   statusEl.style.cssText = `color: ${statusColor}; font-size: 7.5px; letter-spacing: 0.5px; opacity: 0.8; margin-top: 2px;`;
   statusEl.textContent = statusText;
   div.appendChild(statusEl);
 
-  // Project name
+  if (agent.isExternal && agent.lastMessage && agent.lastMessage.content && !agent.lastMessage.content.includes('Hermes externo')) {
+    const previewEl = document.createElement('div');
+    previewEl.style.cssText = `font-size: 6.5px; color: rgba(255,255,255,0.25); letter-spacing: 0.3px; margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
+    previewEl.textContent = agent.lastMessage.content.slice(0, 80) + (agent.lastMessage.content.length > 80 ? '…' : '');
+    div.appendChild(previewEl);
+  }
+
   const projectEl = document.createElement('div');
   projectEl.style.cssText = `font-size: 7px; color: rgba(255,255,255,0.2); letter-spacing: 1px; margin-top: 1px;`;
   projectEl.textContent = agent.projectName || '';
   div.appendChild(projectEl);
 
-  // Tag line
   const tagEl = document.createElement('div');
   const tagColor = isGhost ? 'rgba(0,229,255,0.4)' : (isOff ? 'rgba(100,100,100,0.4)' : 'rgba(124,77,255,0.5)');
   tagEl.style.cssText = `font-size: 7px; color: ${tagColor}; letter-spacing: 2px; margin-top: 1px;`;
@@ -851,28 +962,307 @@ function buildLabel(agent, index) {
   return label;
 }
 
-// ─── REBUILD SCENE ───
+// ─── POSITION CALCULATION ───
+function getAgentOrbitPosition(projKey, agentIdx, agentsInGroup) {
+  // Find project position
+  const floorChildren = floorGroup.children;
+  let px = 0, pz = 0;
+  for (const child of floorChildren) {
+    if (child.userData && child.userData._projKey === projKey) {
+      px = child.position.x;
+      pz = child.position.z;
+      break;
+    }
+  }
+  const orbitRadius = calibState.orbitRadius;
+  const orbitAngle = (agentIdx / agentsInGroup) * Math.PI * 2;
+  return {
+    x: px + Math.cos(orbitAngle) * orbitRadius,
+    z: pz + Math.sin(orbitAngle) * orbitRadius,
+    orbitCenter: new THREE.Vector3(px, 0, pz),
+    orbitAngle,
+    orbitRadius,
+  };
+}
+
+// ─── DIFF-BASED SCENE UPDATE ───
+// En lugar de destruir y recrear todo, compara los agentes y solo
+// agrega/elimina lo que cambió. Las animaciones de entrada/salida
+// ocurren en el loop principal.
+function incrementalUpdate(newAgents) {
+  // Obtener IDs actuales
+  const prevIds = new Set(agentMap.keys());
+  const newIds = new Set(newAgents.map(a => a.id || a.pid));
+
+  // Agents to remove (existían pero ya no)
+  const toRemove = [...prevIds].filter(id => !newIds.has(id));
+
+  // Agents to add (nuevos)
+  const toAdd = [];
+  for (const agent of newAgents) {
+    const id = agent.id || agent.pid;
+    if (!prevIds.has(id)) {
+      toAdd.push(agent);
+    }
+  }
+
+  // ── Remove agents con animación ──
+  for (const id of toRemove) {
+    const entry = agentMap.get(id);
+    if (entry) {
+      entry.exiting = true;
+      entry.mage.userData.animExit = 1;
+    }
+  }
+
+  // Si hay que agregar o sacar, necesitamos reposicionar TODOS los orbitadores
+  // porque los índices cambian.
+  if (toRemove.length > 0 || toAdd.length > 0) {
+    repositionAllAgents(newAgents);
+  }
+
+  // ── Add new agents ──
+  for (const agent of toAdd) {
+    addAgentToScene(agent, newAgents);
+  }
+
+  // ── Actualizar data ──
+  agents = [...newAgents];
+  allAgentsWithData = [...newAgents];
+
+  // Limpiar exiting que ya terminaron su animación
+  cleanupExitedAgents();
+
+  // Sincronizar mageParticles con la nueva cantidad de agentes
+  while (mageParticles.length < newAgents.length) {
+    mageParticles.push({ particles: [] });
+  }
+  if (mageParticles.length > newAgents.length) {
+    for (let i = newAgents.length; i < mageParticles.length; i++) {
+      for (const p of (mageParticles[i]?.particles || [])) {
+        scene.remove(p.sprite);
+        if (p.sprite.material) p.sprite.material.dispose();
+      }
+    }
+    mageParticles.length = newAgents.length;
+  }
+
+  updatePanel();
+}
+
+// Reposiciona todos los agentes según el nuevo arreglo
+function repositionAllAgents(newAgents) {
+  // Reconstruir grupos de proyecto
+  const projectGroups = {};
+  for (const agent of newAgents) {
+    const projKey = agent.projectId || '__default__';
+    if (!projectGroups[projKey]) projectGroups[projKey] = { name: agent.projectName || 'Default', agents: [] };
+    projectGroups[projKey].agents.push(agent);
+  }
+
+  const projKeys = Object.keys(projectGroups);
+  const polarRadius = calibState.polarRadius;
+
+  // Re-posicionar project nodes
+  const floorChildren = floorGroup.children;
+  let nodeIdx = 0;
+  for (const child of floorChildren) {
+    if (child.userData && child.userData._projKey) {
+      const polarAngle = (nodeIdx / projKeys.length) * Math.PI * 2 - Math.PI / 2;
+      child.position.x = Math.cos(polarAngle) * polarRadius;
+      child.position.z = Math.sin(polarAngle) * polarRadius;
+      nodeIdx++;
+    }
+  }
+
+  // Reposicionar project labels
+  const labelsToUpdate = [];
+  scene.children.forEach(c => {
+    if (c.isCSS2DObject && c.userData && c.userData._isProjLabel) {
+      labelsToUpdate.push(c);
+    }
+  });
+
+  nodeIdx = 0;
+  for (const projKey of projKeys) {
+    const polarAngle = (nodeIdx / projKeys.length) * Math.PI * 2 - Math.PI / 2;
+    const px = Math.cos(polarAngle) * polarRadius;
+    const pz = Math.sin(polarAngle) * polarRadius;
+
+    // Update project label
+    if (labelsToUpdate[nodeIdx]) {
+      labelsToUpdate[nodeIdx].position.set(px, 60, pz);
+    }
+
+    // Reposicionar magos
+    const agentsInGroup = projectGroups[projKey].agents;
+    agentsInGroup.forEach((agent, aIdx) => {
+      const id = agent.id || agent.pid;
+      const entry = agentMap.get(id);
+      if (!entry || entry.exiting) return;
+
+      const orbitRadius = calibState.orbitRadius;
+      const orbitAngle = (aIdx / agentsInGroup.length) * Math.PI * 2;
+      const gx = px + Math.cos(orbitAngle) * orbitRadius;
+      const gz = pz + Math.sin(orbitAngle) * orbitRadius;
+
+      const mage = entry.mage;
+      mage.userData.targetPos.set(gx, 0, gz);
+      mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
+      mage.userData.orbitAngle = orbitAngle;
+      mage.userData.orbitRadius = orbitRadius;
+      mage.userData.orbitSpeed = 0.12 + (aIdx % 5) * 0.02;
+
+      // Snap to new position immediately (no orbit drift — targetPos used in animate)
+      mage.position.x = gx;
+      mage.position.z = gz;
+
+      if (entry.label) {
+        entry.label.position.x = gx;
+        entry.label.position.z = gz;
+      }
+
+      // Rebuild clickables for this mage
+      const originalIndex = newAgents.indexOf(agent);
+      clickables = clickables.filter(c => c.mage !== mage);
+      mage.traverse(child => {
+        if (child.isMesh) {
+          clickables.push({ mesh: child, agentIndex: originalIndex, mage });
+        }
+      });
+    });
+
+    nodeIdx++;
+  }
+}
+
+function addAgentToScene(agent, allAgents) {
+  const id = agent.id || agent.pid;
+  const isGhost = !!agent.isExternal;
+  const agentIdx = allAgents.indexOf(agent);
+
+  // Count agents in same project
+  const projKey = agent.projectId || '__default__';
+  const sameProj = allAgents.filter(a => (a.projectId || '__default__') === projKey);
+  const idxInProj = sameProj.indexOf(agent);
+
+  const mage = buildMage(agent, agentIdx, sameProj.length, isGhost);
+
+  // Find project node position
+  let px = 0, pz = 0;
+  for (const child of floorGroup.children) {
+    if (child.userData && child.userData._projKey === projKey) {
+      px = child.position.x;
+      pz = child.position.z;
+      break;
+    }
+  }
+
+  const orbitRadius = calibState.orbitRadius;
+  const orbitAngle = (idxInProj / sameProj.length) * Math.PI * 2;
+  const gx = px + Math.cos(orbitAngle) * orbitRadius;
+  const gz = pz + Math.sin(orbitAngle) * orbitRadius;
+
+  mage.position.set(gx, 0, gz);
+  mage.userData.targetPos = mage.position.clone();
+  mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
+  mage.userData.orbitAngle = orbitAngle;
+  mage.userData.orbitRadius = orbitRadius;
+  mage.userData.orbitSpeed = 0.12 + (idxInProj % 5) * 0.02;
+  mage.userData.agentId = id;
+
+  // Clickable
+  mage.traverse(child => {
+    if (child.isMesh) {
+      clickables.push({ mesh: child, agentIndex: agentIdx, mage });
+    }
+  });
+
+  mageGroup.add(mage);
+
+  const label = buildLabel(agent, agentIdx);
+  label.position.set(gx, 70, gz);
+  scene.add(label);
+  mage.userData.label = label;
+
+  // Start enter animation
+  mage.userData.animEnter = 0.01; // tiny value triggers the animation
+
+  agentMap.set(id, { mage, label, agentData: agent, exiting: false, animatingIn: true });
+
+  // Update project label positions if needed (new project node might have been added)
+  updateProjectLabels();
+}
+
+function updateProjectLabels() {
+  // Find all project labels and reposition
+  let labelIdx = 0;
+  scene.children.forEach(c => {
+    if (c.isCSS2DObject && c.userData && c.userData._isProjLabel) {
+      const floorChildren = floorGroup.children;
+      let found = 0;
+      for (const child of floorChildren) {
+        if (child.userData && child.userData._projKey) {
+          if (found === labelIdx) {
+            c.position.set(child.position.x, 60, child.position.z);
+            break;
+          }
+          found++;
+        }
+      }
+      labelIdx++;
+    }
+  });
+}
+
+function cleanupExitedAgents() {
+  const toDelete = [];
+  for (const [id, entry] of agentMap) {
+    if (entry.exiting && entry.mage.userData.animExit <= 0) {
+      toDelete.push(id);
+    }
+  }
+  for (const id of toDelete) {
+    const entry = agentMap.get(id);
+    if (!entry) continue;
+
+    // Remove clickables
+    clickables = clickables.filter(c => c.mage !== entry.mage);
+
+    // Remove label
+    if (entry.label) {
+      scene.remove(entry.label);
+    }
+
+    // Remove mage from group (dispose happens lazily)
+    mageGroup.remove(entry.mage);
+    agentMap.delete(id);
+  }
+}
+
+// ─── FULL SCENE REBUILD (fallback for first load / major changes) ───
 function rebuildScene() {
-  // Clean up old
+  // Limpiar estado incremental
+  for (const [, entry] of agentMap) {
+    if (entry.label) scene.remove(entry.label);
+  }
+  agentMap.clear();
+
   cleanupScene();
 
-  // Store all agents
   allAgentsWithData = [...agents];
-
-  // Mostrar TODOS los agentes — no filtrar por estado
   const visibleAgents = agents;
 
   if (visibleAgents.length === 0) {
     scene.add(mageGroup);
     mageParticles = [];
     updatePanel();
-    // Ocultar loading aunque no haya agentes
     const loadingEl = document.getElementById('loading');
     if (loadingEl) loadingEl.style.display = 'none';
     return;
   }
 
-  // Build single ground floor first
+  // Build ground floor (cached)
   scene.add(floorGroup);
   const groundFloor = createGroundFloor();
   floorGroup.add(groundFloor);
@@ -888,52 +1278,69 @@ function rebuildScene() {
   const projKeys = Object.keys(projectGroups);
   projectCount = projKeys.length;
 
-  // ─── POLAR distribution of project nodes ───
-  const polarRadius = Math.min(180, 40 + projKeys.length * 35);
+  // Polar distribution
+  const polarRadius = calibState.polarRadius;
 
   projKeys.forEach((projKey, pIdx) => {
     const group = projectGroups[projKey];
-    // Assign a color hue for this project
     if (!projectColors[projKey]) {
       projectColors[projKey] = (pIdx * 60 + 264) % 360;
     }
     const hue = projectColors[projKey];
 
-    // Polar position — distribute projects evenly in a circle
     const polarAngle = (pIdx / projKeys.length) * Math.PI * 2 - Math.PI / 2;
     const px = Math.cos(polarAngle) * polarRadius;
     const pz = Math.sin(polarAngle) * polarRadius;
 
-    // Create project node at ground level
+    // Create project node
     const node = createProjectNode(group.name, projKey, hue);
     node.position.set(px, 0, pz);
+    node.userData._projKey = projKey;
     floorGroup.add(node);
 
-    // ─── Place agents ORBITING around this project node ───
+    // Project name label
+    const projNameDiv = document.createElement('div');
+    projNameDiv.style.cssText = `
+      color: rgba(255,255,255,0.35);
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      text-shadow: 0 0 20px rgba(124,77,255,0.15);
+      background: rgba(0,0,0,0.3);
+      padding: 4px 12px;
+      border-radius: 4px;
+      backdrop-filter: blur(4px);
+      transition: none;
+    `;
+    projNameDiv.textContent = group.name;
+    const projLabel = new CSS2DObject(projNameDiv);
+    projLabel.position.set(px, 60, pz);
+    projLabel.userData = { _isProjLabel: true, _projKey: projKey };
+    scene.add(projLabel);
+
+    // Place agents orbiting around project node
     const agentsInGroup = group.agents;
-    const orbitRadius = 42;
+    const orbitRadius = calibState.orbitRadius;
 
     agentsInGroup.forEach((agent, aIdx) => {
       const isGhost = !!agent.isExternal;
       const mage = buildMage(agent, aIdx, agentsInGroup.length, isGhost);
 
-      // Initial orbit position
       const orbitAngle = (aIdx / agentsInGroup.length) * Math.PI * 2;
       const gx = px + Math.cos(orbitAngle) * orbitRadius;
       const gz = pz + Math.sin(orbitAngle) * orbitRadius;
 
       mage.position.set(gx, 0, gz);
       mage.userData.targetPos = mage.position.clone();
-
-      // Store orbit data for animation
       mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
       mage.userData.orbitAngle = orbitAngle;
       mage.userData.orbitRadius = orbitRadius;
       mage.userData.orbitSpeed = 0.12 + Math.random() * 0.08;
+      mage.userData.agentId = agent.id || agent.pid;
 
-      // Store the original agent index for focus
       const originalIndex = agents.indexOf(agent);
-
       mage.traverse(child => {
         if (child.isMesh) {
           clickables.push({ mesh: child, agentIndex: originalIndex, mage });
@@ -945,18 +1352,21 @@ function rebuildScene() {
       const label = buildLabel(agent, originalIndex);
       label.position.set(gx, 70, gz);
       scene.add(label);
-      // Store label ref on mage so animation can follow
       mage.userData.label = label;
+
+      // Track in agentMap
+      const id = agent.id || agent.pid;
+      agentMap.set(id, { mage, label, agentData: agent, exiting: false, animatingIn: true });
+
+      // Enter animation starts on next frame
+      mage.userData.animEnter = 0.01;
     });
   });
 
   scene.add(mageGroup);
-
-  // Initialize character particles
   mageParticles = visibleAgents.map(() => ({ particles: [] }));
   updatePanel();
 
-  // Ocultar loading después del primer render exitoso
   const loadingEl = document.getElementById('loading');
   if (loadingEl) loadingEl.style.display = 'none';
 }
@@ -965,10 +1375,13 @@ function cleanupScene() {
   while (mageGroup.children.length) {
     const child = mageGroup.children[0];
     mageGroup.remove(child);
+    // Dispose materials but keep geometries (they're pooled)
     if (child.traverse) {
       child.traverse(c => {
-        if (c.geometry) c.geometry.dispose();
-        if (c.material) c.material.dispose();
+        if (c.material) {
+          if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+          else c.material.dispose();
+        }
       });
     }
   }
@@ -980,8 +1393,10 @@ function cleanupScene() {
     floorGroup.remove(child);
     if (child.traverse) {
       child.traverse(c => {
-        if (c.geometry) c.geometry.dispose();
-        if (c.material) c.material.dispose();
+        if (c.material) {
+          if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+          else c.material.dispose();
+        }
       });
     }
   }
@@ -1002,7 +1417,6 @@ function cleanupScene() {
 // ─── PARTICLES ───
 let mageParticles = [];
 let charParticleTexture = null;
-let charParticleGeo = null;
 
 function cleanupCharParticles() {
   for (const entry of mageParticles) {
@@ -1029,11 +1443,8 @@ function spawnCharParticle(magePos) {
   }
 
   const mat = new THREE.SpriteMaterial({
-    map: charParticleTexture,
-    transparent: true,
-    opacity: 0.8,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
+    map: charParticleTexture, transparent: true, opacity: 0.8,
+    blending: THREE.AdditiveBlending, depthWrite: false,
     color: new THREE.Color(`hsl(${Math.random() * 360}, 80%, 60%)`),
   });
   const sprite = new THREE.Sprite(mat);
@@ -1135,7 +1546,7 @@ function updateFocusPanel(agent) {
   name.textContent = agent.name || agent.id.slice(0, 10);
   label.textContent = isOff ? '⏻ HERMES APAGADO' : (isGhost ? '👻 HERMES EXTERNO' : (agent.isHermes ? '⚡ HERMES AGENT' : '✦ AI AGENT'));
   const s = agent.status || 'idle';
-  statusEl.textContent = isGhost ? 'idle (external)' : (isOff ? 'apagado' : s);
+  statusEl.textContent = isGhost ? (agent.sessionTitle ? agent.sessionTitle : 'externo') : (isOff ? 'apagado' : s);
   statusDot.className = 's-dot ' + (isGhost ? 'idle' : (isOff ? 'off' : s));
   modelEl.textContent = agent.model || 'default';
   msgsEl.textContent = agent.messageCount || 0;
@@ -1153,6 +1564,18 @@ function updateFocusPanel(agent) {
   typeTag.className = 'fi-tag' + (isGhost ? ' ghost' : '');
   typeTag.textContent = isOff ? '⏻ OFF' : (isGhost ? '👻 GHOST' : (agent.isHermes ? '⚡ HERMES' : '✦ AI'));
   tagsEl.appendChild(typeTag);
+  if (agent.sessionId) {
+    const sidTag = document.createElement('span');
+    sidTag.className = 'fi-tag';
+    sidTag.textContent = '#' + agent.sessionId.slice(-8);
+    tagsEl.appendChild(sidTag);
+  }
+  if (agent.toolName) {
+    const toolTag = document.createElement('span');
+    toolTag.className = 'fi-tag';
+    toolTag.textContent = '🔧 ' + agent.toolName.slice(0, 20);
+    tagsEl.appendChild(toolTag);
+  }
   if (agent.model) {
     const modelTag = document.createElement('span');
     modelTag.className = 'fi-tag';
@@ -1169,16 +1592,26 @@ function updateFocusPanel(agent) {
 
 // ─── FETCH AGENTS ───
 let lastAgentData = '';
-window.refreshAgents = async function() {
+window.refreshAgents = async function(forceRebuild = false) {
   try {
     const res = await fetch(`${API}/admin/agents`);
     const data = await res.json();
     const newAgents = data.agents || [];
 
     // Comparar si cambiaron
-    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, status: a.status, name: a.name, isExternal: a.isExternal })));
-    if (dataKey === lastAgentData && agents.length > 0) {
+    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, isExternal: a.isExternal, projectId: a.projectId })));
+    if (dataKey === lastAgentData && agents.length > 0 && !forceRebuild) {
+      // Sin cambios estructurales, solo actualizar estados
       agents = newAgents;
+      allAgentsWithData = [...newAgents];
+      // Update statuses in existing mages
+      for (const agent of newAgents) {
+        const id = agent.id || agent.pid;
+        const entry = agentMap.get(id);
+        if (entry && !entry.exiting) {
+          entry.agentData = agent;
+        }
+      }
       updatePanel();
       if (isFocusMode && focusState) {
         const agentData = allAgentsWithData[focusState.agentIndex];
@@ -1186,12 +1619,37 @@ window.refreshAgents = async function() {
       }
       return;
     }
+
     lastAgentData = dataKey;
     agents = newAgents;
-    rebuildScene();
+
+    // Si es el primer build o hay muchos cambios, hacer rebuild completo
+    const currentIds = new Set(agentMap.keys());
+    const newIds = new Set(newAgents.map(a => a.id || a.pid));
+    // Rebuild si no hay agentMap previo o si la diferencia es > 50% o si cambiaron los proyectos
+    const diffCount = [...currentIds].filter(id => !newIds.has(id)).length +
+                      [...newIds].filter(id => !currentIds.has(id)).length;
+                      
+    const currentProjKeys = new Set((agents || []).map(a => a.projectId || '__default__'));
+    const newProjKeys = new Set(newAgents.map(a => a.projectId || '__default__'));
+    let projChanged = currentProjKeys.size !== newProjKeys.size;
+    if (!projChanged) {
+        for (const pk of newProjKeys) {
+            if (!currentProjKeys.has(pk)) {
+                projChanged = true;
+                break;
+            }
+        }
+    }
+    const needsFullRebuild = agentMap.size === 0 || diffCount > Math.max(3, currentIds.size * 0.5) || projChanged;
+
+    if (needsFullRebuild) {
+      rebuildScene();
+    } else {
+      incrementalUpdate(newAgents);
+    }
   } catch(e) {
     console.error('[AGENTS-ROOM] Fetch error:', e.message);
-    // Ocultar loading incluso si falla el fetch
     const loadingEl = document.getElementById('loading');
     if (loadingEl) {
       loadingEl.textContent = '✦ ERROR: ' + e.message.slice(0, 30) + '... ✦';
@@ -1240,9 +1698,53 @@ function animate() {
     controls.target.lerp(camTarget, 0.05);
   }
 
+  // ─── ENTER/EXIT ANIMATIONS ───
+  // Procesamos animaciones de entrada/salida para cada mago
+  // ANTES del movimiento orbital para que la posición snap sea correcta
+  mageGroup.children.forEach((mage) => {
+    if (!mage.userData) return;
+    const ud = mage.userData;
+
+    // Enter animation: scale 0 → 1 with ease-out bounce
+    if (ud.animEnter > 0 && ud.animEnter < 1) {
+      ud.animEnter = Math.min(ud.animEnter + dt * 2.5, 1);
+      // Ease-out cubic
+      const s = 1 - Math.pow(1 - ud.animEnter, 3);
+      mage.scale.set(s, s, s);
+      // Labels fade in
+      if (ud.label) {
+        ud.label.element.style.opacity = ud.animEnter;
+      }
+      // Glow ramps up
+      if (ud.aura) {
+        ud.aura.material.opacity = ud.animEnter * 0.06;
+      }
+    } else if (ud.animEnter >= 1) {
+      mage.scale.set(1, 1, 1);
+      if (ud.label) {
+        ud.label.element.style.opacity = 1;
+      }
+    }
+
+    // Exit animation: scale 1 → 0 with dissolve
+    if (ud.animExit > 0) {
+      ud.animExit = Math.max(ud.animExit - dt * 2.0, 0);
+      // Ease-in cubic
+      const s = 1 - Math.pow(1 - ud.animExit, 3);
+      mage.scale.set(s, s, s);
+      if (ud.label) {
+        ud.label.element.style.opacity = ud.animExit;
+      }
+    }
+  });
+
   // ─── Orbit agents around their project nodes ───
   mageGroup.children.forEach((mage) => {
     if (!mage.userData || !mage.userData.orbitCenter) return;
+    // Skip during enter/exit animations
+    if (mage.userData.animExit > 0 && mage.userData.animExit < 1) return;
+    if (mage.userData.animEnter > 0 && mage.userData.animEnter < 1) return;
+
     const ud = mage.userData;
     ud.orbitAngle += dt * ud.orbitSpeed;
     const newX = ud.orbitCenter.x + Math.cos(ud.orbitAngle) * ud.orbitRadius;
@@ -1251,7 +1753,6 @@ function animate() {
     mage.position.z = newZ;
     ud.targetPos.x = newX;
     ud.targetPos.z = newZ;
-    // Move label to follow the agent
     if (ud.label) {
       ud.label.position.x = newX;
       ud.label.position.z = newZ;
@@ -1266,25 +1767,22 @@ function animate() {
     const isOff = ud.isOff;
     const isActive = !isGhost && !isOff && (ud.agentStatus === 'running' || ud.agentStatus === 'thinking');
 
-    // Bob — los apagados apenas se mueven
+    // Bob
     const bobScale = isGhost ? 1.5 : (isOff ? 0.3 : 2);
     const bob = Math.sin(t * 0.6 + ud.bobPhase) * bobScale;
     mage.position.y = (mage.userData.targetPos?.y || 0) + bob;
 
     if (isGhost) {
-      // Ghost ethereal effects
-      if (ud.ghostAura) {
+      if (ud.ghostAura && ud.ghostAura.material) {
         ud.ghostAura.material.opacity = 0.06 + Math.sin(t * 0.8 + i) * 0.04;
         ud.ghostAura.scale.setScalar(1 + Math.sin(t * 0.5 + i * 0.7) * 0.1);
       }
-      // Ghost tip flicker
       if (ud.tip) {
         ud.tip.material.emissiveIntensity = 0.1 + Math.sin(t * 1.5 + i * 1.3) * 0.1;
       }
-      return; // ghosts have no book/book effects
+      return;
     }
 
-    // Book float & rotate
     const bg = ud.bookGroupRef;
     if (bg) {
       bg.position.y = (bg.userData?.baseY || 2) + Math.sin(t * 0.8 + (bg.userData?.phase || 0)) * 2;
@@ -1292,7 +1790,6 @@ function animate() {
       bg.rotation.z = Math.sin(t * 0.3 + i * 0.5) * 0.05;
     }
 
-    // ── All the existing animation effects from original code ──
     const aura = ud.aura;
     if (aura) {
       if (isActive) {
@@ -1386,7 +1883,6 @@ function animate() {
       if (mageParticles[i]) mageParticles[i].particles.push(p);
     }
 
-    // Side bursts
     if (isActive && mageParticles[i] && Math.random() < 0.3) {
       const handPos = new THREE.Vector3();
       mage.getWorldPosition(handPos);
@@ -1466,12 +1962,94 @@ refreshAgents();
 setInterval(refreshAgents, 8000);
 animate();
 
-// ─── BROADCAST CHANNEL ───
+// ─── CALIBRATION UI ───
+const calibBtn = document.getElementById('calib-btn');
+const calibPanel = document.getElementById('calib-panel');
+const polarSlider = document.getElementById('polar-radius-slider');
+const polarVal = document.getElementById('polar-radius-val');
+const orbitSlider = document.getElementById('orbit-radius-slider');
+const orbitVal = document.getElementById('orbit-radius-val');
+const calibReset = document.getElementById('calib-reset');
+
+calibBtn.addEventListener('click', () => {
+  calibPanelOpen = !calibPanelOpen;
+  calibPanel.classList.toggle('open', calibPanelOpen);
+  calibBtn.classList.toggle('active', calibPanelOpen);
+});
+
+function applyCalibration() {
+  calibState.polarRadius = parseInt(polarSlider.value);
+  calibState.orbitRadius = parseInt(orbitSlider.value);
+  polarVal.textContent = calibState.polarRadius;
+  orbitVal.textContent = calibState.orbitRadius;
+
+  // Reposition all agents and project nodes immediately
+  if (agentMap.size > 0) {
+    repositionAllAgents(agents);
+  }
+}
+
+polarSlider.addEventListener('input', applyCalibration);
+orbitSlider.addEventListener('input', applyCalibration);
+
+calibReset.addEventListener('click', () => {
+  polarSlider.value = CALIB_DEFAULTS.polarRadius;
+  orbitSlider.value = CALIB_DEFAULTS.orbitRadius;
+  applyCalibration();
+});
+
+// ─── REFRESH BUTTON ───
+document.getElementById('refresh-btn').addEventListener('click', () => {
+  window.refreshAgents(true);
+});
+
+// ─── BORRAR ETIQUETAS AL ABRIR ───
+// Cerrar panel si se hace clic fuera
+document.addEventListener('click', (e) => {
+  if (calibPanelOpen &&
+      !calibPanel.contains(e.target) &&
+      e.target !== calibBtn &&
+      !calibBtn.contains(e.target)) {
+    calibPanelOpen = false;
+    calibPanel.classList.remove('open');
+    calibBtn.classList.remove('active');
+  }
+});
+
+// ─── BROADCAST CHANNEL & WEBSOCKET CLIENT (SLAVE ONLY) ───
 const bc = new BroadcastChannel('jp-agents-room');
 bc.onmessage = (event) => {
-  if (event.data && event.data.type === 'agents-updated') refreshAgents();
+  if (event.data && (event.data.type === 'agents-updated' || event.data.type === 'state-updated')) {
+    refreshAgents();
+  }
 };
 window.addEventListener('beforeunload', () => bc.close());
+
+function connectWebSocket() {
+  try {
+    const ws = new WebSocket('ws://localhost:3001/ws/hermes');
+    ws.onopen = () => {
+      console.log('[AGENTS-ROOM] Conectado a WebSocket Server de Sincronización.');
+    };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.event === 'sync:stateUpdated' || data.event === 'hermes:status') {
+          console.log('[AGENTS-ROOM] Sincronización recibida vía WebSocket. Refrescando agentes...');
+          refreshAgents();
+        }
+      } catch (e) {}
+    };
+    ws.onclose = () => {
+      console.log('[AGENTS-ROOM] Conexión WebSocket cerrada. Reintentando en 5s...');
+      setTimeout(connectWebSocket, 5000);
+    };
+    ws.onerror = () => {};
+  } catch (e) {
+    console.error('[AGENTS-ROOM] Error conectando WebSocket:', e);
+  }
+}
+connectWebSocket();
 
 // ─── CLICK RAYCASTER ───
 renderer.domElement.addEventListener('click', (event) => {

@@ -6,8 +6,16 @@ export default defineConfig({
     strictPort: true,
     hmr: false, // Disable Hot Module Replacement to prevent auto-refresh when editing files
     watch: {
-      // You can also ignore specific files/folders here if needed
-      // ignored: ['**/node_modules/**', '**/proyects/**'],
+      ignored: [
+        '**/node_modules/**',
+        '**/projects/**',
+        '**/proyects/**',
+        '**/*.json',
+        '**/*.db*',
+        '**/vector_store/**',
+        '**/rag_uploads/**',
+        '**/scratch/**'
+      ]
     }
   }
 });

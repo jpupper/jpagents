@@ -23,7 +23,7 @@
   <div id="app">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <h1>JP<span>Agents</span></h1>
+        <h1>JP<span>Agents</span> <span id="agent-badge" class="agent-badge">0</span></h1>
         <div class="header-actions">
           <button id="new-chat" class="btn-primary" title="Nuevo Proyecto">+</button>
           <button id="scan-folder-sidebar" class="btn-icon-sidebar"
@@ -47,9 +47,6 @@
           </div>
           <div class="status-indicator">
             <span id="backend-status-dot" class="dot live"></span> Backend
-          </div>
-          <div class="status-indicator">
-            <span id="mcp-status-dot" class="dot dead"></span> MCP Protocol
           </div>
       </div>
     </aside>
@@ -581,11 +578,18 @@
               <div class="modal-body-content">
                 <div class="skills-header">
                   <h3>🧠 Gestor de Skills</h3>
+                  <div class="skills-source-tabs">
+                    <button class="skills-source-tab active" data-skills-source="local">📁 Locales</button>
+                    <button class="skills-source-tab" data-skills-source="hermes">⚡ Hermes</button>
+                  </div>
                   <button id="new-skill-btn" class="btn-primary" style="width: auto;">+ Nuevo Skill</button>
                 </div>
                 
                 <div class="skills-container modal-layout">
                   <aside class="skills-sidebar">
+                    <div class="skills-sidebar-search">
+                      <input type="text" id="skills-search-input" class="config-input" placeholder="Buscar skill..." />
+                    </div>
                     <div id="skills-list" class="skills-list">
                       <!-- Skills loaded by JS -->
                     </div>
@@ -601,6 +605,12 @@
                         </div>
                       </div>
                       <textarea id="skill-content-textarea" class="config-textarea" rows="15" placeholder="Escribe las instrucciones de este skill..."></textarea>
+                      <div class="skill-meta-row">
+                        <label class="skill-default-label">
+                          <input type="checkbox" id="skill-default-checkbox" /> ⭐ Cargar por defecto en nuevos proyectos
+                        </label>
+                        <span id="hermes-skill-badge" class="hermes-skill-badge hidden">⚡ Skill de Hermes (solo lectura)</span>
+                      </div>
                     </div>
                     <div id="skill-empty-state" class="empty-state">
                       <p>Selecciona un skill o crea uno nuevo.</p>
@@ -609,7 +619,7 @@
                 </div>
               </div>
             </div>
-
+            
             <div id="modal-tab-models-api" class="modal-tab-content hidden">
               <div class="modal-body-content">
                 <h3>🤖 Configuración de Modelos y APIs</h3>
@@ -736,7 +746,7 @@
     </div>
   </div>
 
-  <script type="module" src="/main.js"></script>
+  <script type="module" src="./main.js"></script>
 </body>
 
 </html>

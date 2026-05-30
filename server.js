@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import fetch from 'node-fetch';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -43,6 +44,7 @@ app.use('/temp-images', express.static(tempImagesDir));
 let isAgentBusy = false;
 let needsRestart = false;
 let restartTimer = null;
+let masterSocketId = null;
 
 app.get('/api/admin/traces', async (req, res) => {
     try {
@@ -92,30 +94,16 @@ const OLLAMA_URL = 'http://localhost:11434';
 
 async function ensureOllamaRunning() {
     try {
-        // Verificar si ya está corriendo
         const check = await fetch(`${OLLAMA_URL}/api/tags`).catch(() => null);
         if (check && check.ok) {
             console.log('\x1b[32m[OLLAMA]\x1b[0m Sistema detectado y activo.');
-            return;
+        } else {
+            console.log('\x1b[33m[OLLAMA]\x1b[0m No detectado. La interfaz mostrará el estado offline.');
+            console.log('\x1b[33m[TIP]\x1b[0m Iniciá Ollama manualmente con: ollama serve');
         }
-
-        console.log('\x1b[33m[OLLAMA]\x1b[0m No se detectó Ollama. Intentando iniciar servicio...');
-
-        // Iniciar ollama serve de forma independiente
-        const ollamaProcess = spawn('ollama', ['serve'], {
-            detached: true,
-            stdio: 'ignore',
-            shell: true
-        });
-
-        ollamaProcess.unref();
-        console.log('\x1b[32m[OLLAMA]\x1b[0m Comando de inicio enviado (ollama serve).');
-
-        // Esperar un momento para que el proceso inicialice
-        await new Promise(resolve => setTimeout(resolve, 2000));
     } catch (error) {
-        console.error('\x1b[31m[OLLAMA ERROR]\x1b[0m No se pudo auto-iniciar Ollama:', error.message);
-        console.log('\x1b[33m[TIP]\x1b[0m Asegúrate de que Ollama esté instalado y en tu PATH.');
+        console.log('\x1b[33m[OLLAMA]\x1b[0m No detectado. La interfaz mostrará el estado offline.');
+        console.log('\x1b[33m[TIP]\x1b[0m Iniciá Ollama manualmente con: ollama serve');
     }
 }
 
@@ -317,8 +305,9 @@ app.delete('/api/sessions/archive/:id', async (req, res) => {
     }
 });
 
-// Memory store for session changes (added/removed lines)
+// Memory store for session changes (added/removed lines + full git diffs)
 const sessionChangesMap = new Map();
+const sessionDiffsMap = new Map(); // key -> [{ fileName, diff: 'git diff output' }]
 
 app.post('/api/internal/session-changes', async (req, res) => {
     try {
@@ -649,6 +638,89 @@ app.delete('/api/skills/:name', async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to delete skill' });
+    }
+});
+
+// ─── HERMES SKILLS (desde ~/.hermes/skills/) ───
+app.get('/api/hermes/skills', async (req, res) => {
+    try {
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const skillsDir = path.join(hermesHome, 'skills');
+        let skills = [];
+        try {
+            const categories = await fs.readdir(skillsDir);
+            for (const cat of categories) {
+                const catPath = path.join(skillsDir, cat);
+                const stat = await fs.stat(catPath).catch(() => null);
+                if (!stat || !stat.isDirectory()) continue;
+                const entries = await fs.readdir(catPath);
+                for (const entry of entries) {
+                    const entryPath = path.join(catPath, entry);
+                    const entryStat = await fs.stat(entryPath).catch(() => null);
+                    if (!entryStat) continue;
+                    
+                    let skillName = entry;
+                    let skillFile = 'SKILL.md';
+                    let content = '';
+                    
+                    if (entryStat.isDirectory()) {
+                        // Skill as directory: <category>/<skill-name>/SKILL.md
+                        const skillFilePath = path.join(entryPath, 'SKILL.md');
+                        content = await fs.readFile(skillFilePath, 'utf-8').catch(() => '');
+                    } else if (entry.endsWith('.md') && entry !== 'SKILL.md') {
+                        // Flat skill file: <category>/<skill-name>.md
+                        content = await fs.readFile(entryPath, 'utf-8').catch(() => '');
+                        skillFile = entry;
+                        skillName = entry.replace('.md', '');
+                    } else {
+                        continue;
+                    }
+                    
+                    let description = '';
+                    if (content) {
+                        const nameMatch = content.match(/^name:\s*(.+)$/m);
+                        if (nameMatch) skillName = nameMatch[1].trim();
+                        const descMatch = content.match(/^description:\s*(.+)$/m);
+                        if (descMatch) description = descMatch[1].trim();
+                    }
+                    skills.push({
+                        name: skillName,
+                        file: skillFile,
+                        category: cat,
+                        path: entryPath,
+                        description,
+                        source: 'hermes'
+                    });
+                }
+            }
+        } catch (e) {
+            // skills dir might not exist
+        }
+        res.json({ skills });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to list Hermes skills' });
+    }
+});
+
+app.get('/api/hermes/skills/:category/:name', async (req, res) => {
+    try {
+        const { category, name } = req.params;
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const skillsDir = path.join(hermesHome, 'skills', category);
+        
+        // Try directory-based skill: <category>/<name>/SKILL.md
+        let filePath = path.join(skillsDir, name, 'SKILL.md');
+        let content;
+        try {
+            content = await fs.readFile(filePath, 'utf-8');
+        } catch {
+            // Try flat file: <category>/<name>.md
+            filePath = path.join(skillsDir, `${name}.md`);
+            content = await fs.readFile(filePath, 'utf-8');
+        }
+        res.json({ content, path: filePath });
+    } catch (err) {
+        res.status(404).json({ error: 'Hermes skill not found' });
     }
 });
 
@@ -1282,6 +1354,85 @@ app.get('/api/admin/agents', async (req, res) => {
                     pid: p.pid
                 });
             }
+
+            // ─── Enrich with live status files from ~/.hermes/status/ ───
+            try {
+                const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                const statusDir = path.join(hermesHome, 'status');
+                const statusFiles = await fs.readdir(statusDir).catch(() => []);
+                const HERMES_STATUS_TTL = 30000; // 30s TTL
+                const now = Date.now();
+
+                for (const file of statusFiles) {
+                    if (!file.endsWith('.json')) continue;
+                    const statusPath = path.join(statusDir, file);
+                    const content = await fs.readFile(statusPath, 'utf-8').catch(() => null);
+                    if (!content) continue;
+                    const status = JSON.parse(content);
+
+                    // Stale — process likely dead. Delete the file so we don't
+                    // accumulate cruft. Skip adding this one to the agent list.
+                    if (now - status.timestamp > HERMES_STATUS_TTL) {
+                        fs.unlink(statusPath).catch(() => {});
+                        continue;
+                    }
+
+                    const pid = status.pid;
+                    // Skip if this PID belongs to an active Hermes bridge instance —
+                    // it's already represented as a chat agent, no need for a duplicate ghost.
+                    if (bridgePids.has(pid)) continue;
+                    // Does this PID already exist in our agent list (from PowerShell scan)?
+                    const existingIdx = agents.findIndex(a => a.pid === pid);
+                    if (existingIdx >= 0) {
+                        // Enrich the existing entry with live data
+                        agents[existingIdx].status = status.status || 'idle';
+                        agents[existingIdx].model = status.model || agents[existingIdx].model;
+                        agents[existingIdx].sessionId = status.session_id || '';
+                        agents[existingIdx].sessionTitle = status.session_title || '';
+                        agents[existingIdx].toolName = status.tool_name || '';
+                        agents[existingIdx].lastMessage = {
+                            role: 'assistant',
+                            content: status.last_message || `🔮 Hermes externo (PID ${pid})`,
+                            timestamp: status.timestamp,
+                        };
+                        if (status.last_message) {
+                            agents[existingIdx].messageCount = 1;
+                        }
+                        // Override name with session title if available
+                        if (status.session_title) {
+                            agents[existingIdx].name = `👻 ${status.session_title}`;
+                        }
+                    } else {
+                        // Status file exists but process wasn't found by PowerShell scan
+                        // (rare — could be a very recent process). Add it anyway.
+                        agents.push({
+                            id: `external-hermes-${pid}`,
+                            name: status.session_title ? `👻 ${status.session_title}` : `👻 Hermes (PID ${pid})`,
+                            projectId: `external-hermes-${pid}`,
+                            projectName: status.session_title || `PID ${pid}`,
+                            status: status.status || 'idle',
+                            model: status.model || 'desconocido',
+                            lastMessage: {
+                                role: 'assistant',
+                                content: status.last_message || `🔮 Hermes (PID ${pid})`,
+                                timestamp: status.timestamp,
+                            },
+                            messageCount: status.last_message ? 1 : 0,
+                            isHermes: true,
+                            isExternal: true,
+                            pid: pid,
+                            sessionId: status.session_id || '',
+                            sessionTitle: status.session_title || '',
+                            toolName: status.tool_name || '',
+                        });
+                    }
+                }
+            } catch (statusErr) {
+                // Status dir may not exist — that's fine on first run
+                if (statusErr.code !== 'ENOENT') {
+                    console.warn('[ADMIN] Error reading Hermes status files:', statusErr.message);
+                }
+            }
         } catch (e) {
             console.warn('[ADMIN] Error scanning external Hermes:', e.message);
         }
@@ -1404,6 +1555,13 @@ app.post('/api/task/state', async (req, res) => {
 
 // System Control Routes
 
+// Restart history
+let restartHistory = [];
+
+app.get('/api/system/restart-history', (req, res) => {
+    res.json({ history: restartHistory.slice(-20) });
+});
+
 app.post('/api/system/status', (req, res) => {
     const { busy } = req.body;
     isAgentBusy = !!busy;
@@ -1436,9 +1594,31 @@ function triggerRestart(delay = 2000) {
     }
 
     needsRestart = false;
+    
+    // Log restart event for console visibility
+    const reason = delay > 1000 ? 'auto-restart' : 'manual';
+    const restartLogEntry = {
+        time: new Date().toISOString(),
+        reason,
+        delay
+    };
+    restartHistory.push(restartLogEntry);
+    const restartLog = {
+        type: 'system',
+        messages: ['🔄 REINICIANDO SERVIDOR...', `razón: ${reason}`],
+        timestamp: new Date().toISOString(),
+        url: '/system/restart'
+    };
+    saveLog(restartLog).catch(() => {});
+    console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
+    
     restartTimer = setTimeout(() => {
-        console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
-
+        // Broadcast restart event via WebSocket antes de morir
+        const restartMsg = JSON.stringify({ event: 'system:restart', timestamp: Date.now(), reason });
+        for (const ws of hermesBridge._wsClients) {
+            try { ws.send(restartMsg); } catch {}
+        }
+        
         // Attempt graceful close before exit
         if (serverInstance) {
             serverInstance.close(() => {
@@ -1512,20 +1692,239 @@ app.post('/api/hermes/start', async (req, res) => {
     }
 });
 
+async function getGitChangeSnapshot(folderPath) {
+    if (!folderPath) return null;
+    try {
+        await execAsync('git rev-parse --is-inside-work-tree', { cwd: folderPath });
+    } catch (e) {
+        return null;
+    }
+
+    const snapshot = {
+        tracked: {},
+        untracked: {}
+    };
+
+    try {
+        const { stdout: diffOut } = await execAsync('git diff HEAD --numstat', { cwd: folderPath });
+        const lines = diffOut.split('\n');
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            const parts = line.split(/\s+/);
+            if (parts.length >= 3) {
+                const added = parseInt(parts[0]) || 0;
+                const removed = parseInt(parts[1]) || 0;
+                const file = parts.slice(2).join(' ');
+                snapshot.tracked[file] = { added, removed };
+            }
+        }
+
+        const { stdout: untrackedOut } = await execAsync('git ls-files --others --exclude-standard', { cwd: folderPath });
+        const files = untrackedOut.split('\n');
+        for (const file of files) {
+            const trimmed = file.trim();
+            if (!trimmed) continue;
+            try {
+                const fullPath = path.join(folderPath, trimmed);
+                const content = await fs.readFile(fullPath, 'utf-8');
+                const linesCount = content.split(/\r?\n/).length;
+                snapshot.untracked[trimmed] = linesCount;
+            } catch (e) {}
+        }
+    } catch (e) {
+        console.error('Error taking git snapshot:', e);
+    }
+    return snapshot;
+}
+
+function computeGitChangesDelta(pre, post) {
+    if (!pre || !post) return [];
+
+    const changes = [];
+
+    for (const [file, postStats] of Object.entries(post.tracked)) {
+        const preStats = pre.tracked[file];
+        if (preStats) {
+            const addedDelta = postStats.added - preStats.added;
+            const removedDelta = postStats.removed - preStats.removed;
+            if (addedDelta !== 0 || removedDelta !== 0) {
+                changes.push({
+                    fileName: file,
+                    added: Math.max(0, addedDelta),
+                    removed: Math.max(0, removedDelta)
+                });
+            }
+        } else {
+            changes.push({
+                fileName: file,
+                added: postStats.added,
+                removed: postStats.removed
+            });
+        }
+    }
+
+    for (const [file, preStats] of Object.entries(pre.tracked)) {
+        if (!post.tracked[file]) {
+            changes.push({
+                fileName: file,
+                added: 0,
+                removed: 0
+            });
+        }
+    }
+
+    for (const [file, postLines] of Object.entries(post.untracked)) {
+        const preLines = pre.untracked[file];
+        if (preLines === undefined) {
+            changes.push({
+                fileName: file,
+                added: postLines,
+                removed: 0
+            });
+        } else {
+            const diff = postLines - preLines;
+            if (diff !== 0) {
+                changes.push({
+                    fileName: file,
+                    added: diff > 0 ? diff : 0,
+                    removed: diff < 0 ? -diff : 0
+                });
+            }
+        }
+    }
+
+    for (const [file, preLines] of Object.entries(pre.untracked)) {
+        if (post.untracked[file] === undefined && !post.tracked[file]) {
+            changes.push({
+                fileName: file,
+                added: 0,
+                removed: preLines
+            });
+        }
+    }
+
+    return changes.filter(c => c.added > 0 || c.removed > 0);
+}
+
+async function getFileGitDiff(folderPath, fileName) {
+    // Returns the raw git diff for a specific file
+    if (!folderPath) return null;
+    try {
+        await execAsync('git rev-parse --is-inside-work-tree', { cwd: folderPath });
+    } catch (e) {
+        return null;
+    }
+    try {
+        // Try: git diff HEAD -- <file>
+        const { stdout } = await execAsync(`git diff HEAD -- "${fileName}"`, { cwd: folderPath, timeout: 10000 });
+        if (stdout.trim()) return stdout.trim();
+        // If no diff with HEAD, file might be untracked — show as full file added
+        const fullPath = path.join(folderPath, fileName);
+        try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const lines = content.split(/\r?\n/);
+            // Show as diff with all lines added
+            return `diff --git a/${fileName} b/${fileName}\nnew file mode 100644\n--- /dev/null\n+++ b/${fileName}\n@@ -0,0 +1,${lines.length} @@\n` + lines.map(l => '+' + l).join('\n');
+        } catch {
+            return null;
+        }
+    } catch (e) {
+        return null;
+    }
+}
+
+// Session Diff endpoint — returns full git diff for changed files
+app.get('/api/session-diff', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.query;
+        const key = `${projectId}_${chatId}`;
+        const diffs = sessionDiffsMap.get(key) || [];
+        res.json({ diffs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/session-diff/clear', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.body;
+        const key = `${projectId}_${chatId}`;
+        sessionDiffsMap.delete(key);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/hermes/message', async (req, res) => {
     try {
-        const { projectId, chatId, message, images, history } = req.body;
+        const { projectId, chatId, message, images, history, skills } = req.body;
         if (!projectId || !chatId || !message) {
             return res.status(400).json({ error: 'projectId, chatId y message son requeridos' });
         }
 
+        // Get the folder path from the bridge instance for Git tracking
+        let folderPath = null;
+        try {
+            const instanceKey = `${projectId}:${chatId}`;
+            const instance = hermesBridge.instances.get(instanceKey);
+            if (instance) {
+                folderPath = instance.workdir;
+            }
+        } catch (e) {}
+
+        // Take Git snapshot before Hermes runs
+        const preSnapshot = folderPath ? await getGitChangeSnapshot(folderPath) : null;
+
         // Construir mensaje con contexto completo si hay historial
         let finalMessage = message;
+
+        // ─── Skills Block ───
+        // Si hay skills seleccionados (JP Agents o Hermes), los inyectamos como contexto
+        if (skills && Array.isArray(skills) && skills.length > 0) {
+            let skillsBlock = `[SKILLS ACTIVOS - Debes aplicar estas instrucciones como contexto de comportamiento]:\n`;
+            for (const skill of skills) {
+                let skillContent = '';
+                // skill puede ser { name, source } o solo un string name
+                const skillName = typeof skill === 'string' ? skill : skill.name;
+                const skillSource = typeof skill === 'string' ? 'local' : (skill.source || 'local');
+                
+                if (skillSource === 'hermes') {
+                    // Cargar de ~/.hermes/skills/
+                    const category = skill.category || '';
+                    try {
+                        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                        const skillDir = path.join(hermesHome, 'skills', category, skillName);
+                        // Try directory-based: <category>/<skillName>/SKILL.md
+                        try {
+                            skillContent = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
+                        } catch {
+                            // Try flat file: <category>/<skillName>.md
+                            skillContent = await fs.readFile(path.join(hermesHome, 'skills', category, `${skillName}.md`), 'utf-8');
+                        }
+                    } catch {}
+                } else {
+                    // Cargar de SKILLS/ local
+                    const filePath = path.join(__dirname, 'SKILLS', `${skillName}.md`);
+                    try {
+                        skillContent = await fs.readFile(filePath, 'utf-8');
+                    } catch {}
+                }
+                
+                if (skillContent) {
+                    skillsBlock += `\n=== SKILL: ${skillName} ===\n${skillContent}\n=== FIN SKILL: ${skillName} ===\n`;
+                }
+            }
+            if (skillsBlock.includes('SKILL:')) {
+                finalMessage = `${skillsBlock}\n\n---\n\n${finalMessage}`;
+            }
+        }
+
         if (history && Array.isArray(history) && history.length > 0) {
             const historyBlock = history
                 .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
                 .join('\n\n');
-            finalMessage = `[Contexto de conversación previa]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+            finalMessage = `[Contexto de conversación previa]:\n${historyBlock}\n\n[Mensaje actual]:\n${finalMessage}`;
         }
 
         // Si hay imágenes, guardarlas en temp y modificar el mensaje
@@ -1543,13 +1942,62 @@ app.post('/api/hermes/message', async (req, res) => {
                 imageUrls.push(`http://localhost:${port}/temp-images/${projectId}_img_${i}.${ext}`);
             }
 
-            const refsText = imageRefs.map((p, i) => `📷 Imagen adjunta ${i+1}: ${p}`).join('\\n');
-            const urlsText = imageUrls.map((u, i) => `🔗 URL imagen ${i+1}: ${u}`).join('\\n');
+            const refsText = imageRefs.map((p, i) => `📷 Imagen adjunta ${i+1}: ${p}`).join('\n');
+            const urlsText = imageUrls.map((u, i) => `🔗 URL imagen ${i+1}: ${u}`).join('\n');
             finalMessage = `${finalMessage}\n\n${refsText}\n\n${urlsText}\n\n(Puedes usar vision_analyze(image_url=...) para ver las imágenes adjuntas. Las URLs HTTP funcionan directamente.)`;
         }
 
         const response = await hermesBridge.sendMessage(projectId, chatId, finalMessage);
-        res.json({ response });
+
+        // Take Git snapshot after Hermes finishes and compute delta + full diffs
+        let gitChanges = [];
+        if (folderPath && preSnapshot) {
+            try {
+                const postSnapshot = await getGitChangeSnapshot(folderPath);
+                const delta = computeGitChangesDelta(preSnapshot, postSnapshot);
+                if (delta && delta.length > 0) {
+                    const key = `${projectId}_${chatId}`;
+                    if (!sessionChangesMap.has(key)) {
+                        sessionChangesMap.set(key, []);
+                    }
+                    if (!sessionDiffsMap.has(key)) {
+                        sessionDiffsMap.set(key, []);
+                    }
+                    const list = sessionChangesMap.get(key);
+                    const diffsList = sessionDiffsMap.get(key);
+                    for (const s of delta) {
+                        const existing = list.find(c => c.fileName === s.fileName);
+                        if (existing) {
+                            existing.added += s.added;
+                            existing.removed += s.removed;
+                        } else {
+                            list.push({ ...s });
+                        }
+                        // Get full git diff for this file
+                        const diff = await getFileGitDiff(folderPath, s.fileName);
+                        if (diff) {
+                            // Replace or add diff entry
+                            const existingDiff = diffsList.find(d => d.fileName === s.fileName);
+                            if (existingDiff) {
+                                existingDiff.diff = diff;
+                            } else {
+                                diffsList.push({ fileName: s.fileName, diff });
+                            }
+                        }
+                        gitChanges.push({
+                            fileName: s.fileName,
+                            added: s.added,
+                            removed: s.removed,
+                            diff: diff || null
+                        });
+                    }
+                }
+            } catch (gitErr) {
+                console.error('[HERMES-GIT] Error computing changes:', gitErr.message);
+            }
+        }
+
+        res.json({ response, changes: gitChanges });
     } catch (e) {
         console.error('[HERMES] Error en sendMessage:', e.message);
         res.status(500).json({ error: e.message });
@@ -1632,6 +2080,32 @@ async function scanExternalHermesProcesses() {
             }).filter(p => p.pid > 0);
         } catch { return []; }
     }
+}
+
+async function getDescendantPids(parentPid) {
+    const list = [];
+    try {
+        const { stdout } = await execPromise(
+            `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId | ConvertTo-Json"`,
+            { timeout: 5000 }
+        );
+        if (!stdout.trim() || stdout.trim() === 'null') return [];
+        const raw = JSON.parse(stdout.trim());
+        const allProcs = Array.isArray(raw) ? raw : [raw];
+        
+        const queue = [parentPid];
+        while (queue.length > 0) {
+            const current = queue.shift();
+            const children = allProcs.filter(p => p && p.ParentProcessId === current).map(p => p.ProcessId);
+            for (const child of children) {
+                list.push(child);
+                queue.push(child);
+            }
+        }
+    } catch (err) {
+        console.error('[HERMES-SYNC] Error in getDescendantPids:', err.message);
+    }
+    return list;
 }
 
 // Limpiar instancias del bridge cuyo proceso hijo ya murió
@@ -1727,6 +2201,211 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
+const trackedHermesProcesses = new Map(); // pid -> { projectId, chatId, sessionId, workdir }
+
+function startHermesProcessSyncMonitor() {
+    console.log('[HERMES-SYNC] Iniciando monitor de procesos de Hermes en segundo plano.');
+    setInterval(async () => {
+        try {
+            // Helper function to query the status directory for a PID and its descendants
+            const getSessionIdForPid = async (parentPid) => {
+                try {
+                    const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                    const statusDir = path.join(hermesHome, 'status');
+                    const descendantPids = await getDescendantPids(parentPid);
+                    const pidsToCheck = [parentPid, ...descendantPids];
+                    for (const checkPid of pidsToCheck) {
+                        const statusPath = path.join(statusDir, `${checkPid}.json`);
+                        const content = await fs.readFile(statusPath, 'utf-8').catch(() => null);
+                        if (content) {
+                            try {
+                                const status = JSON.parse(content);
+                                if (status.session_id) {
+                                    return status.session_id;
+                                }
+                            } catch {}
+                        }
+                    }
+                } catch (e) {
+                    console.error('[HERMES-SYNC] Error getting sessionId for pid:', e.message);
+                }
+                return null;
+            };
+
+            // 1. Scan for running processes
+            const activeProcesses = await scanExternalHermesProcesses();
+            const activePids = new Set(activeProcesses.map(p => p.pid));
+
+            // Also check bridge instances
+            const bridgeInstances = hermesBridge.listInstances();
+            for (const inst of bridgeInstances) {
+                if (inst.proc?.pid) {
+                    activePids.add(inst.proc.pid);
+                    if (!activeProcesses.some(p => p.pid === inst.proc.pid)) {
+                        activeProcesses.push({
+                            pid: inst.proc.pid,
+                            commandLine: inst.proc.spawnargs?.join(' ') || '',
+                            workdir: inst.workdir
+                        });
+                    }
+                }
+            }
+
+            // 2. Update session ID for tracked processes that are using fallback IDs
+            for (const [pid, tracker] of trackedHermesProcesses.entries()) {
+                if (tracker.sessionId.startsWith('session_')) {
+                    const realSessionId = await getSessionIdForPid(pid);
+                    if (realSessionId) {
+                        console.log(`[HERMES-SYNC] Encontrado real sessionId para PID ${pid}: ${realSessionId}`);
+                        tracker.sessionId = realSessionId;
+                    }
+                }
+            }
+
+            // 3. Detect exited processes that we were tracking
+            for (const [pid, tracker] of trackedHermesProcesses.entries()) {
+                if (!activePids.has(pid)) {
+                    console.log(`[HERMES-SYNC] Proceso PID ${pid} finalizado. Intentando recuperar respuesta para sesión ${tracker.sessionId}...`);
+                    try {
+                        const cleanResponse = await hermesBridge.getLastAssistantMessage(tracker.sessionId);
+                        if (cleanResponse) {
+                            const data = await loadSessions();
+                            const project = data.projects.find(p => p.id === tracker.projectId);
+                            if (project) {
+                                const chat = project.chats.find(c => c.id === tracker.chatId);
+                                if (chat) {
+                                    const lastMsg = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+                                    if (!lastMsg || lastMsg.content !== cleanResponse) {
+                                        chat.messages.push({
+                                            role: 'assistant',
+                                            content: cleanResponse,
+                                            timestamp: Date.now()
+                                        });
+                                        chat.isThinking = false;
+                                        chat.isRunning = false;
+
+                                        // Compute and save git changes snapshot on finalization
+                                        if (tracker.workdir) {
+                                            try {
+                                                const postSnapshot = await getGitChangeSnapshot(tracker.workdir);
+                                                if (postSnapshot) {
+                                                    const emptySnapshot = { tracked: {}, untracked: {} };
+                                                    const delta = computeGitChangesDelta(emptySnapshot, postSnapshot);
+                                                    if (delta && delta.length > 0) {
+                                                        const key = `${tracker.projectId}_${tracker.chatId}`;
+                                                        if (!sessionChangesMap.has(key)) {
+                                                            sessionChangesMap.set(key, []);
+                                                        }
+                                                        const list = sessionChangesMap.get(key);
+                                                        for (const s of delta) {
+                                                            const existing = list.find(c => c.fileName === s.fileName);
+                                                            if (existing) {
+                                                                existing.added += s.added;
+                                                                existing.removed += s.removed;
+                                                            } else {
+                                                                list.push({ ...s });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } catch (gitErr) {
+                                                console.error('[HERMES-SYNC] Error calculating git changes on sync exit:', gitErr.message);
+                                            }
+                                        }
+
+                                        await saveSessions(data);
+                                        console.log(`[HERMES-SYNC] Respuesta de Hermes guardada en chat ${tracker.chatId}`);
+                                        
+                                        const broadcastMsg = JSON.stringify({ event: 'hermes:status', instanceKey: `${tracker.projectId}:${tracker.chatId}`, status: 'idle', timestamp: Date.now() });
+                                        for (const ws of hermesBridge._wsClients) {
+                                            try { ws.send(broadcastMsg); } catch {}
+                                        }
+                                        
+                                        const updateMsg = JSON.stringify({ event: 'hermes:log', instanceKey: `${tracker.projectId}:${tracker.chatId}`, projectId: tracker.projectId, type: 'progress', text: '✅ Tarea completada tras restauración del servidor\n', timestamp: Date.now() });
+                                        for (const ws of hermesBridge._wsClients) {
+                                            try { ws.send(updateMsg); } catch {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (syncErr) {
+                        console.error('[HERMES-SYNC] Error en sincronización de salida:', syncErr.message);
+                    }
+                    trackedHermesProcesses.delete(pid);
+                }
+            }
+
+            // 4. Register newly running processes
+            const sessionsData = await loadSessions();
+            for (const proc of activeProcesses) {
+                const pid = proc.pid;
+                if (trackedHermesProcesses.has(pid)) {
+                    continue;
+                }
+
+                let projectId = null;
+                let chatId = null;
+
+                // Try to parse from commandLine --source jpagents|projectId|chatId
+                const sourceMatch = proc.commandLine?.match(/--source\s+["']?jpagents\|([^|]+)\|([^"'\s]+)["']?/i);
+                if (sourceMatch) {
+                    projectId = sourceMatch[1];
+                    chatId = sourceMatch[2];
+                } else if (proc.workdir) {
+                    // Fallback to workdir matching
+                    const normProcDir = proc.workdir.replace(/\\/g, '/').toLowerCase();
+                    const matchedProject = sessionsData.projects?.find(p => 
+                        p.folder && p.folder.replace(/\\/g, '/').toLowerCase() === normProcDir
+                    );
+                    if (matchedProject) {
+                        projectId = matchedProject.id;
+                        const matchedChat = matchedProject.chats?.find(c => c.useHermes === true || c.id.startsWith('hermes-'));
+                        if (matchedChat) {
+                            chatId = matchedChat.id;
+                        }
+                    }
+                }
+
+                if (projectId && chatId) {
+                    const matchedProject = sessionsData.projects?.find(p => p.id === projectId);
+                    if (matchedProject) {
+                        const matchedChat = matchedProject.chats?.find(c => c.id === chatId);
+                        if (matchedChat) {
+                            let sessionId = await getSessionIdForPid(pid);
+                            if (!sessionId) {
+                                sessionId = `session_${pid}`;
+                            }
+                            
+                            console.log(`[HERMES-SYNC] Detectado proceso Hermes corriendo en PID ${pid} para proyecto ${projectId}, chat ${chatId}. Sincronizando...`);
+                            
+                            trackedHermesProcesses.set(pid, {
+                                projectId: projectId,
+                                chatId: chatId,
+                                sessionId: sessionId,
+                                workdir: proc.workdir || matchedProject.folder || ''
+                            });
+
+                            if (!matchedChat.isThinking && !matchedChat.isRunning) {
+                                matchedChat.isThinking = true;
+                                await saveSessions(sessionsData);
+                                
+                                const broadcastMsg = JSON.stringify({ event: 'hermes:status', instanceKey: `${projectId}:${chatId}`, status: 'running', timestamp: Date.now() });
+                                for (const ws of hermesBridge._wsClients) {
+                                    try { ws.send(broadcastMsg); } catch {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        } catch (e) {
+            console.error('[HERMES-SYNC] Error in sync loop:', e.message);
+        }
+    }, 5000);
+}
+
 // Start initialization and server
 async function startServer() {
     // Auto-start Ollama if needed
@@ -1742,18 +2421,65 @@ async function startServer() {
     // Use HTTP server instead of app.listen for WebSocket support
     const httpServer = createServer(app);
 
-    // WebSocket Server for Hermes live logs
+    // WebSocket Server for Hermes live logs & state synchronization
     const wss = new WebSocketServer({ server: httpServer, path: '/ws/hermes' });
     wss.on('connection', (ws) => {
-        console.log('[WS] Cliente WebSocket conectado a Hermes Bridge');
+        ws.id = Math.random().toString(36).substring(2, 15);
+        console.log(`[WS] Cliente WebSocket conectado (${ws.id})`);
+        
         hermesBridge.registerWSClient(ws);
+        
         ws.send(JSON.stringify({ event: 'hermes:connected', message: 'Conectado a Hermes Bridge' }));
+        ws.send(JSON.stringify({ event: 'sync:connected', socketId: ws.id }));
+        
+        ws.on('message', (message) => {
+            try {
+                const data = JSON.parse(message.toString());
+                
+                if (data.event === 'sync:claimMaster') {
+                    masterSocketId = ws.id;
+                    console.log(`[WS-SYNC] Rol de MASTER reclamado por socket: ${ws.id}`);
+                    
+                    const payload = JSON.stringify({ event: 'sync:masterClaimed', socketId: ws.id });
+                    wss.clients.forEach(client => {
+                        if (client.readyState === 1) { // 1 = WebSocket.OPEN
+                            client.send(payload);
+                        }
+                    });
+                } else if (data.event === 'sync:stateUpdate') {
+                    if (ws.id === masterSocketId) {
+                        console.log(`[WS-SYNC] Difundiendo actualización de estado desde MASTER: ${ws.id}`);
+                        
+                        const payload = JSON.stringify({ event: 'sync:stateUpdated' });
+                        wss.clients.forEach(client => {
+                            if (client !== ws && client.readyState === 1) {
+                                client.send(payload);
+                            }
+                        });
+                    } else {
+                        console.warn(`[WS-SYNC] Intento de actualización de estado rechazado. Emisor no es MASTER (${ws.id})`);
+                    }
+                }
+            } catch (e) {
+                // Ignore parser error (Hermes logs are not JSON)
+            }
+        });
     });
 
     serverInstance = httpServer.listen(port, () => {
         console.log(`Server running at http://localhost:${port}`);
         console.log(`[HERMES] WebSocket en ws://localhost:${port}/ws/hermes`);
         console.log(`[HERMES] API endpoints en http://localhost:${port}/api/hermes/*`);
+        
+        // Start process sync monitor on server startup
+        startHermesProcessSyncMonitor();
+
+        // Log server start for restart history
+        restartHistory.push({
+            time: new Date().toISOString(),
+            reason: 'server-start',
+            delay: 0
+        });
     });
 }
 

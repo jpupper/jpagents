@@ -626,6 +626,41 @@ function generateRandomProjectName() {
     return `${adj} ${color} ${animal}`;
 }
 
+/**
+ * Genera un nombre corto para un agente a partir del prompt del usuario.
+ * Extrae las primeras ~4-6 palabras significativas del prompt.
+ */
+function generateChatNameFromPrompt(prompt) {
+    if (!prompt || typeof prompt !== 'string') return null;
+
+    // Limpiar: quitar saludos iniciales, signos, articles
+    let text = prompt.trim()
+        .replace(/^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|saludos)[,\s!.]*/i, '')
+        .replace(/^(necesito|quiero|puedes|podrias|necesitamos|tenemos que|hay que|me gustaria|quisiera|hace falta)[,\s]*/i, '')
+        .replace(/^(por favor|please|fa vor)[,\s]*/i, '')
+        .replace(/^(que me|ayudame|hazme|creame|hacé|che[,\s]*)/i, '')
+        .trim();
+
+    // Si después de limpiar queda vacío, usar el original acortado
+    if (!text) text = prompt.trim();
+
+    // Tomar primeras 6 palabras
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+    const nameWords = words.slice(0, 5);
+
+    // Capitalizar primera letra de cada palabra
+    const name = nameWords
+        .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())
+        .join(' ');
+
+    // Limitar longitud
+    if (name.length > 28) {
+        return name.slice(0, 25).trim() + '...';
+    }
+
+    return name || null;
+}
+
 // DOM Elements
 const chatList = document.getElementById('chat-list');
 const chatMessages = document.getElementById('chat-messages');
@@ -693,7 +728,10 @@ const matrixTabContent = document.getElementById('matrix-tab-content');
 let currentAttachedImages = [];
 let skillsList = [];
 let skillsCache = {}; // Cache for skill contents: { name: content }
+let hermesSkillsList = []; // Hermes skills: [{ name, category, description }]
+let hermesSkillsCache = {}; // Cache for Hermes skill contents
 let activeSkillName = null;
+let activeSkillSource = 'local'; // 'local' or 'hermes'
 
 // DOM Elements for Skills
 const skillsManagerBtn = document.getElementById('skills-manager-btn');
@@ -708,6 +746,7 @@ const saveSkillBtn = document.getElementById('save-skill-btn');
 const deleteSkillBtn = document.getElementById('delete-skill-btn');
 const newSkillBtn = document.getElementById('new-skill-btn');
 const agentSkillSelect = document.getElementById('agent-skill-select');
+const skillsSearchInput = document.getElementById('skills-search-input');
 
 // Initialize
 async function init() {
@@ -716,10 +755,75 @@ async function init() {
     await fetchModels();
     await loadData();
     await loadSkills();
+    
+
+
     setupEventListeners();
     setupSkillsEventListeners();
     setupTerminalEvents();
     setupOpenWebEvent();
+    
+    // ─── Auto-transformación: Sistema de reinicio y consola ───
+    // Poll restart history cada 10s para refrescar la consola
+    setInterval(() => {
+        try { refreshConsoleUI(); } catch(e) {}
+    }, 10000);
+    
+    // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
+    function connectGlobalWS() {
+        try {
+            const sysWs = new WebSocket(`ws://localhost:3001/ws/hermes`);
+            syncWs = sysWs;
+            
+            sysWs.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.event === 'system:restart') {
+                        console.log('[SYS] 🔄 Reinicio del servidor detectado:', data.reason);
+                    } else if (data.event === 'sync:connected') {
+                        mySocketId = data.socketId;
+                        console.log(`[WS-SYNC] Conectado al servidor de sincronización. Socket ID: ${mySocketId}`);
+                    } else if (data.event === 'sync:masterClaimed') {
+                        const wasMaster = amIMaster;
+                        amIMaster = (data.socketId === mySocketId);
+                        console.log(`[SYNC-FLOW] 👑 sync:masterClaimed. socketId = ${data.socketId}, mySocketId = ${mySocketId}, amIMaster = ${amIMaster}`);
+                        if (wasMaster !== amIMaster) {
+                            console.log(`[WS-SYNC] Cambio de rol. ¿Soy MASTER?: ${amIMaster}`);
+                        }
+                    } else if (data.event === 'sync:stateUpdated') {
+                        console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
+                        if (!amIMaster) {
+                            if (isTabBusy()) {
+                                console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
+                                return;
+                            }
+                            console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
+                            await loadData(false);
+                            syncUI();
+                        }
+                    }
+                } catch(e) {}
+            };
+            sysWs.onclose = () => {
+                console.log('[SYS] ⚠️ Servidor desconectado (posible reinicio). Reintentando conexión en 3s...');
+                syncWs = null;
+                amIMaster = false;
+                setTimeout(connectGlobalWS, 3000);
+                setTimeout(() => refreshConsoleUI(), 3000);
+            };
+            sysWs.onerror = () => {
+                syncWs = null;
+                amIMaster = false;
+            };
+        } catch(e) {
+            setTimeout(connectGlobalWS, 3000);
+        }
+    }
+    connectGlobalWS();
+    
+    // Primer refresh de consola
+    setTimeout(() => refreshConsoleUI(), 2000);
     setupOpenFolderExplorer();
 
     // Periodically check health and external instructions every 1 minute
@@ -745,7 +849,8 @@ async function init() {
 }
 
 
-async function loadData() {
+async function loadData(shouldScan = true) {
+    console.log('[SYNC-FLOW] 🔄 loadData() called. shouldScan =', shouldScan, 'caller =', new Error().stack.split('\n')[2]);
     try {
         const res = await fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
@@ -784,7 +889,7 @@ async function loadData() {
 
         renderProjectList();
         const active = getActiveProject();
-        if (active && active.folder) window.scanFolder(active.folder, active.id);
+        if (shouldScan && active && active.folder) window.scanFolder(active.folder, active.id);
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
@@ -1121,6 +1226,11 @@ let isSaving = false;
 let savePending = false;
 
 async function saveData() {
+    console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2]);
+    if (!amIMaster) {
+        claimMaster();
+    }
+
     if (isSaving) {
         savePending = true;
         return;
@@ -1158,6 +1268,10 @@ async function saveData() {
         
         if (!res.ok) {
             console.error("[STATE] Error al guardar el estado:", res.statusText);
+        } else {
+            if (amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
+                syncWs.send(JSON.stringify({ event: 'sync:stateUpdate' }));
+            }
         }
     } catch (e) {
         console.error("[STATE] Excepción al guardar datos:", e);
@@ -1173,6 +1287,49 @@ async function clearClientLogs() {
     try {
         await fetch(`${API_BASE}/utils/client-logs/clear`, { method: 'POST' });
     } catch (e) { }
+}
+
+let amIMaster = false;
+let mySocketId = null;
+let syncWs = null;
+
+function claimMaster() {
+    console.log('[SYNC-FLOW] 👑 claimMaster() called. amIMaster =', amIMaster, 'readyState =', syncWs ? syncWs.readyState : 'null');
+    if (!amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
+        console.log('[WS-SYNC] Reclamando rol de MASTER para esta pestaña.');
+        syncWs.send(JSON.stringify({ event: 'sync:claimMaster' }));
+        amIMaster = true; // Asignación proactiva local
+    }
+}
+
+// Registrar interacciones físicas para reclamar MASTER
+window.addEventListener('mousedown', claimMaster);
+window.addEventListener('keydown', claimMaster);
+window.addEventListener('touchstart', claimMaster);
+
+function isTabBusy() {
+    if (isSaving) return true;
+    if (state.adminIsThinking) return true;
+    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => c.isThinking || c.isRunning || c.isStreaming))) {
+        return true;
+    }
+    return false;
+}
+
+function syncUI() {
+    const project = getActiveProject();
+    if (project) {
+        const chats = project.chats || [];
+        const isChat = chats.some(c => c.id === project.activeTabId);
+        if (isChat) {
+            renderMessages(true);
+        } else {
+            renderTabs();
+        }
+    } else {
+        renderProjectList();
+        renderTabs();
+    }
 }
 
 async function getTaskState() {
@@ -1214,6 +1371,26 @@ async function loadSkills() {
             }
         }
 
+        // Also load Hermes skills
+        try {
+            const hRes = await fetch(`${API_BASE}/hermes/skills`);
+            const hData = await hRes.json();
+            hermesSkillsList = hData.skills || [];
+            
+            // Cache Hermes skill contents
+            for (const skill of hermesSkillsList) {
+                try {
+                    const sRes = await fetch(`${API_BASE}/hermes/skills/${skill.category}/${skill.name}`);
+                    const sData = await sRes.json();
+                    hermesSkillsCache[skill.name] = sData.content || "";
+                } catch (e) {
+                    console.warn(`Error caching Hermes skill ${skill.name}:`, e);
+                }
+            }
+        } catch (e) {
+            console.warn('Error loading Hermes skills:', e);
+        }
+
         renderSkillsList();
         updateSkillSelects();
     } catch (e) {
@@ -1224,33 +1401,83 @@ async function loadSkills() {
 function renderSkillsList() {
     if (!skillsListEl) return;
 
-    skillsListEl.innerHTML = skillsList.map(name => {
-        const isDefault = state.skillsMetadata[name]?.isDefault;
-        const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
-        return `
-            <div class="skill-item ${activeSkillName === name ? 'active' : ''}" onclick="window.selectSkill('${name}')">
-                <span class="skill-icon">🧠</span>
-                <span class="skill-name">${name} ${badge}</span>
-            </div>
-        `;
-    }).join('');
+    // Determine which list to show based on active source
+    const skills = activeSkillSource === 'hermes' ? hermesSkillsList : skillsList;
+    const searchTerm = skillsSearchInput ? skillsSearchInput.value.toLowerCase().trim() : '';
+
+    skillsListEl.innerHTML = skills
+        .filter(s => {
+            const name = typeof s === 'string' ? s : s.name;
+            return !searchTerm || name.toLowerCase().includes(searchTerm);
+        })
+        .map(s => {
+            const name = typeof s === 'string' ? s : s.name;
+            const description = typeof s === 'string' ? '' : (s.description || '');
+            const category = typeof s === 'string' ? '' : (s.category || '');
+            const source = typeof s === 'string' ? 'local' : 'hermes';
+            const isDefault = activeSkillSource === 'local' ? (state.skillsMetadata[name]?.isDefault) : false;
+            const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
+            const catTag = category ? `<span class="skill-cat-tag">${category}</span>` : '';
+            const isActive = activeSkillName === name;
+            return `
+                <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}', '${activeSkillSource}')">
+                    <span class="skill-icon">${source === 'hermes' ? '⚡' : '🧠'}</span>
+                    <span class="skill-name">${escapeHtml(name)} ${badge} ${catTag}</span>
+                    ${description ? `<span class="skill-desc">${escapeHtml(description.slice(0, 60))}</span>` : ''}
+                </div>
+            `;
+        }).join('') || '<div class="empty-state" style="padding: 1rem; font-size: 0.85rem;">No hay skills disponibles.</div>';
 }
 
-window.selectSkill = async (name) => {
+window.selectSkill = async (name, source = 'local') => {
     activeSkillName = name;
+    activeSkillSource = source;
     renderSkillsList();
 
     try {
-        const res = await fetch(`${API_BASE}/skills/${name}`);
-        const data = await res.json();
+        let content = '';
+        if (source === 'hermes') {
+            const s = hermesSkillsList.find(sk => sk.name === name);
+            if (s) {
+                const res = await fetch(`${API_BASE}/hermes/skills/${s.category}/${name}`);
+                const data = await res.json();
+                content = data.content || '';
+                hermesSkillsCache[name] = content;
+            } else {
+                content = hermesSkillsCache[name] || '';
+            }
+        } else {
+            const res = await fetch(`${API_BASE}/skills/${name}`);
+            const data = await res.json();
+            content = data.content || '';
+            skillsCache[name] = content;
+        }
 
         skillNameInput.value = name;
-        skillContentTextarea.value = data.content || '';
+        skillContentTextarea.value = content || '';
 
-        // Load metadata
-        const meta = state.skillsMetadata[name] || { isDefault: false };
+        // Read-only mode for Hermes skills
+        const isHermes = source === 'hermes';
+        skillNameInput.disabled = isHermes;
+        skillContentTextarea.disabled = isHermes;
+        if (saveSkillBtn) saveSkillBtn.style.display = isHermes ? 'none' : '';
+        if (deleteSkillBtn) deleteSkillBtn.style.display = isHermes ? 'none' : '';
+        if (newSkillBtn) newSkillBtn.style.display = isHermes ? 'none' : '';
+        const improveBtn = document.getElementById('improve-skill-btn');
+        if (improveBtn) improveBtn.style.display = isHermes ? 'none' : '';
+        const hermesBadge = document.getElementById('hermes-skill-badge');
+        if (hermesBadge) hermesBadge.classList.toggle('hidden', !isHermes);
         const defaultCheckbox = document.getElementById('skill-default-checkbox');
-        if (defaultCheckbox) defaultCheckbox.checked = meta.isDefault;
+        if (defaultCheckbox) {
+            if (isHermes) {
+                defaultCheckbox.checked = false;
+                defaultCheckbox.disabled = true;
+            } else {
+                const meta = state.skillsMetadata[name] || { isDefault: false };
+                defaultCheckbox.checked = meta.isDefault;
+                defaultCheckbox.disabled = false;
+            }
+        }
 
         skillEditorContainer.classList.remove('hidden');
         skillEmptyState.classList.add('hidden');
@@ -1268,8 +1495,20 @@ function updateSkillSelects() {
     selects.forEach(s => {
         if (!s.el) return;
         const currentVal = s.el.value;
-        s.el.innerHTML = `<option value="">${s.label}</option>` +
-            skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        let options = `<option value="">${s.label}</option>`;
+        // Local skills
+        options += '<optgroup label="📁 Skills Locales">';
+        options += skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        options += '</optgroup>';
+        // Hermes skills
+        if (hermesSkillsList.length > 0) {
+            options += '<optgroup label="⚡ Skills Hermes">';
+            options += hermesSkillsList.map(sk => 
+                `<option value="${sk.name}" data-source="hermes" data-category="${sk.category || ''}">${sk.name} (${sk.category || 'general'})</option>`
+            ).join('');
+            options += '</optgroup>';
+        }
+        s.el.innerHTML = options;
         s.el.value = currentVal;
     });
 }
@@ -1362,19 +1601,62 @@ function setupSkillsEventListeners() {
         });
     }
 
+    // ─── Skills Source Tab Switching ───
+    document.querySelectorAll('.skills-source-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const source = tab.dataset.skillsSource;
+            if (source === activeSkillSource) return;
+            
+            // Update active tab
+            document.querySelectorAll('.skills-source-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            
+            // Switch source
+            activeSkillSource = source;
+            activeSkillName = null;
+            
+            // Show/hide new skill button for Hermes view
+            if (newSkillBtn) newSkillBtn.style.display = source === 'hermes' ? 'none' : '';
+            
+            // Clear editor
+            skillEditorContainer.classList.add('hidden');
+            skillEmptyState.classList.remove('hidden');
+            
+            renderSkillsList();
+        });
+    });
+    
+    // ─── Skills Search ───
+    if (skillsSearchInput) {
+        skillsSearchInput.addEventListener('input', () => {
+            renderSkillsList();
+        });
+    }
+
     if (agentSkillSelect) {
         agentSkillSelect.addEventListener('change', async () => {
-            const skillName = agentSkillSelect.value;
+            const selectedOption = agentSkillSelect.options[agentSkillSelect.selectedIndex];
+            const skillName = selectedOption.value;
             if (!skillName) return;
 
             const chat = getActiveChat();
             if (chat) {
                 if (!chat.skills) chat.skills = [];
-                if (!chat.skills.includes(skillName)) {
-                    chat.skills.push(skillName);
-                    renderAgentSkills();
-                    saveData();
+                // Check for Hermes skill (has data-source attribute)
+                const source = selectedOption.dataset.source;
+                const category = selectedOption.dataset.category;
+                if (source === 'hermes') {
+                    const skillObj = { name: skillName, source: 'hermes', category: category || '' };
+                    if (!chat.skills.find(s => (typeof s === 'object' ? s.name : s) === skillName)) {
+                        chat.skills.push(skillObj);
+                    }
+                } else {
+                    if (!chat.skills.includes(skillName)) {
+                        chat.skills.push(skillName);
+                    }
                 }
+                renderAgentSkills();
+                saveData();
             }
             // Reset select
             agentSkillSelect.value = "";
@@ -1384,17 +1666,27 @@ function setupSkillsEventListeners() {
     const projectSkillSelect = document.getElementById('project-skill-select');
     if (projectSkillSelect) {
         projectSkillSelect.addEventListener('change', async () => {
-            const skillName = projectSkillSelect.value;
+            const selectedOption = projectSkillSelect.options[projectSkillSelect.selectedIndex];
+            const skillName = selectedOption.value;
             if (!skillName) return;
 
             const project = getActiveProject();
             if (project) {
                 if (!project.skills) project.skills = [];
-                if (!project.skills.includes(skillName)) {
-                    project.skills.push(skillName);
-                    renderProjectSkills();
-                    saveData();
+                const source = selectedOption.dataset.source;
+                const category = selectedOption.dataset.category;
+                if (source === 'hermes') {
+                    const skillObj = { name: skillName, source: 'hermes', category: category || '' };
+                    if (!project.skills.find(s => (typeof s === 'object' ? s.name : s) === skillName)) {
+                        project.skills.push(skillObj);
+                    }
+                } else {
+                    if (!project.skills.includes(skillName)) {
+                        project.skills.push(skillName);
+                    }
                 }
+                renderProjectSkills();
+                saveData();
             }
             // Reset select
             projectSkillSelect.value = "";
@@ -1414,18 +1706,27 @@ function renderAgentSkills() {
     }
 
     container.classList.remove('hidden');
-    container.innerHTML = chat.skills.map(skill => `
-        <div class="skill-tag">
-            <span>🧠 ${skill}</span>
-            <span class="remove-skill" onclick="window.removeAgentSkill('${skill}')">&times;</span>
-        </div>
-    `).join('');
+    container.innerHTML = chat.skills.map(skill => {
+        const skName = typeof skill === 'object' ? skill.name : skill;
+        const isHermes = typeof skill === 'object' && skill.source === 'hermes';
+        const icon = isHermes ? '⚡' : '🧠';
+        return `
+            <div class="skill-tag ${isHermes ? 'hermes-skill' : ''}">
+                <span>${icon} ${skName}</span>
+                <span class="remove-skill" onclick="window.removeAgentSkill('${skName}', ${isHermes})">&times;</span>
+            </div>
+        `;
+    }).join('');
 }
 
-window.removeAgentSkill = (skillName) => {
+window.removeAgentSkill = (skillName, isHermes) => {
     const chat = getActiveChat();
     if (chat && chat.skills) {
-        chat.skills = chat.skills.filter(s => s !== skillName);
+        chat.skills = chat.skills.filter(s => {
+            const name = typeof s === 'object' ? s.name : s;
+            const h = typeof s === 'object' && s.source === 'hermes';
+            return !(name === skillName && h === !!isHermes);
+        });
         renderAgentSkills();
         saveData();
     }
@@ -1441,18 +1742,27 @@ function renderProjectSkills() {
         return;
     }
 
-    container.innerHTML = project.skills.map(skill => `
-        <div class="skill-tag project-skill">
-            <span>🧠 ${skill}</span>
-            <span class="remove-skill" onclick="window.removeProjectSkill('${skill}')">&times;</span>
-        </div>
-    `).join('');
+    container.innerHTML = project.skills.map(skill => {
+        const skName = typeof skill === 'object' ? skill.name : skill;
+        const isHermes = typeof skill === 'object' && skill.source === 'hermes';
+        const icon = isHermes ? '⚡' : '🧠';
+        return `
+            <div class="skill-tag project-skill ${isHermes ? 'hermes-skill' : ''}">
+                <span>${icon} ${skName}</span>
+                <span class="remove-skill" onclick="window.removeProjectSkill('${skName}', ${isHermes})">&times;</span>
+            </div>
+        `;
+    }).join('');
 }
 
-window.removeProjectSkill = (skillName) => {
+window.removeProjectSkill = (skillName, isHermes) => {
     const project = getActiveProject();
     if (project && project.skills) {
-        project.skills = project.skills.filter(s => s !== skillName);
+        project.skills = project.skills.filter(s => {
+            const name = typeof s === 'object' ? s.name : s;
+            const h = typeof s === 'object' && s.source === 'hermes';
+            return !(name === skillName && h === !!isHermes);
+        });
         renderProjectSkills();
         saveData();
     }
@@ -1477,22 +1787,59 @@ async function refreshConsoleUI() {
         const res = await fetch(`${API_BASE}/utils/client-logs`);
         const logs = await res.json();
 
-        if (!logs || logs.length === 0) {
+        // Also fetch restart history
+        let restartHistory = [];
+        try {
+            const rhRes = await fetch(`${API_BASE}/system/restart-history`);
+            const rhData = await rhRes.json();
+            restartHistory = rhData.history || [];
+        } catch (e) {}
+
+        if ((!logs || logs.length === 0) && restartHistory.length === 0) {
             consoleOutput.innerHTML = '<div class="log-empty">No hay logs registrados.</div>';
             return;
         }
 
-        consoleOutput.innerHTML = logs.reverse().map(l => {
+        let html = '';
+        
+        // Show restart events first (most recent = visual priority)
+        const recentStarts = restartHistory.filter(r => r.reason === 'server-start').slice(-1);
+        const recentRestarts = restartHistory.filter(r => r.reason !== 'server-start').slice(-5).reverse();
+        
+        // Server is live badge
+        if (recentStarts.length > 0) {
+            const startTime = new Date(recentStarts[0].time).toLocaleTimeString();
+            html += `<div class="log-entry system">
+                <span class="log-time">[${startTime}]</span>
+                <span class="log-type">SISTEMA:</span>
+                <span class="log-msg">🟢 Servidor activo</span>
+            </div>`;
+        }
+        
+        // Restart events
+        for (const r of recentRestarts) {
+            const time = new Date(r.time).toLocaleTimeString();
+            const reasonLabel = r.reason === 'auto-restart' ? 'auto-transformación' : (r.reason === 'manual' ? 'manual' : r.reason);
+            html += `<div class="log-entry system">
+                <span class="log-time">[${time}]</span>
+                <span class="log-type">SISTEMA:</span>
+                <span class="log-msg">🔄 Reinicio (${reasonLabel})</span>
+            </div>`;
+        }
+        
+        // Client logs
+        html += logs.reverse().map(l => {
             const time = new Date(l.timestamp).toLocaleTimeString();
             return `
                 <div class="log-entry ${l.type}">
                     <span class="log-time">[${time}]</span>
                     <span class="log-type">${l.type.toUpperCase()}:</span>
-                    <span class="log-msg">${l.messages.join(' ')}</span>
+                    <span class="log-msg">${(l.messages || []).join(' ')}</span>
                 </div>
             `;
         }).join('');
 
+        consoleOutput.innerHTML = html;
     } catch (e) {
         consoleOutput.innerHTML = 'Error al cargar logs.';
     }
@@ -1629,7 +1976,6 @@ async function checkProjectHealth(project) {
     } catch (e) {
         project.isCorrupted = true;
     }
-    renderProjectList();
 }
 
 async function checkAllProjectsHealth() {
@@ -1638,6 +1984,8 @@ async function checkAllProjectsHealth() {
             checkProjectHealth(p);
         }
     }
+    // Single render after all health checks
+    renderProjectList();
 }
 
 function getActiveProject() {
@@ -2132,13 +2480,15 @@ function updateViewVisibility() {
 
     if (isChat) {
         saveFileBtn.classList.add('hidden');
+        const wasHidden = chatTabContent.classList.contains('hidden');
         chatTabContent.classList.remove('hidden');
-        renderMessages(false); // Pass false to avoid recursive renderTabs
-        renderAgentSkills();
-
-        // Sync mode toggles with current chat mode
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
+            // Solo renderizar mensajes si la vista estaba oculta (cambio de tab real)
+            if (wasHidden) {
+                renderMessages(false);
+                renderAgentSkills();
+            }
             syncModeUI(chat.mode);
 
             // Sync chat header — nombre editable
@@ -2747,7 +3097,7 @@ window.clearAllArchivedProjects = async () => {
     }
 };
 
-function renderMessages(shouldRenderLayout = true) {
+function renderMessages(shouldRenderLayout = false) {
     const chat = getActiveChat();
     if (!chat) return;
 
@@ -2786,8 +3136,8 @@ function renderMessages(shouldRenderLayout = true) {
 
     chatMessages.innerHTML = '';
     chat.messages.forEach(m => {
-        // Saltar mensajes de progreso ya finalizados — se ocultan completamente
-        if (m.isProgress && m.finished) return;
+        // Saltar mensajes de progreso ya finalizados — se muestran minimizados
+        if (m.isProgress && m.finished && m._hidden) return;
 
         const div = document.createElement('div');
         div.className = `message ${m.role}`;
@@ -2797,17 +3147,23 @@ function renderMessages(shouldRenderLayout = true) {
             imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
         }
 
-        // Si es un mensaje de progreso ACTIVO de Hermes
-        if (m.isProgress && !m.finished) {
+        // Si es un mensaje de progreso de Hermes (activo o finalizado)
+        if (m.isProgress) {
             const isMinimized = m.minimized === true;
+            const isFinished = m.finished === true;
             const progressLines = m.content.split('\n').filter(l => l.trim());
             const summary = progressLines[0] || '⚡ Procesando...';
+            // Si está finalizado, buscar la línea de "✅ Tarea completada" o error
+            const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+            const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+            const displaySummary = errorLine || doneLine || summary;
             const detailContent = progressLines.slice(1).join('\n');
-            div.className = 'message system hermes-progress';
+            const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+            div.className = `message system hermes-progress ${stateClass}`;
             div.innerHTML = `
                 <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="toggleProgress(this)">
                     <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
-                    <span class="progress-summary">${escapeHtml(summary)}</span>
+                    <span class="progress-summary">${escapeHtml(displaySummary)}</span>
                 </div>
                 <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
                     <pre>${escapeHtml(detailContent)}</pre>
@@ -2874,6 +3230,19 @@ window.toggleActionGroup = (header) => {
     }
 };
 
+// Debouncer para renderizados pesados de layout durante streaming
+let _thinkingLayoutTimer = null;
+const _debounceThinkingLayout = () => {
+    if (_thinkingLayoutTimer) clearTimeout(_thinkingLayoutTimer);
+    _thinkingLayoutTimer = setTimeout(() => {
+        _thinkingLayoutTimer = null;
+        renderProjectList();
+        renderAdminMonitor();
+        renderTabs();
+        updateAgentBadge();
+    }, 200);
+};
+
 function updateThinking(chat, isThinking, status = "", subtext = "") {
     if (!chat) return;
     chat.isThinking = isThinking;
@@ -2912,9 +3281,8 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
         if (project && project.activeTabId === 'admin') renderAdminMonitor();
     }
     renderMessages(false);
-    renderProjectList(); // Added to update dots
-    renderAdminMonitor(); // Added to update monitor
-    renderTabs(); // Added to update tabs dots
+    // Layout updates (sidebar dots, tabs, admin monitor) are debounced to avoid cascade
+    _debounceThinkingLayout();
 }
 
 function formatMarkdown(text) {
@@ -3385,6 +3753,24 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (isTechnical) {
             taskState.objective = lastUserMsg.content;
             taskState.currentState = "STARTING TASK";
+
+            // ─── Auto-naming: Si el agente tiene nombre genérico ("Agente N"), asignar nombre desde el prompt ───
+            if (/^Agente \d+$/.test(chat.name)) {
+                const generatedName = generateChatNameFromPrompt(lastUserMsg.content);
+                if (generatedName) {
+                    console.log(`[NAMING] Auto-nombrando agente desde prompt: "${generatedName}"`);
+                    chat.name = generatedName;
+                    // Sincronizar UI
+                    const agentNameInput = document.getElementById('chat-agent-name-input');
+                    if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                        agentNameInput.value = generatedName;
+                    }
+                    renderTabs();
+                    saveData();
+                }
+            }
+            // ─── Fin auto-naming ───
+
         } else if (isGreeting) {
             taskState.objective = "CONVERSATION";
             taskState.currentState = "IDLE/CHATTING";
@@ -4495,6 +4881,49 @@ function renderAdminMonitor() {
     monitorTbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
 }
 
+function updateAgentBadge() {
+    const badge = document.getElementById('agent-badge');
+    if (!badge) return;
+    // Intentar obtener la lista real de agentes desde el servidor
+    fetch('/api/admin/agents')
+        .then(r => r.json())
+        .then(data => {
+            const agents = data.agents || [];
+            // Contar agentes 'vivos': thinking, running o idle (ejecutándose)
+            const running = agents.filter(a => a.status === 'thinking' || a.status === 'running' || a.status === 'idle').length;
+            badge.textContent = running;
+            badge.style.display = running > 0 ? 'inline-flex' : 'none';
+        })
+        .catch(() => {
+            // Fallback: contar desde estado local
+            let running = 0;
+            for (const p of state.projects) {
+                for (const c of p.chats) {
+                    if (c.isThinking) running++;
+                }
+            }
+            badge.textContent = running;
+            badge.style.display = running > 0 ? 'inline-flex' : 'none';
+        });
+}
+
+// Polling periódico para mantener el badge actualizado
+let _badgeInterval = null;
+function startBadgePolling() {
+    if (_badgeInterval) return;
+    _badgeInterval = setInterval(updateAgentBadge, 5000);
+    // Actualizar inmediatamente al arrancar
+    updateAgentBadge();
+}
+function stopBadgePolling() {
+    if (_badgeInterval) {
+        clearInterval(_badgeInterval);
+        _badgeInterval = null;
+    }
+}
+// Arrancar el polling al cargar la página (type="module" se ejecuta después de DOMContentLoaded)
+startBadgePolling();
+
 // Función auxiliar para reparar JSON mal formado enviado por modelos de IA
 const repairJSONField = (jsonStr, fieldName) => {
     const fieldMarker = `"${fieldName}":`;
@@ -5115,18 +5544,31 @@ function renderSessionSummary(changeStats, project) {
         return;
     }
 
-    const itemsHtml = changeStats.map(s => {
+    const itemsHtml = changeStats.map((s, idx) => {
         const fullPath = pathJoin(project.folder, s.fileName).replace(/\\/g, '/');
         const displayName = s.fileName.split(/[/\\]/).pop();
+        const diffId = 'diff-' + Date.now() + '-' + idx;
+        const hasDiff = s.diff && s.diff.trim().length > 0;
         return `
-            <div class="session-summary-item" onclick="window.openFile('${fullPath}')">
-                <span class="file-icon">📄</span>
-                <div class="stats">
-                    <span class="added" title="Líneas agregadas">+${s.added}</span>
-                    <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
+            <div class="session-summary-item">
+                <div class="session-summary-item-header" onclick="window.openFile('${fullPath}')">
+                    <span class="file-icon">📄</span>
+                    <div class="stats">
+                        <span class="added" title="Líneas agregadas">+${s.added}</span>
+                        <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
+                    </div>
+                    <span class="file-name">${displayName}</span>
+                    <span class="file-path">${fullPath}</span>
+                    ${hasDiff ? `<span class="diff-toggle" onclick="event.stopPropagation(); window.toggleDiff('${diffId}', this)">🔍 Ver Diff</span>` : ''}
                 </div>
-                <span class="file-name">${displayName}</span>
-                <span class="file-path">${fullPath}</span>
+                ${hasDiff ? `
+                <div class="session-diff-content hidden" id="${diffId}">
+                    <div class="diff-actions">
+                        <button class="btn-small" onclick="window.openFile('${fullPath}')">📝 Editar</button>
+                        <button class="btn-small" onclick="window.toggleDiff('${diffId}', this.parentElement.parentElement.previousElementSibling.querySelector('.diff-toggle'))">✕ Cerrar</button>
+                    </div>
+                    <pre class="git-diff"><code>${escapeHtml(s.diff)}</code></pre>
+                </div>` : ''}
             </div>
         `;
     }).join('');
@@ -5148,6 +5590,16 @@ function renderSessionSummary(changeStats, project) {
     `;
     container.classList.remove('hidden');
 }
+
+window.toggleDiff = (id, toggleEl) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const isHidden = el.classList.contains('hidden');
+    el.classList.toggle('hidden');
+    if (toggleEl) {
+        toggleEl.textContent = isHidden ? '🔍 Ocultar Diff' : '🔍 Ver Diff';
+    }
+};
 
 window.clearSessionSummary = () => {
     const chat = getActiveChat();
@@ -5706,7 +6158,11 @@ function setupEventListeners() {
     const agentsRoomBtn = document.getElementById('agents-room-btn');
     if (agentsRoomBtn) {
         agentsRoomBtn.onclick = () => {
-            window.open('http://localhost:3001/static/agents-room.html?_=' + Date.now(), '_blank');
+            const isStaticPath = window.location.pathname.startsWith('/static/');
+            const url = isStaticPath 
+                ? `${window.location.origin}/static/agents-room.html?_=${Date.now()}`
+                : `${window.location.origin}/agents-room.html?_=${Date.now()}`;
+            window.open(url, '_blank');
         };
     }
 
@@ -6433,6 +6889,11 @@ init();
                     if (data.event === 'hermes:log' || data.event === 'hermes:status') {
                         refreshInstances();
                     }
+                    if (data.event === 'system:restart') {
+                        console.log('[SYSTEM] Recibido evento de reinicio:', data.reason);
+                        // Refresh console to show restart event
+                        setTimeout(() => refreshConsoleUI(), 500);
+                    }
                 } catch {}
             };
             ws.onclose = () => {
@@ -6917,44 +7378,126 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     let progressWs = null;
     try {
         progressWs = new WebSocket(`ws://localhost:3001/ws/hermes`);
+        // Throttle para evitar re-renders excesivos durante progreso rápido
+        let progressRenderTimer = null;
         progressWs.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
                     if (data.type === 'progress' || data.type === 'stdout') {
-                        // Agregar línea al mensaje de progreso
+                        // Agregar línea al mensaje de progreso (solo en data, no en DOM)
                         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
                         if (progressChatMsg) {
-                            const lines = data.text.split('\n').filter(l => l.trim());
-                            for (const line of lines) {
-                                const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-                                if (clean) {
-                                    // Si contiene tool call info, formatearlo lindo
-                                    let formatted = clean;
-                                    if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
-                                        formatted = '🛠️ ' + clean.replace(/.*tool_call[^:]*:\s*/i, '').slice(0, 60);
-                                    } else if (clean.includes('response') || clean.includes('assistant')) {
-                                        formatted = '💬 ' + clean.replace(/.*response[^:]*:\s*/i, '').slice(0, 60);
-                                    } else if (clean.match(/^[A-Z]/)) {
-                                        formatted = '📋 ' + clean.slice(0, 80);
+                                // Strip full ANSI (not just SGR) — handle OSC, CSI, etc.
+                                const rawText = data.text.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b./g, '');
+                                const lines = rawText.split('\n').filter(l => l.trim());
+                                for (const line of lines) {
+                                    const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+                                    if (clean) {
+                                        // Detectar tipo de línea y formatear sin truncar
+                                        let formatted = '';
+                                        // Tool calls
+                                        if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
+                                            const detail = clean.replace(/.*(?:tool_call|handle_function_call)[^:]*:\s*/i, '').trim();
+                                            formatted = '🛠️ ' + (detail.length > 120 ? detail.slice(0, 117) + '...' : detail);
+                                        }
+                                        // File reads/writes
+                                        else if (clean.match(/read_file|write_file|patch|search_files|execute_code/) && clean.match(/['"][^'"]+['"]/)) {
+                                            const fileMatch = clean.match(/['"]([^'"]+)['"]/);
+                                            const action = clean.match(/read_file|write_file|patch|search_files|execute_code/)[0];
+                                            const file = fileMatch ? fileMatch[1].split('/').pop().split('\\').pop() : '';
+                                            formatted = (action === 'read_file' ? '📖' : action === 'write_file' ? '📝' : action === 'patch' ? '🔧' : action === 'search_files' ? '🔍' : '⚙️') + ' ' + (file || clean.slice(0, 60));
+                                        }
+                                        // Tool results / status
+                                        else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
+                                            formatted = '✅ ' + clean.slice(0, 150);
+                                        }
+                                        // Thinking/processing steps
+                                        else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
+                                            formatted = '🤔 ' + clean.slice(0, 150);
+                                        }
+                                        // Error-like lines
+                                        else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
+                                            formatted = '❌ ' + clean.slice(0, 150);
+                                        }
+                                        // Plain lines — show verbatim (no truncation)
+                                        else {
+                                            formatted = '  ' + clean.slice(0, 200);
+                                        }
+                                        if (formatted) {
+                                            progressChatMsg.content += formatted + '\n';
+                                        }
                                     }
-                                    progressChatMsg.content += '  ' + formatted + '\n';
                                 }
-                            }
                             // Limitar líneas de progreso para no saturar
                             const lineCount = progressChatMsg.content.split('\n').length;
                             if (lineCount > 50) {
                                 const lines_arr = progressChatMsg.content.split('\n');
                                 progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-30).join('\n');
                             }
-                            // Actualizar el indicador de thinking también
+
+                            // --- UPDATE DOM DIRECTLY: no usar renderMessages() que es muy pesado ---
+                            // Buscar el elemento del progreso en el DOM actual
+                            const progressEl = chatMessages.querySelector(`.hermes-progress`);
+                            if (progressEl) {
+                                const summaryEl = progressEl.querySelector('.progress-summary');
+                                const detailPre = progressEl.querySelector('.hermes-progress-detail pre');
+                                if (summaryEl) {
+                                    const firstLine = progressChatMsg.content.split('\n').find(l => l.trim()) || '⚡ Procesando...';
+                                    summaryEl.textContent = firstLine;
+                                }
+                                if (detailPre) {
+                                    detailPre.textContent = progressChatMsg.content;
+                                }
+                            } else {
+                                // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
+                                if (!progressRenderTimer) {
+                                    progressRenderTimer = setTimeout(() => {
+                                        progressRenderTimer = null;
+                                        // Solo actualizar mensajes, no sidebar/tabs
+                                        const chat = getActiveChat();
+                                        if (!chat) return;
+                                        chatMessages.innerHTML = '';
+                                        chat.messages.forEach(m => {
+                                            if (m.isProgress && m.finished && m._hidden) return;
+                                            const div = document.createElement('div');
+                                            div.className = `message ${m.role}`;
+                                            if (m.isProgress) {
+                                                const isFinished = m.finished === true;
+                                                const progressLines = m.content.split('\n').filter(l => l.trim());
+                                                const summary = progressLines[0] || '⚡ Procesando...';
+                                                const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+                                                const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+                                                const displaySummary = errorLine || doneLine || summary;
+                                                const detailContent = progressLines.slice(1).join('\n');
+                                                const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+                                                div.className = `message system hermes-progress ${stateClass}`;
+                                                div.innerHTML = `
+                                                    <div class="hermes-progress-toggle maximized">
+                                                        <span class="progress-arrow">▼</span>
+                                                        <span class="progress-summary">${escapeHtml(displaySummary)}</span>
+                                                    </div>
+                                                    <div class="hermes-progress-detail">
+                                                        <pre>${escapeHtml(detailContent)}</pre>
+                                                    </div>
+                                                `;
+                                            } else {
+                                                div.innerHTML = formatMarkdown(m.content);
+                                            }
+                                            chatMessages.appendChild(div);
+                                        });
+                                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                                    }, 200);
+                                }
+                            }
+
+                            // Actualizar el indicador de thinking también (rápido, textContent)
                             const statusEl = document.getElementById('chat-thinking-status');
                             if (statusEl) {
                                 const lastClean = lines.filter(l => l.trim()).pop() || '';
                                 const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
                                 if (short) statusEl.textContent = '⚡ ' + short;
                             }
-                            renderMessages();
                         }
                     }
                 }
@@ -6976,10 +7519,65 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
             .slice(-20) // últimas 20 interacciones para no saturar
             .map(m => ({ role: m.role, content: m.content }));
 
+        // ─── Auto-transformación: Inyectar conciencia del sistema ───
+        const serverDir = project.folder || '';
+        const isJPAgentsProject = serverDir && (
+            serverDir.includes('jpagents') || serverDir.includes('JPagents') || serverDir.includes('jp-agents')
+        );
+        let autoTransformBlock = '';
+        if (isJPAgentsProject) {
+            autoTransformBlock = `\n\n=== AUTO-TRANSFORMACIÓN ===
+Eres Hermes Agent ejecutándose dentro del sistema JP Agents.
+Tienes la capacidad de AUTOMODIFICARTE — puedes cambiar los archivos del servidor (server.js, hermes-bridge.js, agent_graph.js, main.js, index.html, style.css, etc.) para mejorar el sistema.
+REGLAS DE AUTO-TRANSFORMACIÓN:
+1. Si modificas archivos del servidor (server.js, hermes-bridge.js, .js en la raíz del proyecto), el servidor DEBE reiniciarse para que los cambios surtan efecto.
+2. Después de hacer cambios estructurales, INCLUYE en tu respuesta: 🔄AUTO-RESTART:razón del reinicio
+3. No reinventes ruedas — usa los endpoints existentes (/api/skills/*, /api/hermes/skills/*, etc.)
+4. Los cambios se reflejan en la consola de JP Agents automáticamente.
+5. El directorio del proyecto es: ${serverDir}
+=== FIN AUTO-TRANSFORMACIÓN ===\n\n`;
+        }
+
+        // ─── Colectar skills activos (locales + Hermes) ───
+        const activeSkills = [];
+        // Skills del chat
+        if (chat.skills && chat.skills.length > 0) {
+            for (const s of chat.skills) {
+                // s puede ser string (local) u objeto { name, source, category }
+                if (typeof s === 'object' && s.source === 'hermes') {
+                    activeSkills.push({ name: s.name, source: 'hermes', category: s.category || '' });
+                } else {
+                    activeSkills.push({ name: typeof s === 'string' ? s : s.name, source: 'local' });
+                }
+            }
+        }
+        // Skills del proyecto (si el chat no tiene skills propios o además)
+        if (project.skills && project.skills.length > 0) {
+            for (const s of project.skills) {
+                const sName = typeof s === 'string' ? s : s.name;
+                if (!activeSkills.find(a => a.name === sName)) {
+                    activeSkills.push({ name: sName, source: 'local' });
+                }
+            }
+        }
+
+        // ─── Construir mensaje final con skills + auto-transformación ───
+        let finalMessage = message;
+        if (autoTransformBlock) {
+            finalMessage = autoTransformBlock + message;
+        }
+
         const res = await fetch(`${API_BASE}/hermes/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId: project.id, chatId: chat.id, message, images, history: historyMessages })
+            body: JSON.stringify({
+                projectId: project.id,
+                chatId: chat.id,
+                message: finalMessage,
+                images,
+                history: historyMessages,
+                skills: activeSkills.length > 0 ? activeSkills : undefined
+            })
         });
 
         if (!res.ok) {
@@ -7005,12 +7603,29 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         const data = await res.json();
         // Strip ANSI escape codes
         const response = stripAnsi(data.response || '(sin respuesta)');
+        const backendChanges = data.changes || [];
 
-        // Eliminar bloque de progreso del chat y mostrar solo la respuesta
+        // ─── Actualizar progreso a estado finalizado pero visible ───
         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
         if (progressChatMsg) {
-            progressChatMsg.finished = true; // oculto en renderMessages
-            // Agregar solo la respuesta limpia como assistant
+            // Marcar como finalizado pero NO oculto: queda minimizado y visible
+            progressChatMsg.finished = true;
+            progressChatMsg.minimized = true;
+            // Agregar línea de finalización al contenido del progreso
+            const doneTime = new Date().toLocaleTimeString();
+            progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime + '\n';
+            // Agregar info de archivos modificados
+            if (backendChanges.length > 0) {
+                const filesList = backendChanges.map(c => {
+                    const shortName = c.fileName.split(/[/\\]/).pop();
+                    return `📄 ${shortName} (+${c.added}/-${c.removed})`;
+                }).join('\n');
+                progressChatMsg.content += '\n📂 Archivos modificados:\n' + filesList + '\n';
+                if (backendChanges.some(c => c.diff)) {
+                    progressChatMsg.content += '\n🔍 Usá el panel de "Cambios Realizados" para ver el diff completo.\n';
+                }
+            }
+            // Agregar el mensaje de respuesta del asistente
             chat.messages.push({
                 role: 'assistant',
                 content: response,
@@ -7028,7 +7643,79 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         renderMessages();
         updateThinking(chat, false);
         saveData();
-        if (progressWs) { try { progressWs.close(); } catch(e) {} }
+
+        // ─── Procesar cambios y abrir archivos modificados ───
+        if (backendChanges.length > 0) {
+            // Guardar cambios en el chat
+            chat.sessionChanges = backendChanges.map(c => ({
+                fileName: c.fileName,
+                added: c.added,
+                removed: c.removed,
+                diff: c.diff || null
+            }));
+            renderSessionSummary(chat.sessionChanges, project);
+
+            // Auto-abrir archivos modificados en tabs del proyecto
+            for (const change of backendChanges) {
+                if (!change.fileName) continue;
+                const fullPath = pathJoin(project.folder, change.fileName).replace(/\\/g, '/');
+                // Solo abrir si no está ya abierto
+                const alreadyOpen = project.openFiles.some(f => f.path.replace(/\\/g, '/') === fullPath);
+                if (!alreadyOpen) {
+                    try {
+                        await window.openFile(fullPath);
+                    } catch (e) {
+                        console.error('Error auto-opening file:', fullPath, e);
+                    }
+                }
+            }
+            // Re-escanear carpeta para actualizar file list
+            if (project.folder) window.scanFolder(project.folder, project.id);
+        }
+
+        if (progressWs) { try { progressWs.close(); } catch(e) {}
+        }
+        
+        // ─── Auto-transformación: Detectar solicitud de reinicio ───
+        if (isJPAgentsProject && response) {
+            const restartMatch = response.match(/🔄AUTO-RESTART\s*:\s*(.+)/i);
+            if (restartMatch) {
+                const reason = restartMatch[1].trim();
+                console.log('[AUTO-TRANSFORM] 🔄 Reinicio automático solicitado:', reason);
+                
+                // Log restart in console
+                try {
+                    await fetch(`${API_BASE}/utils/client-logs`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            type: 'system',
+                            messages: [`🔄 Auto-transformación: ${reason}`],
+                            timestamp: new Date().toISOString(),
+                            url: '/auto-restart'
+                        })
+                    });
+                } catch(e) {}
+                
+                // Clear the restart marker from the displayed response
+                const cleanResponse = response.replace(/🔄AUTO-RESTART\s*:\s*.+/i, '').trim();
+                const lastMsg = chat.messages[chat.messages.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = cleanResponse || response;
+                }
+                
+                renderMessages();
+                
+                // Trigger restart after a short delay so user can see the message
+                setTimeout(async () => {
+                    try {
+                        await fetch(`${API_BASE}/system/restart`, { method: 'POST' });
+                    } catch(e) {
+                        console.warn('[AUTO-TRANSFORM] Error al reiniciar:', e.message);
+                    }
+                }, 2000);
+            }
+        }
         
         // Broadcast a otras pestañas (Agents Room) que el estado cambió
         try {
@@ -7040,8 +7727,10 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     } catch (e) {
         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
         if (progressChatMsg) {
-            progressChatMsg.content += '\n❌ Error: ' + e.message;
+            const errTime = new Date().toLocaleTimeString();
+            progressChatMsg.content += '\n❌ Error: ' + e.message + ' (' + errTime + ')\n';
             progressChatMsg.finished = true;
+            progressChatMsg.minimized = false; // dejar visible para que se vea el error
         }
         if (e.name === 'AbortError') {
             chat.messages.push({

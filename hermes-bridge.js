@@ -12,12 +12,142 @@
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
+import sqlite3 from 'sqlite3';
+import os from 'os';
+
+function stripAnsi(text) {
+    if (typeof text !== 'string') return text;
+    return text
+        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
+        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
+        .replace(/\x1b[\[\(].{0,3}/g, '')
+        .replace(/\x1b./g, '')
+        .replace(/\r\n/g, '\n');
+}
+
+function stripPanelIndentation(lines) {
+    let minIndent = Infinity;
+    for (const line of lines) {
+        if (!line.trim()) continue;
+        const match = line.match(/^( *)/);
+        if (match) {
+            const indent = match[1].length;
+            if (indent < minIndent) {
+                minIndent = indent;
+            }
+        }
+    }
+    
+    if (minIndent === Infinity) return lines;
+    
+    return lines.map(line => {
+        if (line.length >= minIndent) {
+            return line.slice(minIndent);
+        }
+        return line.trim();
+    });
+}
+
+function extractCleanResponseFromStdout(stdout) {
+    const clean = stripAnsi(stdout);
+    const lines = clean.split('\n');
+    let panelStartIdx = -1;
+    let panelEndIdx = -1;
+    
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.includes('╰') && panelEndIdx === -1) {
+            panelEndIdx = i;
+        }
+        if (line.includes('╭') && line.includes('Hermes') && panelStartIdx === -1) {
+            panelStartIdx = i;
+            if (panelEndIdx !== -1) {
+                break;
+            }
+        }
+    }
+    
+    if (panelStartIdx !== -1 && panelEndIdx !== -1 && panelStartIdx < panelEndIdx) {
+        const panelLines = lines.slice(panelStartIdx + 1, panelEndIdx);
+        const strippedLines = stripPanelIndentation(panelLines);
+        return strippedLines.map(l => {
+            let content = l;
+            if (content.trim().startsWith('│')) {
+                content = content.replace(/^\s*│/, '');
+            }
+            if (content.trim().endsWith('│')) {
+                content = content.replace(/│\s*$/, '');
+            }
+            return content;
+        }).join('\n').trim();
+    }
+    
+    let lastThinkingIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('[thinking]')) {
+            lastThinkingIdx = i;
+        }
+    }
+    
+    if (lastThinkingIdx !== -1 && lastThinkingIdx < lines.length - 1) {
+        const afterThinking = lines.slice(lastThinkingIdx + 1);
+        const filtered = afterThinking.filter(l => {
+            const lower = l.toLowerCase();
+            return !lower.includes('resume this session') && 
+                   !lower.includes('session:') && 
+                   !lower.includes('duration:') && 
+                   !lower.includes('messages:') &&
+                   !lower.includes('last progress:');
+        });
+        return filtered.join('\n').trim();
+    }
+    
+    return clean;
+}
+
+async function getLastAssistantMessage(sessionId) {
+    return new Promise((resolve, reject) => {
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const dbPath = path.join(hermesHome, 'state.db');
+
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
+            if (err) {
+                return reject(err);
+            }
+        });
+
+        const query = `
+            SELECT content 
+            FROM messages 
+            WHERE session_id = ? AND role = 'assistant' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        `;
+
+        db.get(query, [sessionId], (err, row) => {
+            db.close();
+            if (err) {
+                return reject(err);
+            }
+            if (row) {
+                resolve(row.content);
+            } else {
+                resolve(null);
+            }
+        });
+    });
+}
 
 class HermesBridge extends EventEmitter {
     constructor() {
         super();
         this.instances = new Map(); // key: "projectId:chatId" -> { proc, workdir, status, logs, createdAt }
         this._wsClients = new Set(); // WebSocket clients for live logs
+    }
+
+    async getLastAssistantMessage(sessionId) {
+        return getLastAssistantMessage(sessionId);
     }
 
     /**
@@ -54,10 +184,12 @@ class HermesBridge extends EventEmitter {
     async _runHermesQuery(instanceKey, projectId, workdir, query, model = null) {
         return new Promise(async (resolve, reject) => {
             const hermesPath = await this._findHermesPath(workdir);
+            const [projId, chatId] = instanceKey.split(':');
             const args = ['chat', '-q', query, '--verbose'];
             if (model && model !== '' && model !== 'default') {
                 args.push('--model', model);
             }
+            args.push('--source', `jpagents|${projectId}|${chatId}`);
 
             const proc = spawn(hermesPath, args, {
                 cwd: workdir,
@@ -68,6 +200,11 @@ class HermesBridge extends EventEmitter {
                     HERMES_WORKDIR: workdir
                 }
             });
+
+            const instance = this.instances.get(instanceKey);
+            if (instance) {
+                instance.proc = proc;
+            }
 
             let stdout = '';
             let stderr = '';
@@ -92,6 +229,9 @@ class HermesBridge extends EventEmitter {
             proc.on('error', (err) => reject(err));
 
             proc.on('exit', (code) => {
+                if (instance && instance.proc === proc) {
+                    delete instance.proc;
+                }
                 resolve({ stdout, stderr, exitCode: code });
             });
         });
@@ -181,7 +321,30 @@ class HermesBridge extends EventEmitter {
             return `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`;
         }
 
-        return result.stdout || '(respuesta vacía)';
+        try {
+            let sessionId = null;
+            const sessionIdMatch = result.stderr?.match(/\bsession_id:\s*(\S+)/i) || 
+                                  result.stdout?.match(/\bSession:\s+(\S+)/i);
+            if (sessionIdMatch) {
+                sessionId = sessionIdMatch[1].trim();
+            }
+
+            if (sessionId) {
+                const cleanContent = await getLastAssistantMessage(sessionId);
+                if (cleanContent) {
+                    return cleanContent;
+                }
+            }
+        } catch (dbErr) {
+            console.warn('[HERMES-BRIDGE] Error reading from state.db, falling back to stdout parsing:', dbErr.message);
+        }
+
+        try {
+            return extractCleanResponseFromStdout(result.stdout || '');
+        } catch (parseErr) {
+            console.error('[HERMES-BRIDGE] Error parsing stdout, returning raw:', parseErr.message);
+            return result.stdout || '(respuesta vacía)';
+        }
     }
 
     /**
