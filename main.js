@@ -122,6 +122,78 @@ function stripAnsi(text) {
 }
 window.stripAnsi = stripAnsi;
 
+// ── ANSI to HTML Converter ──
+// Convierte secuencias de escape ANSI (colores, bold, etc.) en <span> con estilo CSS.
+// Soporta: colores 30-37, 90-97 (fg), 40-47, 100-107 (bg), bold(1), dim(2), italic(3), underline(4)
+function ansiToHtml(text) {
+    if (typeof text !== 'string') return escapeHtml(String(text));
+    // Primero escapamos HTML para prevenir XSS
+    let html = escapeHtml(text);
+    let result = '';
+    let i = 0;
+    let openSpans = 0;
+    // Paleta ANSI oscura (legible sobre fondo oscuro)
+    const FG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const FG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    const BG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const BG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    let cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false };
+
+    function styleStr() {
+        const s = [];
+        if (cur.fg) s.push('color:' + cur.fg);
+        if (cur.bg) s.push('background-color:' + cur.bg);
+        if (cur.bold) s.push('font-weight:bold');
+        if (cur.dim) s.push('opacity:0.6');
+        if (cur.italic) s.push('font-style:italic');
+        if (cur.underline) s.push('text-decoration:underline');
+        return s.join(';');
+    }
+
+    function closeSpans() { while (openSpans > 0) { result += '</span>'; openSpans--; } }
+    function openSpan() {
+        closeSpans();
+        const st = styleStr();
+        if (st) { result += '<span style="' + st + '">'; openSpans = 1; }
+    }
+
+    while (i < html.length) {
+        if (html.charCodeAt(i) === 27 && html.charAt(i + 1) === '[') {
+            let j = i + 2;
+            while (j < html.length && !/[A-Za-z@-_]/.test(html.charAt(j))) j++;
+            if (j >= html.length) break;
+            const params = html.substring(i + 2, j);
+            const final = html.charAt(j);
+            i = j + 1;
+            if (final !== 'm') continue; // solo SGR, ignorar cursor/erase/scroll
+            const codes = params ? params.split(';').map(Number) : [0];
+            for (const c of codes) {
+                if (c === 0) { cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false }; }
+                else if (c === 1) cur.bold = true;
+                else if (c === 2) cur.dim = true;
+                else if (c === 3) cur.italic = true;
+                else if (c === 4) cur.underline = true;
+                else if (c === 22) { cur.bold = false; cur.dim = false; }
+                else if (c === 23) cur.italic = false;
+                else if (c === 24) cur.underline = false;
+                else if (c >= 30 && c <= 37) cur.fg = FG[c - 30];
+                else if (c === 39) cur.fg = null;
+                else if (c >= 90 && c <= 97) cur.fg = FG_BRIGHT[c - 90];
+                else if (c >= 40 && c <= 47) cur.bg = BG[c - 40];
+                else if (c === 49) cur.bg = null;
+                else if (c >= 100 && c <= 107) cur.bg = BG_BRIGHT[c - 100];
+            }
+            openSpan();
+            continue;
+        }
+        result += html.charAt(i);
+        i++;
+    }
+    closeSpans();
+    return result.replace(/\r\n?/g, '\n');
+}
+window.ansiToHtml = ansiToHtml;
+
 const API_BASE = 'http://localhost:3001/api';
 window.API_BASE = API_BASE;
 const OLLAMA_BASE = 'http://localhost:11434/api';
@@ -913,7 +985,7 @@ function appendToTerminal(text, type = 'stdout', projectId = null) {
     if (activeProject && activeProject.id === (projectId || activeProject.id)) {
         const line = document.createElement('div');
         line.className = `terminal-line ${type}`;
-        line.textContent = text;
+        line.innerHTML = ansiToHtml(text);
         terminalOutput.appendChild(line);
         terminalOutput.scrollTop = terminalOutput.scrollHeight;
     }
@@ -931,7 +1003,7 @@ function refreshTerminalUI() {
         project.terminalLogs.forEach(log => {
             const line = document.createElement('div');
             line.className = `terminal-line ${log.type}`;
-            line.textContent = log.text;
+            line.innerHTML = ansiToHtml(log.text);
             terminalOutput.appendChild(line);
         });
     } else {
@@ -1151,17 +1223,16 @@ function setupOpenFolderExplorer() {
     const btn = document.getElementById('open-folder-explorer');
     if (btn) {
         btn.onclick = async () => {
-            const project = getActiveProject();
-            if (!project || !project.folder) return;
+            // 1. Matar cualquier selector de carpeta que esté abierto
             try {
-                await fetch(`${API_BASE}/utils/open-folder`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ folderPath: project.folder })
-                });
+                await fetch(`${API_BASE}/utils/kill-pick-folder`, { method: 'POST' });
             } catch (e) {
-                console.error("Error abriendo carpeta:", e);
+                // Best-effort: si falla, seguimos adelante
             }
+            // 2. Pequeña pausa para asegurar que el proceso anterior se limpió
+            await new Promise(r => setTimeout(r, 300));
+            // 3. Abrir un selector de carpeta NUEVO
+            nativePickFolder();
         };
     }
 }
@@ -2335,44 +2406,67 @@ window.removeSkillFromModal = (skillName, projectId) => {
 
 window.stopActiveAgent = () => {
     const chat = getActiveChat();
-    if (chat) {
-        chat.isStopped = true;
-        chat.isThinking = false;
-        const sendBtn = document.getElementById('send-btn');
-        const stopBtn = document.getElementById('stop-btn');
-        if (sendBtn) sendBtn.classList.remove('hidden');
-        if (stopBtn) stopBtn.classList.add('hidden');
-
-        chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
-        renderMessages();
+    const project = getActiveProject();
+    if (project && chat) {
+        window.stopAgent(project.id, chat.id);
     }
 };
 
 window.stopAgent = (projectId, chatId) => {
-    // If only one arg provided, assume it's chatId and use active project
+    let projId = projectId;
+    let chId = chatId;
     if (chatId === undefined) {
-        chatId = projectId;
+        chId = projectId;
         const project = getActiveProject();
         if (!project) return;
-        const chat = project.chats.find(c => c.id === chatId);
-        if (chat) {
-            chat.isStopped = true;
-            chat.isThinking = false;
-            if (chat.abortController) {
-                try { chat.abortController.abort(); } catch (e) { }
-            }
+        projId = project.id;
+    }
+
+    const project = state.projects.find(p => p.id === projId);
+    if (!project) return;
+    const chat = project.chats.find(c => c.id === chId);
+    if (chat) {
+        chat.isStopped = true;
+        chat.isThinking = false;
+        chat.isStreaming = false;
+
+        // Abort fetch controller
+        if (chat.abortController) {
+            try { chat.abortController.abort(); } catch (e) { }
         }
-    } else {
-        const project = state.projects.find(p => p.id === projectId);
-        if (!project) return;
-        const chat = project.chats.find(c => c.id === chatId);
-        if (chat) {
-            chat.isStopped = true;
-            chat.isThinking = false;
-            if (chat.abortController) {
-                try { chat.abortController.abort(); } catch (e) { }
-            }
+
+        // Call backend API to stop the subprocess
+        fetch(`${API_BASE}/hermes/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: projId, chatId: chId })
+        }).catch(err => console.warn('Error calling hermes/stop:', err));
+
+        // Mark progress messages as finished/minimized
+        if (chat.messages) {
+            chat.messages.forEach(m => {
+                if (m.isProgress && !m.finished) {
+                    m.finished = true;
+                    m.minimized = true;
+                    m.content += '\n🛑 Proceso detenido por el usuario.\n';
+                }
+            });
         }
+
+        // Hide thinking indicators if this is the active chat
+        const activeChat = getActiveChat();
+        if (activeChat && activeChat.id === chat.id) {
+            const sendBtn = document.getElementById('send-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            if (sendBtn) sendBtn.classList.remove('hidden');
+            if (stopBtn) stopBtn.classList.add('hidden');
+            updateThinking(chat, false);
+        }
+
+        chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
+
+        renderMessages();
+        saveData();
     }
     renderAdminMonitor();
     renderTabs();
@@ -2527,19 +2621,31 @@ function updateViewVisibility() {
                 const hermesPlayBtn = document.getElementById('hermes-play-btn');
                 const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
                 const hermesStatusDot = document.getElementById('hermes-status-dot');
-                // Hacer el check asíncrono sin bloquear
-                fetch(`${API_BASE}/hermes/instances`).then(r => r.json()).then(data => {
-                    const inst = (data.instances || []).find(i => i.chatId === chat.id && i.projectId === project.id);
-                    if (inst && inst.status !== 'stopped') {
+                // Health-check usando el endpoint dedicado en vez de listar instancias
+                fetch(`${API_BASE}/hermes/status/${encodeURIComponent(project.id)}/${encodeURIComponent(chat.id)}`).then(r => r.json()).then(status => {
+                    if (status.alive && status.hasBridge) {
                         if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
                         if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
-                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot online';
+                        if (hermesStatusDot) {
+                            hermesStatusDot.className = status.status === 'running' || status.status === 'thinking'
+                                ? 'hermes-status-dot running' : 'hermes-status-dot online';
+                        }
+                    } else if (status.alive && !status.hasBridge) {
+                        if (hermesPlayBtn) { hermesPlayBtn.classList.remove('hidden'); hermesPlayBtn.title = '🔄 Agente detectado — reiniciar'; }
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot ghost';
                     } else {
-                        if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+                        if (hermesPlayBtn) { hermesPlayBtn.classList.remove('hidden'); hermesPlayBtn.title = 'Iniciar Hermes'; }
                         if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
                         if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
                     }
-                }).catch(() => {});
+                }).catch(() => {
+                    if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+                    if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                    if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+                });
+                // Iniciar health-check periódico (30s) para esta ventana de chat
+                startHealthCheck(project.id, chat.id);
             } else {
                 // Si no usa Hermes, ocultar botones
                 const hermesPlayBtn = document.getElementById('hermes-play-btn');
@@ -2569,6 +2675,8 @@ function updateViewVisibility() {
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
+        // Detener health-check al salir de un chat
+        stopHealthCheck();
     } else if (isOpenFile) {
         saveFileBtn.classList.remove('hidden');
         editorTabContent.classList.remove('hidden');
@@ -2743,6 +2851,63 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function formatProgressLines(rawContent) {
+    if (!rawContent) return '';
+    const lines = rawContent.split('\n');
+    return lines.map(line => {
+        const trimmed = line.trim();
+        const escaped = escapeHtml(line);
+        if (trimmed.startsWith('+')) {
+            return `<span class="diff-add">${escaped}</span>`;
+        } else if (trimmed.startsWith('-')) {
+            return `<span class="diff-del">${escaped}</span>`;
+        } else if (trimmed.startsWith('🛠️') || trimmed.includes('🛠️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('📖') || trimmed.startsWith('📝') || trimmed.startsWith('🔧') || trimmed.startsWith('🔍') || trimmed.startsWith('⚙️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('✅')) {
+            return `<span class="status-ok">${escaped}</span>`;
+        } else if (trimmed.startsWith('❌')) {
+            return `<span class="status-err">${escaped}</span>`;
+        } else if (trimmed.startsWith('🤔')) {
+            return `<span class="thinking-line">${escaped}</span>`;
+        }
+        return escaped;
+    }).join('\n');
+}
+
+// Highlight git diff output with colors: green for additions, red for deletions
+function highlightGitDiff(diffText) {
+    if (!diffText) return '';
+    const lines = diffText.split('\n');
+    const out = [];
+    for (const line of lines) {
+        // Escape HTML first
+        const esc = escapeHtml(line);
+        // Header lines (diff --git, index, ---, +++)
+        if (/^(diff --git|index |--- |\+\+\+ )/.test(esc)) {
+            out.push('<span class="gd-header">' + esc + '</span>');
+        }
+        // Hunk header (@@ ... @@)
+        else if (/^@@ /.test(esc)) {
+            out.push('<span class="gd-hunk">' + esc + '</span>');
+        }
+        // Removed lines
+        else if (/^\-/.test(esc)) {
+            out.push('<span class="gd">' + esc + '</span>');
+        }
+        // Added lines
+        else if (/^\+/.test(esc)) {
+            out.push('<span class="gi">' + esc + '</span>');
+        }
+        // Everything else
+        else {
+            out.push(esc);
+        }
+    }
+    return out.join('\n');
+}
+
 window.switchTab = (id) => {
     console.log("Switching to tab:", id);
 
@@ -2885,6 +3050,21 @@ window.handleDeleteClick = (id, event) => {
             }
         }, 5000);
     }
+};
+
+// Permite que el agente Hermes setee la carpeta activa de un proyecto y escanee archivos
+window.setProjectFolder = async (projectId, folderPath) => {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) {
+        console.error('❌ setProjectFolder: proyecto no encontrado:', projectId);
+        return { success: false, error: 'Project not found' };
+    }
+    project.folder = folderPath;
+    folderPathInput.value = folderPath;
+    await window.scanFolder(folderPath, projectId);
+    saveData();
+    console.log('✅ setProjectFolder:', projectId, '->', folderPath);
+    return { success: true, folder: folderPath };
 };
 
 window.cancelDelete = (id, event) => {
@@ -3166,7 +3346,7 @@ function renderMessages(shouldRenderLayout = false) {
                     <span class="progress-summary">${escapeHtml(displaySummary)}</span>
                 </div>
                 <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
-                    <pre>${escapeHtml(detailContent)}</pre>
+                    <pre>${formatProgressLines(detailContent)}</pre>
                 </div>
             `;
         } else {
@@ -5567,7 +5747,7 @@ function renderSessionSummary(changeStats, project) {
                         <button class="btn-small" onclick="window.openFile('${fullPath}')">📝 Editar</button>
                         <button class="btn-small" onclick="window.toggleDiff('${diffId}', this.parentElement.parentElement.previousElementSibling.querySelector('.diff-toggle'))">✕ Cerrar</button>
                     </div>
-                    <pre class="git-diff"><code>${escapeHtml(s.diff)}</code></pre>
+                    <pre class="git-diff"><code>${highlightGitDiff(s.diff)}</code></pre>
                 </div>` : ''}
             </div>
         `;
@@ -6122,8 +6302,11 @@ async function nativePickFolder() {
     const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
     btns.forEach(b => b.innerHTML = '⏳');
     try {
-        // No retries for folder picking, if it fails, it fails (user can click again)
-        const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`, {}, 1, true);
+        // AbortController con timeout de 30s para no quedarse colgado
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 30000);
+        const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
+        clearTimeout(timeoutId);
         if (res && res.ok) {
             const data = await res.json();
             if (data.path) {
@@ -6135,7 +6318,11 @@ async function nativePickFolder() {
             console.error("No se pudo abrir el selector de carpetas:", errorData.error);
         }
     } catch (e) {
-        console.error("Exception in nativePickFolder:", e);
+        if (e.name === 'AbortError') {
+            console.error("⏰ Timeout: el selector de carpetas tardó más de 30s. Reintentá.");
+        } else {
+            console.error("Exception in nativePickFolder:", e);
+        }
     }
     finally {
         btns.forEach(b => b.innerHTML = '📁');
@@ -6236,30 +6423,64 @@ function setupEventListeners() {
     const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
     const hermesStatusDot = document.getElementById('hermes-status-dot');
 
-    // Función para verificar si una instancia Hermes existe para este chat
-    async function checkHermesInstance(projectId, chatId) {
+    // ─── HEALTH-CHECK: Status del agente Hermes para UNA ventana de chat ───
+    // Cada ventana de chat corre su propia rutina para saber si su agente está vivo o no.
+    async function checkAgentStatus(projectId, chatId) {
         try {
-            const res = await fetch(`${API_BASE}/hermes/instances`);
-            const data = await res.json();
-            if (!chatId) return null;
-            const inst = (data.instances || []).find(i => i.chatId === chatId && i.projectId === projectId);
-            return inst || null;
-        } catch { return null; }
+            const res = await fetch(`${API_BASE}/hermes/status/${encodeURIComponent(projectId)}/${encodeURIComponent(chatId)}`);
+            if (!res.ok) return { alive: false, status: 'off', hasBridge: false, pid: null };
+            return await res.json();
+        } catch {
+            return { alive: false, status: 'off', hasBridge: false, pid: null };
+        }
     }
 
-    // Actualizar UI de botones Hermes según estado
+    // Actualizar UI de botones Hermes según health-check
     async function updateHermesUI(projectId, chatId) {
-        const inst = await checkHermesInstance(projectId, chatId);
-        if (inst && inst.status !== 'stopped') {
-            // Existe — mostrar stop, ocultar play
+        const status = await checkAgentStatus(projectId, chatId);
+        if (status.alive && status.hasBridge) {
+            // Bridge activo — mostrar stop, ocultar play
             if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
             if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
-            if (hermesStatusDot) { hermesStatusDot.className = 'hermes-status-dot online'; }
-        } else {
-            // No existe — mostrar play, ocultar stop
+            if (hermesStatusDot) {
+                if (status.status === 'running' || status.status === 'thinking') {
+                    hermesStatusDot.className = 'hermes-status-dot running';
+                } else {
+                    hermesStatusDot.className = 'hermes-status-dot online';
+                }
+            }
+        } else if (status.alive && !status.hasBridge) {
+            // Proceso vivo pero sin bridge (ej: después de restart)
+            // Mostrar play para que el usuario lo re-inicie, pero avisar
             if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
             if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
-            if (hermesStatusDot) { hermesStatusDot.className = 'hermes-status-dot offline'; }
+            if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot ghost';
+            if (hermesPlayBtn) hermesPlayBtn.title = '🔄 Agente detectado pero sin bridge — reiniciar';
+        } else {
+            // Off — mostrar play
+            if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+            if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            if (hermesPlayBtn) hermesPlayBtn.title = 'Iniciar Hermes';
+        }
+    }
+
+    // Interval de health-check periódico (cada 30s para la ventana activa)
+    let healthCheckInterval = null;
+    function startHealthCheck(projectId, chatId) {
+        stopHealthCheck();
+        healthCheckInterval = setInterval(() => {
+            const activeChat = getActiveChat();
+            if (!activeChat) return;
+            const activeProject = getActiveProject();
+            if (!activeProject) return;
+            updateHermesUI(activeProject.id, activeChat.id);
+        }, 30000);
+    }
+    function stopHealthCheck() {
+        if (healthCheckInterval) {
+            clearInterval(healthCheckInterval);
+            healthCheckInterval = null;
         }
     }
 
@@ -7104,8 +7325,8 @@ init();
         if (!hermesOutput) return;
         const div = document.createElement('div');
         div.className = `hermes-line ${type}`;
-        // Strip ANSI escape codes (terminal colors/escape sequences)
-        div.textContent = stripAnsi(text);
+        // Convertir ANSI a HTML con colores (en vez de eliminarlos)
+        div.innerHTML = ansiToHtml(text);
         hermesOutput.appendChild(div);
         hermesOutput.scrollTop = hermesOutput.scrollHeight;
     }
@@ -7388,16 +7609,24 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                         // Agregar línea al mensaje de progreso (solo en data, no en DOM)
                         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
                         if (progressChatMsg) {
+                                // Replace literal \n (backslash + n) with actual newlines for cleaner formatting of multiline arguments/diffs
+                                const processedText = data.text.replace(/\\n/g, '\n');
                                 // Strip full ANSI (not just SGR) — handle OSC, CSI, etc.
-                                const rawText = data.text.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b./g, '');
+                                const rawText = processedText.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b./g, '');
                                 const lines = rawText.split('\n').filter(l => l.trim());
                                 for (const line of lines) {
                                     const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
                                     if (clean) {
                                         // Detectar tipo de línea y formatear sin truncar
                                         let formatted = '';
+                                        // Check for diff additions/deletions first to preserve diff formatting
+                                        if (clean.startsWith('+')) {
+                                            formatted = line; // Preserve original line with indentation
+                                        } else if (clean.startsWith('-')) {
+                                            formatted = line; // Preserve original line with indentation
+                                        }
                                         // Tool calls
-                                        if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
+                                        else if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
                                             const detail = clean.replace(/.*(?:tool_call|handle_function_call)[^:]*:\s*/i, '').trim();
                                             formatted = '🛠️ ' + (detail.length > 120 ? detail.slice(0, 117) + '...' : detail);
                                         }
@@ -7422,7 +7651,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                         }
                                         // Plain lines — show verbatim (no truncation)
                                         else {
-                                            formatted = '  ' + clean.slice(0, 200);
+                                            formatted = line.slice(0, 200);
                                         }
                                         if (formatted) {
                                             progressChatMsg.content += formatted + '\n';
@@ -7431,9 +7660,9 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 }
                             // Limitar líneas de progreso para no saturar
                             const lineCount = progressChatMsg.content.split('\n').length;
-                            if (lineCount > 50) {
+                            if (lineCount > 120) {
                                 const lines_arr = progressChatMsg.content.split('\n');
-                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-30).join('\n');
+                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-100).join('\n');
                             }
 
                             // --- UPDATE DOM DIRECTLY: no usar renderMessages() que es muy pesado ---
@@ -7447,7 +7676,9 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                     summaryEl.textContent = firstLine;
                                 }
                                 if (detailPre) {
-                                    detailPre.textContent = progressChatMsg.content;
+                                    const progressLines = progressChatMsg.content.split('\n').filter(l => l.trim());
+                                    const detailContent = progressLines.slice(1).join('\n');
+                                    detailPre.innerHTML = formatProgressLines(detailContent);
                                 }
                             } else {
                                 // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
@@ -7478,7 +7709,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                                         <span class="progress-summary">${escapeHtml(displaySummary)}</span>
                                                     </div>
                                                     <div class="hermes-progress-detail">
-                                                        <pre>${escapeHtml(detailContent)}</pre>
+                                                        <pre>${formatProgressLines(detailContent)}</pre>
                                                     </div>
                                                 `;
                                             } else {
@@ -7602,8 +7833,10 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
 
         const data = await res.json();
         // Strip ANSI escape codes
-        const response = stripAnsi(data.response || '(sin respuesta)');
+        const rawResponse = data.response;
+        const response = rawResponse ? stripAnsi(rawResponse) : '(El agente completó pero no devolvió respuesta de texto)';
         const backendChanges = data.changes || [];
+        const tokenUsage = data.usage || null;
 
         // ─── Actualizar progreso a estado finalizado pero visible ───
         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
@@ -7613,16 +7846,65 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             progressChatMsg.minimized = true;
             // Agregar línea de finalización al contenido del progreso
             const doneTime = new Date().toLocaleTimeString();
-            progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime + '\n';
-            // Agregar info de archivos modificados
+            progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime;
+
+            // ─── Token counter ───
+            if (tokenUsage && tokenUsage.total_tokens > 0) {
+                // Track cumulative tokens per chat
+                chat.totalTokens = (chat.totalTokens || 0) + tokenUsage.total_tokens;
+                chat.totalInputTokens = (chat.totalInputTokens || 0) + tokenUsage.input_tokens;
+                chat.totalOutputTokens = (chat.totalOutputTokens || 0) + tokenUsage.output_tokens;
+                chat.totalApiCalls = (chat.totalApiCalls || 0) + (tokenUsage.api_call_count || 0);
+
+                const parts = [];
+                parts.push(`🔢 ${tokenUsage.total_tokens.toLocaleString()} tokens`);
+                parts.push(`${tokenUsage.input_tokens.toLocaleString()} in / ${tokenUsage.output_tokens.toLocaleString()} out`);
+                if (tokenUsage.reasoning_tokens > 0) {
+                    parts.push(`${tokenUsage.reasoning_tokens.toLocaleString()} reasoning`);
+                }
+                if (tokenUsage.cache_read_tokens > 0) {
+                    parts.push(`${tokenUsage.cache_read_tokens.toLocaleString()} cache`);
+                }
+                if (tokenUsage.estimated_cost_usd > 0) {
+                    parts.push(`≈ $${tokenUsage.estimated_cost_usd.toFixed(4)}`);
+                }
+                progressChatMsg.content += ` | ${parts.join(' · ')}`;
+
+                // Mostrar acumulado de la conversación
+                if (chat.totalTokens > tokenUsage.total_tokens) {
+                    progressChatMsg.content += `\n📊 Conversación acumulada: ${chat.totalTokens.toLocaleString()} tokens (${chat.totalApiCalls} llamadas API)`;
+                }
+            }
+
+            progressChatMsg.content += '\n';
+            // Agregar info de archivos modificados con mini diff inline
             if (backendChanges.length > 0) {
-                const filesList = backendChanges.map(c => {
+                progressChatMsg.content += '\n📂 Archivos modificados:\n';
+                for (const c of backendChanges) {
                     const shortName = c.fileName.split(/[/\\]/).pop();
-                    return `📄 ${shortName} (+${c.added}/-${c.removed})`;
-                }).join('\n');
-                progressChatMsg.content += '\n📂 Archivos modificados:\n' + filesList + '\n';
+                    progressChatMsg.content += `  📄 ${shortName} (+${c.added}/-${c.removed})\n`;
+                    // Mostrar mini preview del git diff (primeras líneas cambiadas)
+                    if (c.diff && c.diff.trim()) {
+                        const diffLines = c.diff.split('\n');
+                        const changedLines = diffLines.filter(l =>
+                            (l.startsWith('+') && !l.startsWith('+++')) ||
+                            (l.startsWith('-') && !l.startsWith('---'))
+                        );
+                        // Mostrar hasta 5 líneas de preview por archivo
+                        const preview = changedLines.slice(0, 5);
+                        for (const dl of preview) {
+                            const prefix = dl.charAt(0);
+                            const content = dl.slice(1).substring(0, 100);
+                            const icon = prefix === '+' ? '➕' : '➖';
+                            progressChatMsg.content += `    ${icon} ${content}\n`;
+                        }
+                        if (changedLines.length > 5) {
+                            progressChatMsg.content += `    ... y ${changedLines.length - 5} líneas más\n`;
+                        }
+                    }
+                }
                 if (backendChanges.some(c => c.diff)) {
-                    progressChatMsg.content += '\n🔍 Usá el panel de "Cambios Realizados" para ver el diff completo.\n';
+                    progressChatMsg.content += '\n🔍 El diff completo está en el panel "Cambios Realizados".\n';
                 }
             }
             // Agregar el mensaje de respuesta del asistente

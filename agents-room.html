@@ -102,11 +102,11 @@
 
     #focus-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-      z-index: 15; opacity: 0; pointer-events: none; transition: opacity 0.4s;
+      z-index: 21; opacity: 0; pointer-events: none; transition: opacity 0.4s;
     }
     #focus-backdrop.open { opacity: 1; pointer-events: auto; }
     #focus-info-panel {
-      position: fixed; right: -340px; top: 0; bottom: 0; width: 320px; z-index: 20;
+      position: fixed; right: -340px; top: 0; bottom: 0; width: 320px; z-index: 26;
       background: rgba(8,8,15,0.93); border-left: 1px solid rgba(124,77,255,0.2);
       backdrop-filter: blur(16px); transition: right 0.4s cubic-bezier(0.4,0,0.2,1);
       padding: 24px 20px; font-family: 'SF Mono', 'Consolas', monospace;
@@ -141,6 +141,38 @@
       font-family: 'SF Mono', monospace;
     }
     #unfocus-hint.open { opacity: 1; }
+    /* ─── PROJECT INFO PANEL ─── */
+    #project-info-panel {
+      position: fixed; left: -360px; top: 0; bottom: 0; width: 340px; z-index: 21;
+      background: rgba(8,8,15,0.94); border-right: 1px solid rgba(255,149,0,0.2);
+      backdrop-filter: blur(16px); transition: left 0.4s cubic-bezier(0.4,0,0.2,1);
+      padding: 24px 20px; font-family: 'SF Mono', 'Consolas', monospace;
+      overflow-y: auto; display: flex; flex-direction: column;
+      box-shadow: 8px 0 32px rgba(0,0,0,0.5);
+    }
+    #project-info-panel.open { left: 0; }
+    .pi-header { display: flex; align-items: center; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,149,0,0.12); margin-bottom: 16px; }
+    .pi-icon { font-size: 1.8rem; line-height: 1; }
+    .pi-name { font-size: 1.0rem; font-weight: 700; color: rgba(255,255,255,0.9); }
+    .pi-subtitle { font-size: 0.5rem; color: rgba(255,149,0,0.5); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .pi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.65rem; font-family: inherit; transition: all 0.2s; }
+    .pi-close:hover { border-color: rgba(255,149,0,0.4); color: rgba(255,255,255,0.7); }
+    .pi-section { margin-bottom: 14px; }
+    .pi-section-title { font-size: 0.5rem; letter-spacing: 2px; color: rgba(255,149,0,0.5); text-transform: uppercase; margin-bottom: 6px; }
+    .pi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(255,149,0,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.6rem; }
+    .pi-row-label { color: rgba(255,255,255,0.35); }
+    .pi-row-value { color: rgba(255,255,255,0.7); word-break: break-all; max-width: 200px; text-align: right; }
+    .pi-row-value a { color: rgba(124,77,255,0.7); text-decoration: none; }
+    .pi-row-value a:hover { color: rgba(124,77,255,1); }
+    .pi-btn { display: inline-block; margin-top: 6px; padding: 5px 12px; background: rgba(255,149,0,0.1); border: 1px solid rgba(255,149,0,0.25); color: rgba(255,149,0,0.7); border-radius: 6px; cursor: pointer; font-size: 0.55rem; font-family: inherit; transition: all 0.2s; text-decoration: none; }
+    .pi-btn:hover { background: rgba(255,149,0,0.18); border-color: rgba(255,149,0,0.5); color: rgba(255,149,0,0.9); }
+    .pi-change-item { font-size: 0.5rem; color: rgba(255,255,255,0.35); padding: 3px 6px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 2px; border-left: 2px solid rgba(255,149,0,0.15); line-height: 1.5; }
+    .pi-flame-indicator { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; color: rgba(255,149,0,0.6); }
+    .pi-flame-dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,149,0,0.5); box-shadow: 0 0 12px rgba(255,149,0,0.4); }
+    .pi-flame-dot.active { background: #ff9500; box-shadow: 0 0 16px #ff9500; animation: piFlamePulse 1.2s ease-in-out infinite; }
+    .pi-flame-dot.off { background: #333; box-shadow: none; }
+    @keyframes piFlamePulse { 0%, 100% { box-shadow: 0 0 12px #ff9500; } 50% { box-shadow: 0 0 24px #ffaa33; } }
+    .pi-empty { font-size: 0.5rem; color: rgba(255,255,255,0.2); text-align: center; padding: 12px; }
     @media (max-width: 768px) {
       #calib-panel { width: 220px; }
     }
@@ -152,7 +184,6 @@
 
   <div id="toolbar">
     <button id="calib-btn" title="Calibrar escena">◈ Calibrar</button>
-    <button id="refresh-btn">⟳ Actualizar</button>
   </div>
 
   <div id="calib-panel">
@@ -229,6 +260,63 @@
     </div>
   </div>
   <div id="unfocus-hint">✦ Click fuera o ESC para volver ✦</div>
+
+  <div id="project-info-panel">
+    <div class="pi-header">
+      <div>
+        <div class="pi-name" id="pi-name">—</div>
+        <div class="pi-subtitle" id="pi-subtitle">◈ PROYECTO</div>
+      </div>
+      <button class="pi-close" id="pi-close-btn">✕ Cerrar</button>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">⚡ Actividad</div>
+      <div class="pi-row">
+        <span class="pi-row-label">Estado</span>
+        <span class="pi-flame-indicator" id="pi-flame-status">
+          <span class="pi-flame-dot off" id="pi-flame-dot"></span>
+          <span id="pi-flame-text">sin agentes activos</span>
+        </span>
+      </div>
+      <div class="pi-row">
+        <span class="pi-row-label">Agentes activos</span>
+        <span class="pi-row-value" id="pi-active-agents">0</span>
+      </div>
+      <div class="pi-row">
+        <span class="pi-row-label">Total agentes</span>
+        <span class="pi-row-value" id="pi-total-agents">0</span>
+      </div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">📂 Directorio</div>
+      <div class="pi-row">
+        <span class="pi-row-label">Ruta</span>
+        <span class="pi-row-value" id="pi-folder" style="font-size:0.5rem;">—</span>
+      </div>
+      <button class="pi-btn" id="pi-open-folder-btn" style="display:none;">📂 Abrir carpeta</button>
+    </div>
+    <div class="pi-section" id="pi-github-section" style="display:none;">
+      <div class="pi-section-title">🔗 Repositorio</div>
+      <div class="pi-row">
+        <span class="pi-row-label">GitHub</span>
+        <span class="pi-row-value"><a href="#" id="pi-github-link" target="_blank">—</a></span>
+      </div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">📝 Descripción</div>
+      <div class="pi-last-msg" id="pi-description" style="font-size:0.55rem;color:rgba(255,255,255,0.4);line-height:1.6;background:rgba(255,255,255,0.02);padding:8px;border-radius:6px;">Sin descripción</div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">🕐 Últimos Cambios</div>
+      <div id="pi-changes"><span class="pi-empty">Sin cambios recientes</span></div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">Tags</div>
+      <div class="fi-properties" id="pi-tags">
+        <span class="fi-tag">◈ Proyecto</span>
+      </div>
+    </div>
+  </div>
 
   <script type="importmap">
   {
@@ -317,11 +405,15 @@ let focusState = null;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let clickables = [];
+let pedestalClickables = []; // Pedestal meshes for project info clicks
 let isFocusMode = false;
+let isProjectMode = false; // Track if project info panel is open
 
 // ─── AGENT TRACKING ───
 // Mapa agentId → {mage, label, nodeRef, agentData, exiting}
 const agentMap = new Map();
+// Project data from /api/admin/projects
+let projectDataMap = {}; // projKey → project info
 
 // ─── SCENE SETUP ───
 const scene = new THREE.Scene();
@@ -345,6 +437,7 @@ labelRenderer.domElement.style.position = 'absolute';
 labelRenderer.domElement.style.top = '0';
 labelRenderer.domElement.style.left = '0';
 labelRenderer.domElement.style.pointerEvents = 'none';
+labelRenderer.domElement.style.zIndex = '100';
 document.body.prepend(labelRenderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -475,6 +568,106 @@ function createGroundFloor() {
 }
 
 // ─── PROJECT NODE CREATION ───
+// ─── FLAME ───
+// Creates a magical flame on top of a pedestal
+// The flame scales with activeAgentCount: 0 = off, 1 = small, 3+ = large
+function createFlame(hue, _projKey) {
+  const flameGroup = new THREE.Group();
+  flameGroup.name = 'flame';
+
+  // Flame core (cone — the main fire shape)
+  const flameColor = new THREE.Color(`hsl(${hue + 20}, 80%, 65%)`);
+  const coreGeo = new THREE.ConeGeometry(5, 30, 8);
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: flameColor,
+    transparent: true,
+    opacity: 0.7,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.position.y = 18;
+  core.name = 'flameCore';
+  flameGroup.add(core);
+
+  // Glow sphere at base of flame
+  const glowColor = new THREE.Color(`hsl(${hue + 15}, 90%, 55%)`);
+  const glowGeo = new THREE.SphereGeometry(6, 8, 8);
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: glowColor,
+    transparent: true,
+    opacity: 0.4,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  glow.position.y = 8;
+  glow.name = 'flameGlow';
+  flameGroup.add(glow);
+
+  // Ring of small flame particles around the core
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const pGeo = new THREE.SphereGeometry(2, 4, 4);
+    const pMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(`hsl(${hue + 10 + i * 5}, 90%, 70%)`),
+      transparent: true,
+      opacity: 0.5,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const particle = new THREE.Mesh(pGeo, pMat);
+    particle.position.set(Math.cos(angle) * 6, 8 + Math.random() * 15, Math.sin(angle) * 6);
+    particle.userData = { baseAngle: angle, baseRadius: 6, height: particle.position.y, speed: 0.8 + Math.random() * 1.5, phase: Math.random() * Math.PI * 2 };
+    particle.name = 'flameParticle';
+    flameGroup.add(particle);
+  }
+
+  // Store references for animation
+  flameGroup.userData._projKey = _projKey;
+  flameGroup.userData.hue = hue;
+  flameGroup.visible = false; // Hidden by default — shown when active agents > 0
+
+  return flameGroup;
+}
+
+function updateFlameScale(flameGroup, activeAgentCount) {
+  if (!flameGroup) return;
+  const count = Math.max(0, activeAgentCount);
+  if (count === 0) {
+    flameGroup.visible = false;
+    return;
+  }
+
+  flameGroup.visible = true;
+  // Scale: 1 agent = 1.0, 2 = 1.5, 3 = 2.0, 4+ = 2.5
+  const targetScale = 0.8 + count * 0.4;
+  const s = Math.min(targetScale, 3.5);
+
+  // Animate core
+  const core = flameGroup.getObjectByName('flameCore');
+  if (core) {
+    core.scale.set(s, s, s);
+    core.material.opacity = Math.min(0.5 + count * 0.15, 0.85);
+  }
+
+  // Animate glow
+  const glowObj = flameGroup.getObjectByName('flameGlow');
+  if (glowObj) {
+    glowObj.scale.set(s * 0.8, s * 0.6, s * 0.8);
+    glowObj.material.opacity = Math.min(0.3 + count * 0.12, 0.7);
+  }
+
+  // Animate particles
+  flameGroup.children.forEach(child => {
+    if (child.name === 'flameParticle') {
+      child.scale.setScalar(0.7 + count * 0.2);
+      child.material.opacity = Math.min(0.3 + count * 0.1, 0.7);
+    }
+  });
+}
+
+// ─── PROJECT NODE (PEDESTAL) ───
 function createProjectNode(projectName, projectId, hue) {
   const group = new THREE.Group();
   const yPos = 0;
@@ -557,6 +750,20 @@ function createProjectNode(projectName, projectId, hue) {
   const pointLight = new THREE.PointLight(colorLight, 0.4, 100);
   pointLight.position.set(0, 30, 0);
   group.add(pointLight);
+
+  // Add magical flame on top of pedestal
+  const flame = createFlame(hue, projectId);
+  flame.position.y = 7;
+  group.add(flame);
+  group.userData.flame = flame;
+
+  // Register pedestal base and ring as clickable for project info
+  base.userData._pedestalProjId = projectId;
+  top.userData._pedestalProjId = projectId;
+  ring.userData._pedestalProjId = projectId;
+  pedestalClickables.push({ mesh: base, projId: projectId, group });
+  pedestalClickables.push({ mesh: top, projId: projectId, group });
+  pedestalClickables.push({ mesh: ring, projId: projectId, group });
 
   return group;
 }
@@ -707,9 +914,11 @@ function buildMage(agent, index, total, isGhost = false) {
   });
   const armL = new THREE.Mesh(GEO.cy1x2x14, armMat);
   armL.position.set(-13, 18, 0); armL.rotation.z = 0.3;
+  armL.name = 'armL';
   group.add(armL);
   const armR = new THREE.Mesh(GEO.cy1x2x14, armMat);
   armR.position.set(13, 18, 0); armR.rotation.z = -0.3;
+  armR.name = 'armR';
   group.add(armR);
 
   // Hands
@@ -718,9 +927,9 @@ function buildMage(agent, index, total, isGhost = false) {
     roughness: 0.6, transparent: isGhost, opacity: Math.min(bodyOpacity + 0.15, 1),
   });
   const handL = new THREE.Mesh(GEO.sphere22h, handMat);
-  handL.position.set(-15, 13, 0); group.add(handL);
+  handL.position.set(-2, -7, 0); armL.add(handL);
   const handR = new THREE.Mesh(GEO.sphere22h, handMat);
-  handR.position.set(15, 13, 0); group.add(handR);
+  handR.position.set(2, -7, 0); armR.add(handR);
 
   if (!isGhost) {
     // Book + pedestal
@@ -877,10 +1086,16 @@ function buildMage(agent, index, total, isGhost = false) {
     animEnter: 0,      // 0..1 fade-in progress (0=invisible, 1=done)
     animExit: 0,       // 0..1 fade-out progress (0=done, 1=visible)
     agentId: agent.id || agent.pid,
+    // Arm references + base rotations for animation
+    armL,
+    armR,
+    armBaseRotL: armL.rotation.z,
+    armBaseRotR: armR.rotation.z,
   };
 
-  // Start invisible — animateIn will reveal it
-  group.scale.set(0.001, 0.001, 0.001);
+  // Start at full scale — scale animation removed to prevent stuck-tiny bug.
+  // Label fades in via CSS opacity controlled by animEnter in the animation loop.
+  group.scale.set(1, 1, 1);
   group.userData.animEnter = 0;
 
   return group;
@@ -912,7 +1127,7 @@ function buildLabel(agent, index) {
 
   const nameEl = document.createElement('div');
   nameEl.style.cssText = `color: ${nameColor}; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 20px rgba(124,77,255,0.3);`;
-  const displayName = agent.sessionTitle || agent.name || agent.id.slice(0, 10);
+  const displayName = agent.sessionTitle || agent.name || agent.agentName || agent.id.slice(0, 10);
   nameEl.textContent = displayName;
   div.appendChild(nameEl);
 
@@ -1116,6 +1331,8 @@ function repositionAllAgents(newAgents) {
       // Snap to new position immediately (no orbit drift — targetPos used in animate)
       mage.position.x = gx;
       mage.position.z = gz;
+      // Face the pedestal
+      mage.lookAt(px, mage.position.y, pz);
 
       if (entry.label) {
         entry.label.position.x = gx;
@@ -1164,6 +1381,8 @@ function addAgentToScene(agent, allAgents) {
   const gz = pz + Math.sin(orbitAngle) * orbitRadius;
 
   mage.position.set(gx, 0, gz);
+  // Face the project pedestal
+  mage.lookAt(px, 0, pz);
   mage.userData.targetPos = mage.position.clone();
   mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
   mage.userData.orbitAngle = orbitAngle;
@@ -1182,10 +1401,11 @@ function addAgentToScene(agent, allAgents) {
 
   const label = buildLabel(agent, agentIdx);
   label.position.set(gx, 70, gz);
+  label.element.style.opacity = '1'; // IMMEDIATELY visible — no fade-in for names
   scene.add(label);
   mage.userData.label = label;
 
-  // Start enter animation
+  // Start enter animation (body glow ramp-up only, label is already visible)
   mage.userData.animEnter = 0.01; // tiny value triggers the animation
 
   agentMap.set(id, { mage, label, agentData: agent, exiting: false, animatingIn: true });
@@ -1333,6 +1553,8 @@ function rebuildScene() {
       const gz = pz + Math.sin(orbitAngle) * orbitRadius;
 
       mage.position.set(gx, 0, gz);
+      // Face the project pedestal
+      mage.lookAt(px, 0, pz);
       mage.userData.targetPos = mage.position.clone();
       mage.userData.orbitCenter = new THREE.Vector3(px, 0, pz);
       mage.userData.orbitAngle = orbitAngle;
@@ -1351,6 +1573,7 @@ function rebuildScene() {
 
       const label = buildLabel(agent, originalIndex);
       label.position.set(gx, 70, gz);
+      label.element.style.opacity = '1'; // IMMEDIATELY visible — no fade-in for names
       scene.add(label);
       mage.userData.label = label;
 
@@ -1358,7 +1581,7 @@ function rebuildScene() {
       const id = agent.id || agent.pid;
       agentMap.set(id, { mage, label, agentData: agent, exiting: false, animatingIn: true });
 
-      // Enter animation starts on next frame
+      // Enter animation starts on next frame (body glow only, label already visible)
       mage.userData.animEnter = 0.01;
     });
   });
@@ -1411,7 +1634,9 @@ function cleanupScene() {
 
   cleanupCharParticles();
   clickables.length = 0;
+  pedestalClickables.length = 0;
   if (isFocusMode) unfocusAgent();
+  if (isProjectMode) hideProjectInfo();
 }
 
 // ─── PARTICLES ───
@@ -1468,7 +1693,7 @@ function updatePanel() {
   let html = '';
   for (const a of agents) {
     const s = a.status || 'idle';
-    const name = a.name || a.id.slice(0, 8);
+    const name = a.sessionTitle || a.name || a.agentName || a.id.slice(0, 8);
     const model = a.model || '—';
     const isGhost = a.isExternal;
     const tagClass = isGhost ? 'ghost' : '';
@@ -1543,7 +1768,7 @@ function updateFocusPanel(agent) {
 
   const isGhost = agent.isExternal;
   const isOff = agent.status === 'off';
-  name.textContent = agent.name || agent.id.slice(0, 10);
+  name.textContent = agent.sessionTitle || agent.name || agent.agentName || agent.id.slice(0, 10);
   label.textContent = isOff ? '⏻ HERMES APAGADO' : (isGhost ? '👻 HERMES EXTERNO' : (agent.isHermes ? '⚡ HERMES AGENT' : '✦ AI AGENT'));
   const s = agent.status || 'idle';
   statusEl.textContent = isGhost ? (agent.sessionTitle ? agent.sessionTitle : 'externo') : (isOff ? 'apagado' : s);
@@ -1590,6 +1815,151 @@ function updateFocusPanel(agent) {
   }
 }
 
+// ─── PROJECT DATA FETCH ───
+async function fetchProjectData() {
+  try {
+    const res = await fetch(`${API}/admin/projects`);
+    const data = await res.json();
+    const projects = data.projects || [];
+    const map = {};
+    for (const p of projects) {
+      map[p.id] = p;
+    }
+    projectDataMap = map;
+    updateAllFlames();
+    // Also update project info panel if open
+    if (isProjectMode && currentProjectKey) {
+      updateProjectInfoPanel(currentProjectKey);
+    }
+  } catch (e) {
+    console.error('[AGENTS-ROOM] Fetch projects error:', e.message);
+  }
+}
+
+// Update all pedestal flames based on project data
+function updateAllFlames() {
+  floorGroup.children.forEach(child => {
+    if (child.userData && child.userData._projKey) {
+      const projId = child.userData._projKey;
+      const projData = projectDataMap[projId];
+      const activeCount = projData ? projData.activeAgents : 0;
+      const flame = child.userData.flame;
+      if (flame) {
+        updateFlameScale(flame, activeCount);
+      }
+    }
+  });
+}
+
+// ─── PROJECT INFO PANEL ───
+let currentProjectKey = null;
+
+function showProjectInfo(projKey) {
+  if (isProjectMode && currentProjectKey === projKey) {
+    hideProjectInfo();
+    return;
+  }
+
+  currentProjectKey = projKey;
+  isProjectMode = true;
+  document.getElementById('project-info-panel').classList.add('open');
+  updateProjectInfoPanel(projKey);
+}
+
+function hideProjectInfo() {
+  isProjectMode = false;
+  currentProjectKey = null;
+  document.getElementById('project-info-panel').classList.remove('open');
+}
+
+function updateProjectInfoPanel(projKey) {
+  const projData = projectDataMap[projKey];
+  const agentsInProj = agents.filter(a => (a.projectId || '__default__') === projKey);
+  const activeCount = projData ? projData.activeAgents : agentsInProj.filter(a => a.status === 'thinking' || a.status === 'running').length;
+  const totalCount = projData ? projData.totalAgents : agentsInProj.length;
+
+  // Name
+  document.getElementById('pi-name').textContent = projData ? projData.name : projKey;
+
+  // Flame status
+  const flameDot = document.getElementById('pi-flame-dot');
+  const flameText = document.getElementById('pi-flame-text');
+  if (activeCount > 0) {
+    flameDot.className = 'pi-flame-dot active';
+    flameText.textContent = activeCount === 1 ? '1 agente activo' : `${activeCount} agentes activos`;
+  } else {
+    flameDot.className = 'pi-flame-dot off';
+    flameText.textContent = 'sin agentes activos';
+  }
+
+  document.getElementById('pi-active-agents').textContent = activeCount;
+  document.getElementById('pi-total-agents').textContent = totalCount;
+
+  // Folder
+  const folder = projData ? projData.folder : '';
+  const folderEl = document.getElementById('pi-folder');
+  const openBtn = document.getElementById('pi-open-folder-btn');
+  if (folder) {
+    folderEl.textContent = folder;
+    openBtn.style.display = 'inline-block';
+    openBtn.onclick = () => {
+      // Open folder via API
+      fetch(`${API}/utils/open-folder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderPath: folder })
+      }).catch(() => {});
+    };
+  } else {
+    folderEl.textContent = '—';
+    openBtn.style.display = 'none';
+  }
+
+  // GitHub
+  const githubUrl = projData ? projData.github_url : '';
+  const ghSection = document.getElementById('pi-github-section');
+  const ghLink = document.getElementById('pi-github-link');
+  if (githubUrl) {
+    ghSection.style.display = '';
+    ghLink.href = githubUrl;
+    ghLink.textContent = githubUrl.replace('https://github.com/', '');
+  } else {
+    ghSection.style.display = 'none';
+  }
+
+  // Description
+  const descEl = document.getElementById('pi-description');
+  descEl.textContent = (projData && projData.description) ? projData.description : 'Sin descripción';
+
+  // Recent changes
+  const changesEl = document.getElementById('pi-changes');
+  if (projData && projData.recentChanges && projData.recentChanges.length > 0) {
+    changesEl.innerHTML = projData.recentChanges.map(c => `<div class="pi-change-item">▸ ${c}</div>`).join('');
+  } else {
+    changesEl.innerHTML = '<span class="pi-empty">Sin cambios recientes</span>';
+  }
+
+  // Tags
+  const tagsEl = document.getElementById('pi-tags');
+  tagsEl.innerHTML = '';
+  const projTag = document.createElement('span');
+  projTag.className = 'fi-tag';
+  projTag.textContent = '◈ ' + (projData ? projData.name.slice(0, 20) : projKey.slice(0, 20));
+  tagsEl.appendChild(projTag);
+  if (projData && projData.model) {
+    const modelTag = document.createElement('span');
+    modelTag.className = 'fi-tag';
+    modelTag.textContent = projData.model.slice(0, 15);
+    tagsEl.appendChild(modelTag);
+  }
+  if (githubUrl) {
+    const ghTag = document.createElement('span');
+    ghTag.className = 'fi-tag';
+    ghTag.textContent = '🔗 GitHub';
+    tagsEl.appendChild(ghTag);
+  }
+}
+
 // ─── FETCH AGENTS ───
 let lastAgentData = '';
 window.refreshAgents = async function(forceRebuild = false) {
@@ -1599,7 +1969,7 @@ window.refreshAgents = async function(forceRebuild = false) {
     const newAgents = data.agents || [];
 
     // Comparar si cambiaron
-    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, isExternal: a.isExternal, projectId: a.projectId })));
+    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, sessionTitle: a.sessionTitle, isExternal: a.isExternal, projectId: a.projectId })));
     if (dataKey === lastAgentData && agents.length > 0 && !forceRebuild) {
       // Sin cambios estructurales, solo actualizar estados
       agents = newAgents;
@@ -1645,8 +2015,25 @@ window.refreshAgents = async function(forceRebuild = false) {
 
     if (needsFullRebuild) {
       rebuildScene();
+      // Refresh flame data after rebuild
+      fetchProjectData();
+      // Re-sync focus panel if open (rebuild clears mage refs)
+      if (isFocusMode && focusState) {
+        const agentData = allAgentsWithData[focusState.agentIndex];
+        if (agentData) {
+          updateFocusPanel(agentData);
+          // Re-find mage reference (old one was destroyed)
+          for (const c of clickables) {
+            if (c.agentIndex === focusState.agentIndex) {
+              focusState.mage = c.mage;
+              break;
+            }
+          }
+        }
+      }
     } else {
       incrementalUpdate(newAgents);
+      updateAllFlames();
     }
   } catch(e) {
     console.error('[AGENTS-ROOM] Fetch error:', e.message);
@@ -1705,21 +2092,18 @@ function animate() {
     if (!mage.userData) return;
     const ud = mage.userData;
 
-    // Enter animation: scale 0 → 1 with ease-out bounce
+    // Enter animation: label stays visible at opacity 1 (set at creation)
     if (ud.animEnter > 0 && ud.animEnter < 1) {
-      ud.animEnter = Math.min(ud.animEnter + dt * 2.5, 1);
-      // Ease-out cubic
-      const s = 1 - Math.pow(1 - ud.animEnter, 3);
-      mage.scale.set(s, s, s);
-      // Labels fade in
-      if (ud.label) {
-        ud.label.element.style.opacity = ud.animEnter;
-      }
+      ud.animEnter = Math.min(ud.animEnter + dt * 3.0, 1);
+      // ALWAYS keep ghost mages at full scale during animation
+      mage.scale.set(1, 1, 1);
       // Glow ramps up
       if (ud.aura) {
         ud.aura.material.opacity = ud.animEnter * 0.06;
       }
-    } else if (ud.animEnter >= 1) {
+    }
+    // Safety: always enforce full scale when not exiting (prevents stuck-tiny bug)
+    if (!ud.animExit && ud.animEnter >= 1) {
       mage.scale.set(1, 1, 1);
       if (ud.label) {
         ud.label.element.style.opacity = 1;
@@ -1732,6 +2116,7 @@ function animate() {
       // Ease-in cubic
       const s = 1 - Math.pow(1 - ud.animExit, 3);
       mage.scale.set(s, s, s);
+      // Label dissolves out with the mage
       if (ud.label) {
         ud.label.element.style.opacity = ud.animExit;
       }
@@ -1751,6 +2136,8 @@ function animate() {
     const newZ = ud.orbitCenter.z + Math.sin(ud.orbitAngle) * ud.orbitRadius;
     mage.position.x = newX;
     mage.position.z = newZ;
+    // Face the pedestal (orbitCenter) — mage +Z faces center
+    mage.lookAt(ud.orbitCenter.x, mage.position.y, ud.orbitCenter.z);
     ud.targetPos.x = newX;
     ud.targetPos.z = newZ;
     if (ud.label) {
@@ -1779,6 +2166,15 @@ function animate() {
       }
       if (ud.tip) {
         ud.tip.material.emissiveIntensity = 0.1 + Math.sin(t * 1.5 + i * 1.3) * 0.1;
+      }
+      // Arm wave animation for active ghosts
+      const ghostActive = ud.agentStatus === 'running' || ud.agentStatus === 'thinking';
+      if (ghostActive && ud.armL && ud.armR) {
+        const wave = Math.sin(t * 4.0 + i * 1.5);
+        ud.armL.position.y = 18 + wave * 6;
+        ud.armR.position.y = 18 - wave * 6;
+        ud.armL.rotation.z = ud.armBaseRotL + wave * 0.5;
+        ud.armR.rotation.z = ud.armBaseRotR - wave * 0.5;
       }
       return;
     }
@@ -1866,6 +2262,15 @@ function animate() {
     const rc = ud.runeCircle;
     if (rc) { rc.visible = isActive; if (isActive) { rc.material.opacity = 0.07 + Math.sin(t * 0.5 + i * 0.5) * 0.045; rc.rotation.z = t * 0.15 + i * 1.5; } }
 
+    // Arm animation for active mages (non-ghost)
+    if (isActive && ud.armL && ud.armR) {
+      const armWave = Math.sin(t * 4.0 + i * 1.5);
+      ud.armL.position.y = 18 + armWave * 8;
+      ud.armR.position.y = 18 - armWave * 8;
+      ud.armL.rotation.z = ud.armBaseRotL + armWave * 0.6;
+      ud.armR.rotation.z = ud.armBaseRotR - armWave * 0.6;
+    }
+
     // Character particles
     if (isActive && mageParticles[i] && Math.random() < 0.7) {
       const worldPos = new THREE.Vector3();
@@ -1940,7 +2345,31 @@ function animate() {
         child.position.y = ud.yBase + Math.sin(t * ud.speed + ud.phase) * 3;
         child.material.rotation = t * 0.1;
       }
+      // Flame particles animation
+      if (child.name === 'flameParticle' && child.userData) {
+        const fd = child.userData;
+        const wobble = Math.sin(t * fd.speed + fd.phase) * 3;
+        child.position.y = fd.height + wobble;
+        const angle = fd.baseAngle + t * 0.5;
+        child.position.x = Math.cos(angle) * (fd.baseRadius + Math.sin(t * 1.2) * 2);
+        child.position.z = Math.sin(angle) * (fd.baseRadius + Math.cos(t * 0.9) * 2);
+      }
     });
+    // Animate flame core scale wobble
+    const flame = floor.userData && floor.userData.flame;
+    if (flame && flame.visible) {
+      const core = flame.getObjectByName('flameCore');
+      if (core) {
+        core.rotation.y += dt * 0.5;
+        const coreWobble = 1 + Math.sin(t * 2.5) * 0.08;
+        core.scale.x *= coreWobble;
+        core.scale.z *= coreWobble;
+      }
+      const glowObj = flame.getObjectByName('flameGlow');
+      if (glowObj) {
+        glowObj.material.opacity = glowObj.material.opacity * 0.95 + (0.3 + Math.sin(t * 1.8) * 0.1) * 0.05;
+      }
+    }
   });
 
   controls.update();
@@ -1959,7 +2388,9 @@ window.addEventListener('resize', () => {
 // ─── START ───
 document.getElementById('loading').textContent = '✦ CONJURING ✦';
 refreshAgents();
+fetchProjectData();
 setInterval(refreshAgents, 8000);
+setInterval(fetchProjectData, 15000); // Refresh project data every 15s for active counts
 animate();
 
 // ─── CALIBRATION UI ───
@@ -1998,11 +2429,6 @@ calibReset.addEventListener('click', () => {
   applyCalibration();
 });
 
-// ─── REFRESH BUTTON ───
-document.getElementById('refresh-btn').addEventListener('click', () => {
-  window.refreshAgents(true);
-});
-
 // ─── BORRAR ETIQUETAS AL ABRIR ───
 // Cerrar panel si se hace clic fuera
 document.addEventListener('click', (e) => {
@@ -2021,6 +2447,7 @@ const bc = new BroadcastChannel('jp-agents-room');
 bc.onmessage = (event) => {
   if (event.data && (event.data.type === 'agents-updated' || event.data.type === 'state-updated')) {
     refreshAgents();
+    fetchProjectData();
   }
 };
 window.addEventListener('beforeunload', () => bc.close());
@@ -2037,6 +2464,7 @@ function connectWebSocket() {
         if (data.event === 'sync:stateUpdated' || data.event === 'hermes:status') {
           console.log('[AGENTS-ROOM] Sincronización recibida vía WebSocket. Refrescando agentes...');
           refreshAgents();
+          fetchProjectData();
         }
       } catch (e) {}
     };
@@ -2053,6 +2481,7 @@ connectWebSocket();
 
 // ─── CLICK RAYCASTER ───
 renderer.domElement.addEventListener('click', (event) => {
+  // If project info panel is open and user clicks outside, close it
   if (isFocusMode) { unfocusAgent(); return; }
 
   const rect = renderer.domElement.getBoundingClientRect();
@@ -2060,6 +2489,20 @@ renderer.domElement.addEventListener('click', (event) => {
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
   raycaster.setFromCamera(pointer, camera);
+
+  // First check pedestal clicks
+  const pedestalMeshes = pedestalClickables.map(c => c.mesh);
+  const pedIntersects = raycaster.intersectObjects(pedestalMeshes);
+  if (pedIntersects.length > 0) {
+    const hitMesh = pedIntersects[0].object;
+    const ped = pedestalClickables.find(c => c.mesh === hitMesh);
+    if (ped) {
+      showProjectInfo(ped.projId);
+      return;
+    }
+  }
+
+  // Then check agent clicks
   const meshes = clickables.map(c => c.mesh);
   const intersects = raycaster.intersectObjects(meshes);
 
@@ -2072,11 +2515,16 @@ renderer.domElement.addEventListener('click', (event) => {
 
 // ─── ESC KEY ───
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && isFocusMode) unfocusAgent();
+  if (event.key === 'Escape') {
+    if (isProjectMode) { hideProjectInfo(); return; }
+    if (isFocusMode) { unfocusAgent(); return; }
+  }
 });
 
 // ─── FI CLOSE BUTTON ───
 document.getElementById('fi-close-btn').addEventListener('click', unfocusAgent);
+// ─── PI CLOSE BUTTON ───
+document.getElementById('pi-close-btn').addEventListener('click', hideProjectInfo);
   </script>
 </body>
 </html>

@@ -352,6 +352,27 @@ app.post('/api/session-changes/clear', async (req, res) => {
     }
 });
 
+// Set active project folder (called by Hermes agent or frontend)
+app.post('/api/projects/set-folder', async (req, res) => {
+    try {
+        const { projectId, folderPath } = req.body;
+        if (!projectId || !folderPath) {
+            return res.status(400).json({ error: 'projectId y folderPath son requeridos' });
+        }
+        const sessions = await loadSessions();
+        const project = sessions.projects?.find(p => p.id === projectId);
+        if (!project) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        project.folder = folderPath;
+        await saveSessions(sessions);
+        console.log(`[PROJECT] Carpeta actualizada para ${projectId}: ${folderPath}`);
+        res.json({ success: true, folder: folderPath });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- LangGraph Chat Endpoint ---
 
 app.post('/api/agent/chat', async (req, res) => {
@@ -455,47 +476,126 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 
 });
 
-// Native Folder Picker using PowerShell (Improved for stability and syntax)
-app.get('/api/utils/pick-folder', async (req, res) => {
-    console.log('[SERVER] Solicitando selector de carpetas (NATIVE)...');
+// ─── Native Folder Picker using PowerShell Shell.Application (sin Windows Forms → ultra confiable) ───
+let pickFolderInProgress = false;
+let pickFolderChildPid = null;
 
-    // Ensure statements are separated by semicolons
-    const psCommand = `
-        Add-Type -AssemblyName System.Windows.Forms | Out-Null;
-        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog;
-        $dialog.Description = "Selecciona la carpeta raíz de tu proyecto";
-        $defaultPath = "D:/Programacion/jpagents/proyects";
-        if (Test-Path $defaultPath) { $dialog.SelectedPath = $defaultPath };
-        $dialog.ShowNewFolderButton = $true;
-        $form = New-Object System.Windows.Forms.Form;
-        $form.TopMost = $true;
-        $result = $dialog.ShowDialog($form);
-        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-            $dialog.SelectedPath
+async function killPickFolderProcess() {
+    const pidToKill = pickFolderChildPid;
+    // Limpiar estado inmediatamente para que el handler close/error no lo pise después
+    pickFolderChildPid = null;
+    pickFolderInProgress = false;
+    if (!pidToKill) return;
+    // Intentar matar el proceso con taskkill (solo el PID específico, sin fallback masivo)
+    try {
+        await new Promise((resolve) => {
+            exec(`taskkill /PID ${pidToKill} /T /F 2>nul`, () => resolve());
+        });
+    } catch (_) {
+        // Best-effort
+    }
+}
+
+app.get('/api/utils/pick-folder', async (req, res) => {
+    // ── Guarda de concurrencia: si ya hay un pick en progreso, esperar a que termine ──
+    if (pickFolderInProgress) {
+        console.log('[SERVER] ⚠️ Pick-folder ya en progreso (PID ' + pickFolderChildPid + ') — esperando 2s y reintentando...');
+        // No matamos el proceso existente — la UX es mejor si esperamos a que el usuario termine
+        await new Promise(r => setTimeout(r, 2000));
+        if (pickFolderInProgress) {
+            // Si después de 2s sigue activo, lo matamos y procedemos
+            console.log('[SERVER] ⚠️ Pick-folder sigue activo tras espera — matando proceso anterior...');
+            await killPickFolderProcess();
+            await new Promise(r => setTimeout(r, 500));
+        } else {
+            // Ya terminó, podemos proceder
         }
-        $form.Dispose();
+    }
+
+    console.log('[SERVER] Solicitando selector de carpetas nativo (Shell.Application)...');
+    pickFolderInProgress = true;
+
+    // Shell.Application BrowseForFolder: nativo, sin Windows Forms, ultra confiable
+    const psCommand = `
+        $shell = New-Object -ComObject Shell.Application;
+        $defaultPath = "D:\\Programacion\\jpagents\\proyects";
+        $folder = $shell.BrowseForFolder(0, "Selecciona la carpeta raiz de tu proyecto", 0, $defaultPath);
+        if ($folder) {
+            $folder.Self.Path
+        }
     `.trim();
 
     const args = [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-STA',
         '-Command',
         psCommand
     ];
 
-    try {
-        console.log('[SERVER] Ejecutando PowerShell para selector de carpetas...');
-        const { stdout, stderr } = await execFileAsync('powershell.exe', args, { timeout: 60000 });
+    // Usar spawn en vez de execFile para poder trackear y matar el proceso hijo
+    const child = spawn('powershell.exe', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+    });
+
+    pickFolderChildPid = child.pid;
+    console.log('[SERVER] PowerShell (Shell.Application) spawn con PID:', child.pid);
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    // Timeout de 25s — suficiente para que el usuario elija, no tan largo que se sienta colgado
+    const timeout = setTimeout(() => {
+        console.log('[SERVER] ⏰ Timeout pick-folder (25s) — matando proceso...');
+        killPickFolderProcess();
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Selector de carpetas cancelado por timeout (25s).' });
+        }
+    }, 25000);
+
+    child.on('error', (err) => {
+        clearTimeout(timeout);
+        console.error('[SERVER] Fallo crítico en pick-folder:', err.message);
+        if (pickFolderChildPid === child.pid) {
+            pickFolderInProgress = false;
+            pickFolderChildPid = null;
+        }
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'No se pudo abrir el selector de carpetas.', details: err.message });
+        }
+    });
+
+    child.on('close', (code) => {
+        clearTimeout(timeout);
+        const isCurrent = pickFolderChildPid === child.pid;
+        if (isCurrent) {
+            pickFolderInProgress = false;
+            pickFolderChildPid = null;
+        }
+
+        if (res.headersSent) return;
 
         const pickedPath = stdout.trim();
-        console.log('[SERVER] PowerShell Result:', pickedPath || '(Cancelado)');
-        res.json({ path: pickedPath });
-    } catch (e) {
-        console.error('[SERVER] Fallo crítico en pick-folder:', e.message);
-        res.status(500).json({ error: 'No se pudo abrir el selector de carpetas.', details: e.message });
-    }
+        if (stderr) {
+            console.log('[SERVER] PowerShell stderr:', stderr.trim());
+        }
+        console.log('[SERVER] Shell.Application Result:', pickedPath || `(Cancelado, exit code: ${code})`);
+        res.json({ path: pickedPath || '' });
+    });
 });
+
+// ─── Matar el selector de carpetas activo (para forzar uno nuevo) ───
+app.post('/api/utils/kill-pick-folder', async (req, res) => {
+    if (pickFolderInProgress) {
+        console.log('[SERVER] 🔪 Matando pick-folder activo (PID ' + pickFolderChildPid + ') por solicitud del cliente...');
+        await killPickFolderProcess();
+    }
+    res.json({ killed: true });
+});
+
 app.post('/api/utils/create-project-folder', async (req, res) => {
     const { projectName } = req.body;
     if (!projectName) return res.status(400).json({ error: 'Missing projectName' });
@@ -1271,7 +1371,11 @@ app.get('/api/admin/agents', async (req, res) => {
 
                         // Si es un agente Hermes pero no hay bridge activo → APAGADO
                         if (chat.useHermes === true && status === 'idle' && !chat.isThinking && !chat.isRunning) {
-                            const hasBridge = hermesInstances.some(inst => inst.id === project.id);
+                            // BUGFIX: inst.id = "projectId:chatId", project.id = "projectId"
+                            // Comparar contra inst.projectId, no inst.id
+                            const hasBridge = hermesInstances.some(inst => 
+                                inst.projectId === project.id && inst.chatId === chat.id
+                            );
                             if (!hasBridge) status = 'off';
                         }
 
@@ -1438,6 +1542,84 @@ app.get('/api/admin/agents', async (req, res) => {
         }
 
         res.json({ agents });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/admin/projects', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        const hermesInstances = hermesBridge.listInstances();
+        const projects = [];
+
+        if (sessions.projects) {
+            for (const project of sessions.projects) {
+                // Count active agents (thinking or running status)
+                let activeAgents = 0;
+                let totalAgents = 0;
+                if (project.chats) {
+                    totalAgents = project.chats.length;
+                    for (const chat of project.chats) {
+                        if (chat.isThinking || chat.isRunning) {
+                            activeAgents++;
+                        }
+                    }
+                }
+
+                // Also count bridge agents running for this project
+                const bridgeAgents = hermesInstances.filter(inst => inst.id === project.id);
+                activeAgents += bridgeAgents.filter(inst => inst.status === 'running').length;
+
+                // Detect GitHub URL from git config
+                let githubUrl = project.github_url || '';
+                let description = project.description || '';
+                let recentChanges = [];
+                if (project.folder) {
+                    try {
+                        const { stdout } = await execPromise(
+                            'git -C "' + project.folder.replace(/\\/g, '/') + '" remote get-url origin',
+                            { timeout: 3000 }
+                        );
+                        const url = stdout.trim();
+                        if (url) githubUrl = url.replace(/\.git$/, '');
+                    } catch { }
+
+                    // Try to get recent git commits
+                    try {
+                        const { stdout } = await execPromise(
+                            'git -C "' + project.folder.replace(/\\/g, '/') + '" log --oneline -5 --format="%s"',
+                            { timeout: 3000 }
+                        );
+                        recentChanges = stdout.trim().split('\n').filter(l => l.trim());
+                    } catch { }
+
+                    // Try to read project description from README or description
+                    if (!description) {
+                        try {
+                            const readmePath = path.join(project.folder, 'README.md');
+                            const readme = await fs.readFile(readmePath, 'utf-8');
+                            const firstLine = readme.split('\n')[0].replace(/^#+\s*/, '').trim();
+                            if (firstLine) description = firstLine;
+                        } catch { }
+                    }
+                }
+
+                projects.push({
+                    id: project.id,
+                    name: project.name || project.folder || project.id,
+                    folder: project.folder || '',
+                    description,
+                    github_url: githubUrl,
+                    activeAgents,
+                    totalAgents,
+                    model: project.model || 'default',
+                    recentChanges: recentChanges.slice(0, 5),
+                });
+            }
+        }
+
+        res.json({ projects });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1639,11 +1821,21 @@ app.post('/api/utils/open-folder', async (req, res) => {
     const { folderPath } = req.body;
     if (!folderPath) return res.status(400).json({ error: 'No folder path provided' });
 
+    // Validar que la carpeta exista antes de intentar abrirla
+    try {
+        await fs.access(folderPath);
+    } catch {
+        return res.status(404).json({ error: `La carpeta no existe: ${folderPath}` });
+    }
+
     console.log(`[SYSTEM] Abriendo carpeta: ${folderPath}`);
 
     try {
         const command = process.platform === 'win32' ? `explorer "${folderPath}"` : `open "${folderPath}"`;
-        exec(command);
+        const child = exec(command, (err) => {
+            if (err) console.error(`[SYSTEM] Error abriendo carpeta: ${err.message}`);
+        });
+        child.unref(); // No mantener vivo el event loop si explorer se cuelga
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -1686,6 +1878,37 @@ app.post('/api/hermes/start', async (req, res) => {
             return res.status(400).json({ error: 'projectId, chatId y workdir son requeridos' });
         }
         const instance = await hermesBridge.startInstance(projectId, chatId, workdir, model || null, name || null);
+
+        // ─── JP AGENTS IDENTITY: persistir identidad del agente ───
+        // Cada vez que se inicia un agente Hermes desde JP Agents, escribimos
+        // un archivo de identidad. Esto permite que después de un restart del server,
+        // el status endpoint pueda identificar este agente aunque el bridge se haya perdido.
+        // El archivo se elimina cuando se detiene el agente (/api/hermes/stop).
+        try {
+            const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+            const identityDir = path.join(hermesHome, 'jpagents-identity');
+            await fs.mkdir(identityDir, { recursive: true });
+            // Obtener nombre del proyecto desde sessions
+            const sessions = await loadSessions();
+            const project = sessions.projects?.find(p => p.id === projectId);
+            const projectName = project?.name || project?.folder?.split(/[/\\]/).pop() || projectId;
+            const agentName = name || project?.chats?.find(c => c.id === chatId)?.name || chatId;
+            await fs.writeFile(
+                path.join(identityDir, `identity-${chatId}.json`),
+                JSON.stringify({
+                    projectId,
+                    chatId,
+                    agentName,
+                    projectName,
+                    createdAt: new Date().toISOString()
+                }, null, 2),
+                'utf-8'
+            );
+            console.log(`[JPAGENTS-ID] Identidad persistida para agente ${name || chatId} (chatId: ${chatId})`);
+        } catch (idErr) {
+            console.warn('[JPAGENTS-ID] No se pudo persistir identidad:', idErr.message);
+        }
+
         res.json({ instance });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1947,7 +2170,10 @@ app.post('/api/hermes/message', async (req, res) => {
             finalMessage = `${finalMessage}\n\n${refsText}\n\n${urlsText}\n\n(Puedes usar vision_analyze(image_url=...) para ver las imágenes adjuntas. Las URLs HTTP funcionan directamente.)`;
         }
 
-        const response = await hermesBridge.sendMessage(projectId, chatId, finalMessage);
+        const result = await hermesBridge.sendMessage(projectId, chatId, finalMessage);
+        // sendMessage ahora devuelve { text, usage, sessionId } o string (compatibilidad)
+        const responseText = typeof result === 'string' ? result : (result.text || '');
+        const tokenUsage = (typeof result === 'object' && result !== null) ? (result.usage || null) : null;
 
         // Take Git snapshot after Hermes finishes and compute delta + full diffs
         let gitChanges = [];
@@ -1997,7 +2223,7 @@ app.post('/api/hermes/message', async (req, res) => {
             }
         }
 
-        res.json({ response, changes: gitChanges });
+        res.json({ response: responseText, usage: tokenUsage, changes: gitChanges });
     } catch (e) {
         console.error('[HERMES] Error en sendMessage:', e.message);
         res.status(500).json({ error: e.message });
@@ -2024,6 +2250,15 @@ app.post('/api/hermes/stop', async (req, res) => {
             return res.status(400).json({ error: 'projectId y chatId son requeridos' });
         }
         const result = await hermesBridge.stopInstance(projectId, chatId);
+
+        // ─── JP AGENTS IDENTITY: eliminar identidad al detener ───
+        try {
+            const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+            const identityPath = path.join(hermesHome, 'jpagents-identity', `identity-${chatId}.json`);
+            await fs.unlink(identityPath).catch(() => {});
+            console.log(`[JPAGENTS-ID] Identidad eliminada para chatId: ${chatId}`);
+        } catch {}
+
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2046,6 +2281,145 @@ app.get('/api/hermes/logs/:projectId', (req, res) => {
         const logs = hermesBridge.getLogs(projectId, limit);
         res.json({ logs });
     } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Hermes Agent Status (health-check per chat window) ───
+// Cada ventana de chat corre su propia rutina de health-check.
+// Este endpoint dice si el agente Hermes de ese chat específico está vivo o no.
+app.get('/api/hermes/status/:projectId/:chatId', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const instanceKey = `${projectId}:${chatId}`;
+
+        // 1. Check bridge instance
+        const bridgeInstance = hermesBridge.instances.get(instanceKey);
+        let bridgeStatus = bridgeInstance ? bridgeInstance.status : null;
+
+        // 2. Check running processes via trackedHermesProcesses (PID tracking)
+        let processPid = null;
+        let processAlive = false;
+        let statusFromStatusFile = null;
+        let sessionId = null;
+
+        // Buscar en trackedHermesProcesses
+        for (const [pid, tracker] of trackedHermesProcesses.entries()) {
+            if (tracker.projectId === projectId && tracker.chatId === chatId) {
+                processPid = pid;
+                processAlive = true;
+                sessionId = tracker.sessionId;
+                break;
+            }
+        }
+
+        // 3. Check status file in ~/.hermes/status/<pid>.json
+        if (processPid) {
+            try {
+                const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                const statusPath = path.join(hermesHome, 'status', `${processPid}.json`);
+                const content = await fs.readFile(statusPath, 'utf-8').catch(() => null);
+                if (content) {
+                    const status = JSON.parse(content);
+                    statusFromStatusFile = status.status || 'idle';
+                    sessionId = sessionId || status.session_id || null;
+                }
+            } catch {}
+        }
+
+        // 4. Scan for Hermes processes matching this chat (fallback)
+        if (!processAlive) {
+            try {
+                const processes = await scanExternalHermesProcesses();
+                for (const proc of processes) {
+                    const match = proc.commandLine?.match(/--source\s+["']?jpagents\|([^|]+)\|([^"'\s]+)["']?/i);
+                    if (match && match[1] === projectId && match[2] === chatId) {
+                        processPid = proc.pid;
+                        processAlive = true;
+                        break;
+                    }
+                }
+            } catch {}
+        }
+
+        // Determinar el status final
+        let finalStatus = 'off';
+        let finalSessionTitle = '';
+        let identityAgentName = '';
+        let identityProjectName = '';
+
+        // 5. Check JP Agents identity file (persiste entre restarts)
+        try {
+            const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+            const identityPath = path.join(hermesHome, 'jpagents-identity', `identity-${chatId}.json`);
+            const identityContent = await fs.readFile(identityPath, 'utf-8').catch(() => null);
+            if (identityContent) {
+                const identity = JSON.parse(identityContent);
+                identityAgentName = identity.agentName || '';
+                identityProjectName = identity.projectName || '';
+                // Si el identity file existe pero no hay bridge, el agente fue creado
+                // desde JP Agents pero puede necesitar reinicio
+                if (!bridgeInstance && !processAlive) {
+                    finalStatus = 'off';
+                }
+            }
+        } catch {}
+
+        if (bridgeInstance) {
+            finalStatus = bridgeInstance.status; // 'idle' | 'running' | 'thinking'
+        } else if (statusFromStatusFile) {
+            finalStatus = statusFromStatusFile;
+        } else if (processAlive && processPid) {
+            finalStatus = 'running'; // proceso existe pero no tenemos más info
+        } else {
+            finalStatus = 'off';
+        }
+
+        // Obtener session title del status file
+        if (sessionId) {
+            try {
+                const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                const statusDir = path.join(hermesHome, 'status');
+                const files = await fs.readdir(statusDir).catch(() => []);
+                for (const file of files) {
+                    if (!file.endsWith('.json')) continue;
+                    const content = await fs.readFile(path.join(statusDir, file), 'utf-8').catch(() => null);
+                    if (!content) continue;
+                    try {
+                        const s = JSON.parse(content);
+                        if (s.session_id === sessionId || s.pid === processPid) {
+                            finalSessionTitle = s.session_title || '';
+                            if (s.last_message) {
+                                // Status file es la fuente más autoritativa
+                                finalStatus = s.status || finalStatus;
+                            }
+                            break;
+                        }
+                    } catch {}
+                }
+            } catch {}
+        }
+
+        // Si tenemos identidad JP Agents pero no session title, usamos el nombre del identity
+        if (!finalSessionTitle && identityAgentName) {
+            finalSessionTitle = identityAgentName;
+        }
+
+        res.json({
+            alive: finalStatus !== 'off',
+            status: finalStatus,
+            hasBridge: !!bridgeInstance,
+            bridgeStatus,
+            pid: processPid,
+            sessionId,
+            sessionTitle: finalSessionTitle,
+            jpagentsIdentity: identityAgentName ? {
+                agentName: identityAgentName,
+                projectName: identityProjectName
+            } : null
+        });
+    } catch (e) {
+        console.error('[HERMES-STATUS] Error:', e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -2192,13 +2566,25 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Final safety net
+// Final safety net — PREVENT CRASH on uncaught errors
 process.on('uncaughtException', (err) => {
     console.error('[CRITICAL] Uncaught Exception:', err);
+    console.error('[CRITICAL] El servidor sigue vivo — intentando continuar...');
 });
 
+// BUGFIX: En Node 15+, unhandled rejections MATAN el proceso por defecto.
+// Este handler previene el crash y loggea el error, manteniendo el servidor vivo.
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('[CRITICAL] El servidor sigue vivo — rechazo no capturado pero no fatal.');
+});
+
+// BUGFIX: Capturar 'warning' events que puedan preceder a crashes
+process.on('warning', (warning) => {
+    if (warning.name === 'UnhandledPromiseRejectionWarning') {
+        // Node 14 emite warning antes de crash — lo atajamos
+        console.warn('[WARN] UnhandledPromiseRejectionWarning capturado:', warning.message);
+    }
 });
 
 const trackedHermesProcesses = new Map(); // pid -> { projectId, chatId, sessionId, workdir }
@@ -2352,18 +2738,30 @@ function startHermesProcessSyncMonitor() {
                 if (sourceMatch) {
                     projectId = sourceMatch[1];
                     chatId = sourceMatch[2];
-                } else if (proc.workdir) {
-                    // Fallback to workdir matching
-                    const normProcDir = proc.workdir.replace(/\\/g, '/').toLowerCase();
-                    const matchedProject = sessionsData.projects?.find(p => 
-                        p.folder && p.folder.replace(/\\/g, '/').toLowerCase() === normProcDir
-                    );
-                    if (matchedProject) {
-                        projectId = matchedProject.id;
-                        const matchedChat = matchedProject.chats?.find(c => c.useHermes === true || c.id.startsWith('hermes-'));
-                        if (matchedChat) {
-                            chatId = matchedChat.id;
+                } else {
+                    // BUGFIX: NO usar fallback ciego que agarra el primer chat Hermes.
+                    // Intentar match por sessionId via status files
+                    const pidSessionId = await getSessionIdForPid(pid);
+                    if (pidSessionId && pidSessionId !== `session_${pid}`) {
+                        // Buscar en TODOS los chats de TODOS los proyectos un mensaje con este sessionId
+                        for (const proj of (sessionsData.projects || [])) {
+                            for (const chat of (proj.chats || [])) {
+                                const sessionMsg = chat.messages?.find(m =>
+                                    m.role === 'system' && m.content && m.content.includes(pidSessionId)
+                                );
+                                if (sessionMsg) {
+                                    projectId = proj.id;
+                                    chatId = chat.id;
+                                    break;
+                                }
+                            }
+                            if (projectId && chatId) break;
                         }
+                    }
+                    // Si no se pudo determinar, loggear y saltar (mejor que adivinar)
+                    if (!projectId || !chatId) {
+                        console.warn(`[HERMES-SYNC] ⚠️ Proceso PID ${pid} sin --source y sin match por sessionId. SALTANDO (no se asigna a ningún chat).`);
+                        console.warn(`[HERMES-SYNC]    CommandLine: ${(proc.commandLine || '(desconocido)').slice(0, 200)}`);
                     }
                 }
 
@@ -2377,24 +2775,16 @@ function startHermesProcessSyncMonitor() {
                                 sessionId = `session_${pid}`;
                             }
                             
-                            console.log(`[HERMES-SYNC] Detectado proceso Hermes corriendo en PID ${pid} para proyecto ${projectId}, chat ${chatId}. Sincronizando...`);
-                            
+                            console.log(`[HERMES-SYNC] Detectado proceso Hermes corriendo en PID ${pid} para proyecto ${projectId}, chat ${chatId}. Solo log — no se modifica estado del chat.`);
+
+                            // BUGFIX: Ya NO se re-crea bridge instance ni se marca isThinking=true.
+                            // Cada ventana de chat corre su propia health-check routine.
                             trackedHermesProcesses.set(pid, {
                                 projectId: projectId,
                                 chatId: chatId,
                                 sessionId: sessionId,
                                 workdir: proc.workdir || matchedProject.folder || ''
                             });
-
-                            if (!matchedChat.isThinking && !matchedChat.isRunning) {
-                                matchedChat.isThinking = true;
-                                await saveSessions(sessionsData);
-                                
-                                const broadcastMsg = JSON.stringify({ event: 'hermes:status', instanceKey: `${projectId}:${chatId}`, status: 'running', timestamp: Date.now() });
-                                for (const ws of hermesBridge._wsClients) {
-                                    try { ws.send(broadcastMsg); } catch {}
-                                }
-                            }
                         }
                     }
                 }
@@ -2414,6 +2804,31 @@ async function startServer() {
     try {
         await connectDB();
         console.log('✅ DB initialization complete.');
+        
+        // Reset any stale thinking/running states from previous sessions on startup
+        try {
+            const sessions = await loadSessions();
+            let resetCount = 0;
+            if (sessions.projects) {
+                sessions.projects.forEach(proj => {
+                    if (proj.chats) {
+                        proj.chats.forEach(chat => {
+                            if (chat.isThinking || chat.isRunning) {
+                                chat.isThinking = false;
+                                chat.isRunning = false;
+                                resetCount++;
+                            }
+                        });
+                    }
+                });
+            }
+            if (resetCount > 0) {
+                await saveSessions(sessions);
+                console.log(`[STATE] Resetearon ${resetCount} estados de agentes colgados (pensando/trabajando) al iniciar.`);
+            }
+        } catch (e) {
+            console.error('[STATE] Error reseteando estados colgados al iniciar:', e.message);
+        }
     } catch (e) {
         console.error('CRITICAL: Could not connect to MongoDB. Persistence will fail.');
     }
