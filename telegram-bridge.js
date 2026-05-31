@@ -541,7 +541,8 @@ async function startBridge() {
             '🕐 /uptime — Uptime rápido\\\\n' +
             '📊 /status — Estado completo (Bridge + Worker + JP Agents)\\\\n' +
             '🔧 /bridge — Diagnóstico detallado del Bridge\\\\n' +
-            '🔄 /restart-god — Reiniciar solo GOD (sin perder Telegram)\\\\n' +
+            '🔄 /restart — Reiniciar TODO (BAT mata todo y levanta de nuevo)\\\\\\\\n' +
+            '🔄 /restart-god — Reiniciar solo GOD (sin perder Telegram)\\\\\\\n' +
             '❓ /help — Ayuda\\\\n\\\\n' +
             '*⚙️  Comandos Worker-system (sin LLM):*\\\\n' +
             '🚀 /init — Iniciar JP Agents\\\\n' +
@@ -634,6 +635,21 @@ async function startBridge() {
             '_Revisá logs o reiniciá el Bridge completo._',
             { parse_mode: 'Markdown' }
         );
+    });
+
+    // ─── /restart — Reiniciar TODO el sistema ───
+    bot.command('restart', async (ctx) => {
+        await ctx.reply('🔄 *Reiniciando TODO el sistema...*\n\n_Mato todos los procesos, espero 5s y levanto todo de nuevo._', { parse_mode: 'Markdown' });
+
+        // Lanzar restart-jpagents.bat en una ventana nueva
+        const batPath = 'D:\\Programacion\\jpagents\\restart-jpagents.bat';
+        // start abre una ventana cmd, /c ejecuta y cierra
+        require('child_process').exec(`start "🔄 JP Agents - Restart" cmd /c ""${batPath}" & pause"`, {
+            windowsHide: false // visible
+        });
+
+        // El Bridge va a morir cuando el bat mate los procesos node.
+        // El bat lo vuelve a levantar.
     });
 
     // ═══════════════════════════════════════════
