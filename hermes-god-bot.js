@@ -746,10 +746,15 @@ async function sendFinalResponse(ctx, statusMsg, resultText, errorText) {
             finalText += `\n\n📋 *Último resultado:*\n${resultText}`;
         }
     } else {
-        const summary = resultText.length > 1500 
-            ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
-            : resultText;
-        finalText = `✅\n\n${summary}`;
+        // Si quedó vacío o placeholder, solo ✅
+        if (!resultText || resultText.length < 10 || resultText === '(sin respuesta)') {
+            finalText = '✅';
+        } else {
+            const summary = resultText.length > 1500
+                ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
+                : resultText;
+            finalText = `✅\n\n${summary}`;
+        }
     }
 
     // Estrategia 1: Editar el mensaje de pensamiento existente (sin Markdown)

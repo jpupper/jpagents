@@ -311,14 +311,15 @@ async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorT
             finalText += `\n\n📋 *Último resultado:*\n${resultText}`;
         }
     } else {
-        // Si después de filtrar quedó vacío, fallback
-        if (!resultText || resultText.length < 10) {
-            resultText = '✅\n\n_El modelo finalizó pero no produjo un resumen formateado. Usá /status para ver el estado o pedí lo mismo de vuelta._';
+        // Si después de filtrar quedó vacío o es placeholder, solo ✅
+        if (!resultText || resultText.length < 10 || resultText === '(sin respuesta)') {
+            finalText = '✅';
+        } else {
+            const summary = resultText.length > 1500
+                ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
+                : resultText;
+            finalText = `✅\n\n${summary}`;
         }
-        const summary = resultText.length > 1500
-            ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
-            : resultText;
-        finalText = `✅\n\n${summary}`;
     }
 
     // Estrategia 1: editar mensaje existente
