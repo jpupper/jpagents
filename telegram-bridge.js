@@ -291,13 +291,17 @@ function getBot() {
 }
 
 async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorText) {
-    // Safety net: filtrar [thinking] residual que haya escapado
+    // Safety net: solo filtrar [thinking] residual — NO filtrar 📊 ✅ ⚙️ 📝 📋
     if (resultText) {
         resultText = resultText.split('\n')
             .map(l => l.trim())
             .filter(l => {
                 if (!l) return false;
                 if (l.startsWith('[thinking]')) return false;
+                // Filtrar líneas que empiezan con marcadores técnicos residuales
+                if (l.match(/^\d+ messages?,/) || l.startsWith('Session') ||
+                    l.startsWith('Tip:') || l.startsWith('Generated') ||
+                    l.startsWith('Running ')) return false;
                 return true;
             })
             .join('\n')
@@ -308,40 +312,54 @@ async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorT
     if (errorText) {
         finalText = `❌\n\n${errorText}`;
         if (resultText && resultText !== '(sin respuesta)') {
-            finalText += `\n\n📋 *Último resultado:*\n${resultText}`;
+            finalText += `\n\n📋 Último resultado:\n${resultText}`;
         }
     } else {
-        // Si después de filtrar quedó vacío o es placeholder, solo ✅
-        if (!resultText || resultText.length < 10 || resultText === '(sin respuesta)') {
-            finalText = '✅';
+        if (!resultText || resultText.length < 5 || resultText === '(sin respuesta)') {
+            finalText = '✅ Listo.';
         } else {
-            const summary = resultText.length > 1500
-                ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
-                : resultText;
-            finalText = `✅\n\n${summary}`;
+            finalText = resultText;
         }
     }
 
-    // Estrategia 1: editar mensaje existente
+    // Estrategia 1: editar mensaje existente — parse_mode vacio evita
+    // que Telegram herede el Markdown del mensaje "pensando..." original.
+    // En texto plano, caracteres como _, *, ` no rompen nada.
     try {
-        await getBot().api.editMessageText(chatId, messageId, finalText);
+        await getBot().api.editMessageText(chatId, messageId, finalText, { parse_mode: '' });
         return;
-    } catch {}
-    // Estrategia 2: sin markdown
+    } catch (e) {
+        const errMsg = (e && e.message) || String(e);
+        console.log('[BRIDGE] editMessageText fallo: ' + errMsg.slice(0, 100));
+        // Si falla por longitud o parseo de entidades, intentar recortar
+        if (finalText.length > 4000 || errMsg.includes('too long') || errMsg.includes('entity')) {
+            try {
+                await getBot().api.editMessageText(chatId, messageId,
+                    finalText.slice(0, 3950) + '\n\n...',
+                    { parse_mode: '' }
+                );
+                const rest = finalText.slice(3950);
+                for (let i = 0; i < rest.length; i += 4000) {
+                    await getBot().api.sendMessage(chatId, rest.slice(i, i + 4000));
+                }
+                return;
+            } catch (e2) {
+                console.log('[BRIDGE] Edit truncado tambien fallo: ' + ((e2 && e2.message) || '').slice(0, 100));
+            }
+        }
+    }
+    // Estrategia 2: enviar como mensaje nuevo SIN parse_mode (texto plano)
     try {
-        await getBot().api.editMessageText(chatId, messageId, finalText.replace(/[*_`]/g, ''));
+        await getBot().api.sendMessage(chatId, finalText, { parse_mode: '' });
         return;
-    } catch {}
-    // Estrategia 3: mensaje nuevo
-    try {
-        await getBot().api.sendMessage(chatId, finalText);
-        return;
-    } catch {}
-    // Estrategia 4: plano
+    } catch (e) {
+        console.log('[BRIDGE] sendMessage fallo: ' + ((e && e.message) || '').slice(0, 100));
+    }
+    // Estrategia 3: strip caracteres problematicos como ultimo recurso
     try {
         await getBot().api.sendMessage(chatId, finalText.replace(/[*_`]/g, ''));
     } catch (e) {
-        console.error('[BRIDGE] ❌ No se pudo enviar respuesta final:', e.message);
+        console.error('[BRIDGE] No se pudo enviar respuesta final:', (e && e.message) || '');
     }
 }
 
@@ -820,19 +838,23 @@ async function startBridge() {
                     console.log(`[BRIDGE] ✅ Bot @${info.username} iniciado`);
                     console.log('[BRIDGE] 📡 Escuchando Telegram... (Bridge siempre vivo)');
 
-                    // Notificar al dueño
-                    const ownerData = loadOwnerChatId();
-                    if (ownerData?.ownerChatId) {
+                    // Notificar al dueño SOLO una vez (flag file-based)
+                    const BRIDGE_STARTUP_FLAG = path.join(HERMES_HOME, 'bridge-started.flag');
+                    if (ownerData?.ownerChatId && !fs.existsSync(BRIDGE_STARTUP_FLAG)) {
                         try {
                             await bot.api.sendMessage(
                                 ownerData.ownerChatId,
-                                '🌉 *TELEGRAM BRIDGE activo*\\n\\n🧠 *Worker:* ' +
+                                '🌉 *TELEGRAM BRIDGE activo*\n\n🧠 *Worker:* ' +
                                 (workerReady ? '✅ listo' : '⏳ arrancando...'),
                                 { parse_mode: 'Markdown' }
                             );
+                            fs.writeFileSync(BRIDGE_STARTUP_FLAG, Date.now().toString());
+                            console.log('[BRIDGE] 📝 Flag de inicio guardado');
                         } catch (e) {
                             console.warn(`[BRIDGE] ⚠️ No pude notificar al dueño: ${e.message}`);
                         }
+                    } else {
+                        console.log('[BRIDGE] 🔄 Reinicio detectado — omito notificación de arranque');
                     }
                 },
                 drop_pending_updates: true

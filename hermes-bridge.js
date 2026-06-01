@@ -247,12 +247,13 @@ class HermesBridge extends EventEmitter {
      */
     async _findHermesPath(workdir) {
         const fs = await import('fs/promises');
+        const safeWorkdir = workdir || process.cwd() || 'D:/Programacion/jpagents';
         const possiblePaths = [
             // Ruta directa al .exe del Hermes Agent principal
             'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe',
             // En .venv del proyecto
-            path.join(workdir, '.venv', 'Scripts', 'hermes.exe'),
-            path.join(workdir, 'venv', 'Scripts', 'hermes.exe'),
+            path.join(safeWorkdir, '.venv', 'Scripts', 'hermes.exe'),
+            path.join(safeWorkdir, 'venv', 'Scripts', 'hermes.exe'),
         ];
         for (const p of possiblePaths) {
             try {
@@ -313,7 +314,8 @@ class HermesBridge extends EventEmitter {
                 shell: false,
                 env: {
                     ...process.env,
-                    HERMES_WORKDIR: workdir
+                    HERMES_WORKDIR: workdir,
+                    HERMES_JPAGENTS: '1'
                 }
             });
 
@@ -398,6 +400,57 @@ class HermesBridge extends EventEmitter {
         this.instances.set(instanceKey, instance);
         this._broadcastStatus(instanceKey, 'idle');
         return this._sanitizeInstance(instance);
+    }
+
+    /**
+     * Recupera una instancia existente tras restart del server.
+     * A diferencia de startInstance(), NO verifica que no exista — si ya existe la saltea.
+     * Además acepta un PID opcional para vincular el proceso ya vivo.
+     * @param {object} opts - { projectId, chatId, workdir, model, name, pid, sessionId }
+     * @returns {Promise<object>} instancia
+     */
+    async recoverInstance({ projectId, chatId, workdir, model = null, name = null, pid = null, sessionId = null }) {
+        const instanceKey = `${projectId}:${chatId}`;
+        if (this.instances.has(instanceKey)) {
+            // Ya existe — probablemente otro hilo de recovery la creó primero. Devolver la existente.
+            return this._sanitizeInstance(this.instances.get(instanceKey));
+        }
+
+        const fs = await import('fs/promises');
+        try {
+            await fs.access(workdir);
+        } catch {
+            console.warn(`[HERMES-RECOVER] ⚠️ Directorio no existe: ${workdir}. Creando instancia igual por si se restaura.`);
+        }
+
+        const instance = {
+            id: instanceKey,
+            projectId,
+            chatId,
+            name: name || `⚡ Hermes: ${chatId.slice(0, 8)}`,
+            workdir,
+            status: pid ? 'idle' : 'off', // si hay PID, está vivo; si no, necesita reinicio
+            model: model || 'default',
+            createdAt: new Date().toISOString(),
+            logs: [],
+            // Si tenemos PID, simulamos un proc fantasma para que el health-check lo detecte
+            _recoveredPid: pid || null,
+            _recoveredSessionId: sessionId || null,
+            // Flag que indica que esta instancia fue recuperada, no iniciada manualmente
+            recovered: true
+        };
+
+        this.instances.set(instanceKey, instance);
+        console.log(`[HERMES-RECOVER] ✅ Instancia recuperada: ${instanceKey}${pid ? ` (PID ${pid})` : ' (sin proceso — requiere play)'}`);
+        this._broadcastStatus(instanceKey, instance.status, { recovered: true, pid });
+        return this._sanitizeInstance(instance);
+    }
+
+    /**
+     * Obtiene la instancia del bridge desde el Map (acceso directo para server.js)
+     */
+    getRawInstance(instanceKey) {
+        return this.instances.get(instanceKey) || null;
     }
 
     /**
@@ -535,8 +588,9 @@ class HermesBridge extends EventEmitter {
 
         for (const [id, instance] of this.instances) {
             if (instance.status === 'running') {
+                const [projId, cId] = id.split(':');
                 promises.push(
-                    this.sendMessage(id, message)
+                    this.sendMessage(projId, cId, message)
                         .then(response => ({ id, status: 'ok', response }))
                         .catch(err => ({ id, status: 'error', error: err.message }))
                 );
@@ -645,12 +699,24 @@ class HermesBridge extends EventEmitter {
         }
     }
 
-    _broadcastStatus(instanceKey, status) {
-        const msg = JSON.stringify({ event: 'hermes:status', instanceKey, status, timestamp: Date.now() });
+    _broadcastStatus(instanceKey, status, extra = {}) {
+        const msg = JSON.stringify({ event: 'hermes:status', instanceKey, status, timestamp: Date.now(), ...extra });
         for (const ws of this._wsClients) {
             try { ws.send(msg); } catch { this._wsClients.delete(ws); }
         }
         this.emit('status', { instanceKey, status });
+    }
+
+    /**
+     * Broadcast any event to all connected WS clients
+     * @param {string} eventName - Event name (e.g. 'hermes:agent:created', 'hermes:state:updated')
+     * @param {object} data - Additional data to include
+     */
+    broadcastToAll(eventName, data = {}) {
+        const msg = JSON.stringify({ event: eventName, ...data, timestamp: Date.now() });
+        for (const ws of this._wsClients) {
+            try { ws.send(msg); } catch { this._wsClients.delete(ws); }
+        }
     }
 
     _sanitizeInstance(inst) {
@@ -668,7 +734,10 @@ class HermesBridge extends EventEmitter {
             cumulativeInputTokens: inst.cumulativeInputTokens || 0,
             cumulativeOutputTokens: inst.cumulativeOutputTokens || 0,
             cumulativeCost: inst.cumulativeCost || 0,
-            cumulativeApiCalls: inst.cumulativeApiCalls || 0
+            cumulativeApiCalls: inst.cumulativeApiCalls || 0,
+            recovered: inst.recovered || false,
+            recoveredPid: inst._recoveredPid || null,
+            recoveredSessionId: inst._recoveredSessionId || null
         };
     }
 }

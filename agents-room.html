@@ -446,6 +446,8 @@ function initGeometryPool() {
   // Círculos
   GEO.circle450 = new THREE.CircleGeometry(450, 48);
   GEO.circle24 = new THREE.CircleGeometry(24, 24);
+  // Error cross arms (red X above mage head)
+  GEO.crossArm = new THREE.BoxGeometry(1.2, 10, 1.2);
 }
 initGeometryPool();
 
@@ -928,6 +930,29 @@ function buildMage(agent, index, total, isGhost = false) {
   tip.position.y = 61;
   group.add(tip);
 
+  // ─── ERROR CROSS ───
+  // Red ✕ above mage head when agent is in error state (FAILED TO FETCH, etc.)
+  let errorCross = null;
+  if (agent.status === 'error' && !isGhost) {
+    const crossMat = new THREE.MeshStandardMaterial({
+      color: 0xff2222,
+      emissive: 0xff0000,
+      emissiveIntensity: 0.8,
+      roughness: 0.3,
+      metalness: 0.1,
+    });
+    const arm1 = new THREE.Mesh(GEO.crossArm, crossMat);
+    arm1.rotation.z = Math.PI / 4;
+    arm1.position.y = 68;
+    const arm2 = new THREE.Mesh(GEO.crossArm, crossMat);
+    arm2.rotation.z = -Math.PI / 4;
+    arm2.position.y = 68;
+    errorCross = new THREE.Group();
+    errorCross.add(arm1);
+    errorCross.add(arm2);
+    group.add(errorCross);
+  }
+
   // Ghost aura
   let ghostAura = null;
   if (isGhost && agent.status !== 'idle') {
@@ -1144,6 +1169,8 @@ function buildMage(agent, index, total, isGhost = false) {
     armR,
     armBaseRotL: armL.rotation.z,
     armBaseRotR: armR.rotation.z,
+    // Error cross reference for animation
+    errorCross,
     // Arcane bubble spawn timer
     _arcaneTimer: Math.random() * 1.5, // random offset so bubbles don't all spawn at once
   };
@@ -2354,6 +2381,23 @@ function animate() {
       return;
     }
 
+    // ─── ERROR CROSS PULSATION ───
+    if (ud.errorCross && ud.agentStatus === 'error') {
+      ud.errorCross.visible = true;
+      const pulse = 1 + Math.sin(t * 3.0) * 0.25;
+      ud.errorCross.scale.setScalar(pulse);
+      // Rotate slowly for a sinister effect
+      ud.errorCross.rotation.y += dt * 0.5;
+      // Pulsate emissive intensity via children materials
+      ud.errorCross.children.forEach(child => {
+        if (child.material && child.material.emissiveIntensity !== undefined) {
+          child.material.emissiveIntensity = 0.6 + Math.sin(t * 3.0) * 0.4;
+        }
+      });
+    } else if (ud.errorCross) {
+      ud.errorCross.visible = false;
+    }
+
     const bg = ud.bookGroupRef;
     if (bg) {
       bg.position.y = (bg.userData?.baseY || 2) + Math.sin(t * 0.8 + (bg.userData?.phase || 0)) * 2;
@@ -2621,8 +2665,8 @@ window.addEventListener('resize', () => {
 document.getElementById('loading').textContent = '✦ CONJURING ✦';
 refreshAgents();
 fetchProjectData();
-setInterval(refreshAgents, 8000);
-setInterval(fetchProjectData, 15000); // Refresh project data every 15s for active counts
+// (Eliminado: polling cada 8s — ahora se actualiza vía WebSocket)
+// (Eliminado: polling cada 15s — ahora se actualiza vía WebSocket)
 animate();
 
 // ─── CALIBRATION UI ───
@@ -2693,8 +2737,12 @@ function connectWebSocket() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.event === 'sync:stateUpdated' || data.event === 'hermes:status') {
-          console.log('[AGENTS-ROOM] Sincronización recibida vía WebSocket. Refrescando agentes...');
+        if (data.event === 'sync:stateUpdated' || 
+            data.event === 'hermes:status' || 
+            data.event === 'hermes:agent:started' || 
+            data.event === 'hermes:agent:completed' || 
+            data.event === 'hermes:agent:stopped') {
+          console.log(`[AGENTS-ROOM] Sincronización recibida vía WebSocket (${data.event}). Refrescando...`);
           refreshAgents();
           fetchProjectData();
         }

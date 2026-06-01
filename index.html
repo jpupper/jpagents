@@ -219,6 +219,7 @@
             <div class="admin-sub-nav">
               <button class="admin-sub-tab active" data-sub-tab="table">🤖 Lista de Agentes</button>
               <button class="admin-sub-tab" data-sub-tab="chat">💬 Chat Administrativo</button>
+              <button class="admin-sub-tab" data-sub-tab="telegram">📱 Telegram</button>
             </div>
           </div>
 
@@ -270,6 +271,21 @@
                     <rect x="6" y="6" width="12" height="12"></rect>
                   </svg>
                 </button>
+              </div>
+            </div>
+
+            <!-- TELEGRAM VIEW -->
+            <div id="admin-telegram-view" class="admin-telegram-section hidden">
+              <div class="telegram-header">
+                <h3>📱 Monitor de Telegram</h3>
+                <div class="telegram-status-bar">
+                  <span id="telegram-status-dot" class="telegram-dot offline">⚫</span>
+                  <span id="telegram-status-text" class="telegram-status-text">Desconectado</span>
+                  <button id="telegram-clear-btn" class="btn-clear-admin" title="Limpiar historial">🧹</button>
+                </div>
+              </div>
+              <div id="telegram-messages" class="telegram-messages-container">
+                <div class="telegram-placeholder">Esperando mensajes de Telegram...</div>
               </div>
             </div>
           </div>
@@ -728,6 +744,7 @@
         <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
           <button id="hermes-refresh-btn" class="btn-primary" style="padding: 8px 16px; font-size: 0.8rem;">🔄 Refrescar</button>
           <button id="hermes-stop-all-btn" class="btn-danger-outline" style="padding: 8px 16px; font-size: 0.8rem;">⏹ Detener Todas</button>
+          <button id="hermes-purge-btn" class="btn-warning-outline" style="padding: 8px 16px; font-size: 0.8rem;">🧹 Limpiar Huérfanos</button>
         </div>
 
         <!-- Broadcast Section -->

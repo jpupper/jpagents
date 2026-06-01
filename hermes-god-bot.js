@@ -689,41 +689,33 @@ function askHermesWithThinking(message, statusMsg, ctx, chatId) {
 }
 
 function extractResponse(stdout) {
-    const clean = stripAnsi(stdout);
-    const lines = clean.split('\n');
-    
-    // Estrategia 1: Buscar el panel de Hermes (╭ ... ╰)
-    let s = -1, e = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].includes('╰') && e === -1) e = i;
-        if (lines[i].includes('╭') && lines[i].includes('Hermes') && s === -1) { 
-            s = i; 
-            if (e === -1) e = lines.length; 
-            break; 
-        }
-    }
-    if (s !== -1 && e !== -1 && s < e) {
-        const extracted = lines.slice(s + 1, e)
-            .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
-            .join('\n')
-            .trim();
-        if (extracted) return extracted;
-    }
-    
-    // Estrategia 2: Últimas líneas no vacías que no sean cabeceras
-    const nonEmpty = lines.filter(l => l.trim()).map(l => l.trim());
-    for (let i = nonEmpty.length - 1; i >= 0; i--) {
-        if (nonEmpty[i].length > 20 && !nonEmpty[i].startsWith('Session') && 
-            !nonEmpty[i].startsWith('Tip:') && !nonEmpty[i].startsWith('Initializing')) {
-            // Tomar desde esta línea hasta el final
-            const lastLines = nonEmpty.slice(Math.max(0, i - 1));
-            const result = lastLines.join('\n');
-            if (result.length > 50) return result;
-        }
-    }
-    
-    // Estrategia 3: Devolver lo último con contenido
-    return clean.trim().slice(0, 4000);
+    // Con -Q (quiet mode), stdout es DIRECTAMENTE la respuesta final del modelo.
+    // Solo necesitamos limpiar ANSI y remover session_id / [thinking] residual.
+
+    const clean = stripAnsi(stdout).trim();
+    if (!clean || clean.length < 3) return '';
+
+    // Remover session_id si apareció en stdout
+    const text = clean.replace(/^session_id:\s*\S+\s*/m, '').trim();
+    if (!text) return '';
+
+    // Filtrar solo [thinking] residual — NO filtrar emojis del formato (📊 ⚙️ 📝 📋)
+    const lines = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => {
+            if (!l) return false;
+            if (l.startsWith('[thinking]')) return false;
+            if (l.match(/^```/)) return false;
+            // Solo filtrar noise técnico que HERMES (no el modelo) produce
+            if (l.match(/^\d+ messages?,/) || l.startsWith('Session') ||
+                l.startsWith('Tip:') || l.startsWith('Initializing') ||
+                l.startsWith('Generated') || l.startsWith('Running ')) return false;
+            return true;
+        });
+
+    if (lines.length === 0) return '';
+    const result = lines.join('\n').trim();
+    return result.length >= 5 ? result : text.slice(0, 4000);
 }
 
 // ─── Función para enviar respuesta final garantizada ───
@@ -738,46 +730,44 @@ function extractResponse(stdout) {
  * @returns {Promise<void>}
  */
 async function sendFinalResponse(ctx, statusMsg, resultText, errorText) {
-    // Armar mensaje final con formato "Tarea finalizada"
     let finalText;
     if (errorText) {
         finalText = `❌\n\n${errorText}`;
         if (resultText && resultText !== '(sin respuesta)') {
-            finalText += `\n\n📋 *Último resultado:*\n${resultText}`;
+            finalText += `\n\n📋 Último resultado:\n${resultText}`;
         }
     } else {
-        // Si quedó vacío o placeholder, solo ✅
-        if (!resultText || resultText.length < 10 || resultText === '(sin respuesta)') {
-            finalText = '✅';
+        if (!resultText || resultText.length < 5 || resultText === '(sin respuesta)') {
+            finalText = '✅ Listo.';
         } else {
-            const summary = resultText.length > 1500
-                ? resultText.slice(0, 1500) + '\n\n_… (respuesta truncada)_'
-                : resultText;
-            finalText = `✅\n\n${summary}`;
+            finalText = resultText;
         }
     }
 
-    // Estrategia 1: Editar el mensaje de pensamiento existente (sin Markdown)
+    // Estrategia 1: Editar el mensaje de pensamiento existente
     try {
-        // Sin parse_mode para evitar errores con caracteres especiales de Hermes
         await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, finalText);
         return;
-    } catch {}
+    } catch {
+        // Si falla por longitud, recortar y enviar resto como mensaje nuevo
+        if (finalText.length > 4000) {
+            try {
+                await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, finalText.slice(0, 3950) + '\n\n…');
+                const rest = finalText.slice(3950);
+                for (let i = 0; i < rest.length; i += 4000) {
+                    await ctx.reply(rest.slice(i, i + 4000));
+                }
+                return;
+            } catch {}
+        }
+    }
 
-    // Estrategia 2: Editar sin Markdown characters (si el error fue por parse_mode)
-    try {
-        const plain = finalText.replace(/[*_`]/g, '');
-        await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, plain);
-        return;
-    } catch {}
-
-    // Estrategia 3: Enviar mensaje nuevo como respuesta
+    // Estrategia 2: Enviar mensaje nuevo
     try {
         await ctx.reply(finalText);
         return;
     } catch {}
-
-    // Estrategia 4: Último recurso — texto plano
+    // Estrategia 3: Último recurso — texto plano sin caracteres problemáticos
     try {
         await ctx.reply(finalText.replace(/[*_`]/g, ''));
     } catch (e) {
@@ -1417,13 +1407,18 @@ async function startBot() {
                     console.log(`[HERMES-GOD] ✅ Bot @${info.username} iniciado`); 
                     console.log('[HERMES-GOD] 📡 Escuchando Telegram...'); 
 
-                    // Enviar mensaje de arranque/auto-reinicio
-                    if (ownerData && ownerData.ownerChatId) {
+                    // Enviar mensaje de arranque SOLO una vez (flag file-based)
+                    const STARTUP_FLAG = path.join(HERMES_HOME, 'god-bot-started.flag');
+                    if (ownerData && ownerData.ownerChatId && !fs.existsSync(STARTUP_FLAG)) {
                         try {
                             await bot.api.sendMessage(ownerData.ownerChatId, '🍷 *Conexión establecida* — HERMES GOD online', { parse_mode: 'Markdown' });
+                            fs.writeFileSync(STARTUP_FLAG, Date.now().toString());
+                            console.log('[HERMES-GOD] 📝 Flag de inicio guardado');
                         } catch (e) {
                             console.warn(`[HERMES-GOD] ⚠️ No pude notificar al dueño: ${e.message}`);
                         }
+                    } else {
+                        console.log('[HERMES-GOD] 🔄 Reinicio detectado — omiso notificación de arranque');
                     }
                 }, 
                 drop_pending_updates: true 

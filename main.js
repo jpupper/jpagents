@@ -648,7 +648,19 @@ REGLAS CRÍTICAS:
 
 INSTRUCCIONES DE COMANDO:
 - Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
-- Administración: [CREATE_PROJECT: Nombre], [CREATE_AGENT: Proyecto: Agente], [DELETE_PROJECT: ID]`;
+- Administración de proyectos: [CREATE_PROJECT: Nombre], [DELETE_PROJECT: ID_o_Nombre]
+- Administración de agentes: [CREATE_AGENT: Proyecto : NombreAgente], [DELETE_AGENT: Proyecto : Agente], [STOP_AGENT: Proyecto : Agente]
+- Consulta: [LIST_AGENTS] (el sistema te muestra la tabla actualizada de agentes)
+
+REGLAS:
+- Usá [CREATE_PROJECT: Nombre] para crear un proyecto nuevo (sin comillas en el nombre).
+- Usá [CREATE_AGENT: NombreProyecto : NombreAgente] para crear un agente DENTRO de un proyecto existente.
+- Usá [DELETE_AGENT: Proyecto : Agente] para eliminar un agente específico.
+- Usá [STOP_AGENT: Proyecto : Agente] para detener un agente que está corriendo.
+- Usá [DELETE_PROJECT: ID_o_Nombre] para eliminar un proyecto entero.
+- Usá [@NombreAgente: "Instrucción detallada"] para delegar tareas a agentes existentes.
+- SIEMPRE creá el proyecto primero, después el agente, después delegá la tarea.
+- NO uses comillas en los nombres de proyectos o agentes dentro de los comandos.`;
 
 
 let state = {
@@ -667,6 +679,7 @@ let state = {
     customApiBase: '',
     deepseekThinking: true,
     adminMessages: [],
+    telegramMessages: [],  // { type: 'incoming'|'outgoing'|'status'|'error', chatId, from?, text, timestamp }
     adminIsThinking: false,
     adminIsStopped: false,
     maxValidationRetries: 15,
@@ -838,10 +851,7 @@ async function init() {
     setupOpenWebEvent();
     
     // ─── Auto-transformación: Sistema de reinicio y consola ───
-    // Poll restart history cada 10s para refrescar la consola
-    setInterval(() => {
-        try { refreshConsoleUI(); } catch(e) {}
-    }, 10000);
+    // (Eliminado: refreshConsoleUI cada 10s — ahora se actualiza vía WS events)
     
     // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
     function connectGlobalWS() {
@@ -855,9 +865,15 @@ async function init() {
                     
                     if (data.event === 'system:restart') {
                         console.log('[SYS] 🔄 Reinicio del servidor detectado:', data.reason);
+                        refreshConsoleUI();
                     } else if (data.event === 'sync:connected') {
                         mySocketId = data.socketId;
                         console.log(`[WS-SYNC] Conectado al servidor de sincronización. Socket ID: ${mySocketId}`);
+                        // Cargar estado inicial al conectar
+                        await loadData(false);
+                        syncUI();
+                        checkSystemHealth();
+                        fetchModels();
                     } else if (data.event === 'sync:masterClaimed') {
                         const wasMaster = amIMaster;
                         amIMaster = (data.socketId === mySocketId);
@@ -876,6 +892,79 @@ async function init() {
                             await loadData(false);
                             syncUI();
                         }
+                        // Siempre refrescar badge y consola cuando cambia el estado
+                        updateAgentBadge();
+                        refreshConsoleUI();
+                    } else if (data.event === 'hermes:status' || data.event === 'hermes:agent:started' || data.event === 'hermes:agent:completed' || data.event === 'hermes:agent:stopped') {
+                        // ─── Evento WS: estado de agente Hermes cambió ───
+                        console.log(`[WS-HERMES] Evento ${data.event}: ${data.instanceKey} → ${data.status || 'N/A'}`);
+                        updateAgentBadge();
+                        refreshConsoleUI();
+                        // Si hay un chat activo, actualizar su UI Hermes
+                        const activeChat = getActiveChat();
+                        const activeProject = getActiveProject();
+                        if (activeChat && activeProject) {
+                            updateHermesUI(activeProject.id, activeChat.id);
+                        }
+                    }
+                    // ─── TELEGRAM MONITOR EVENTS ───
+                    if (data.event === 'telegram:incoming') {
+                        state.telegramMessages.push({
+                            type: 'incoming', chatId: data.chatId,
+                            from: data.from, text: data.text, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'user', content: `📱 Telegram (${data.from}): ${data.text}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                        updateTelegramBadge();
+                    }
+                    if (data.event === 'telegram:outgoing') {
+                        state.telegramMessages.push({
+                            type: 'outgoing', chatId: data.chatId,
+                            text: data.text, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'system', content: `📱 HERMES GOD → Telegram: ${data.text}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:thinking') {
+                        state.telegramMessages.push({
+                            type: 'thinking', chatId: data.chatId,
+                            text: 'HERMES GOD está pensando...', timestamp: Date.now()
+                        });
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:error') {
+                        state.telegramMessages.push({
+                            type: 'error', chatId: data.chatId, error: data.error, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'system', content: `❌ Telegram Error: ${data.error}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:status') {
+                        const dot = document.getElementById('telegram-status-dot');
+                        const text = document.getElementById('telegram-status-text');
+                        if (dot) dot.className = `telegram-dot ${data.connected ? 'online' : 'offline'}`;
+                        if (text) text.textContent = data.connected ? `🟢 @${data.username || 'Conectado'}` : '🔴 Desconectado';
+                        state.telegramMessages.push({
+                            type: 'status',
+                            text: data.connected ? `Bot @${data.username || ''} conectado` : 'Bot desconectado',
+                            timestamp: Date.now()
+                        });
+                        renderTelegramMessages();
                     }
                 } catch(e) {}
             };
@@ -900,25 +989,12 @@ async function init() {
     setTimeout(() => refreshConsoleUI(), 2000);
     setupOpenFolderExplorer();
 
-    // Periodically check health and external instructions every 1 minute
-    setInterval(performPeriodicSync, 60000);
+    // Periodic sync para instrucciones externas (cada 2 min — no para polling de estado)
+    setInterval(performPeriodicSync, 120000);
 
-    // Poll Ollama health and models (reducido de 5s a 30s para evitar tildes)
-    let ollamaCheckCounter = 0;
-    const OLLAMA_CHECK_INTERVAL = 30000; // 30s
-    setInterval(async () => {
-        const ollamaDot = document.getElementById('ollama-status-dot');
-        const wasDead = ollamaDot && ollamaDot.classList.contains('dead');
-
-        await checkSystemHealth();
-
-        const isLive = ollamaDot && ollamaDot.classList.contains('live');
-        ollamaCheckCounter++;
-        // Solo refrescar modelos cada 2 minutos o si recién se conectó
-        if ((wasDead && isLive) || ollamaCheckCounter % 4 === 0 || !state.models || state.models.length === 0) {
-            await fetchModels();
-        }
-    }, OLLAMA_CHECK_INTERVAL);
+    // Ollama health check: ya no es polling, se hace al conectar WS y al reconectar
+    checkSystemHealth();
+    fetchModels();
 
 }
 
@@ -2903,11 +2979,36 @@ function getLanguage(ext) {
     };
     return map[ext] || null;
 }
-
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (typeof text !== 'string') return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+// Limpiar historial de Telegram
+const telegramClearBtn = document.getElementById('telegram-clear-btn');
+if (telegramClearBtn) {
+    telegramClearBtn.onclick = () => {
+        state.telegramMessages = [];
+        renderTelegramMessages();
+    };
+}
+
+// Badge opcional para el botón de Telegram
+function updateTelegramBadge() {
+    const count = state.telegramMessages.filter(m => m.type === 'incoming').length;
+    const btn = document.querySelector('.admin-sub-tab[data-sub-tab="telegram"]');
+    if (btn) {
+        const existing = btn.querySelector('.tg-badge');
+        if (existing) existing.remove();
+        if (count > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'tg-badge';
+            badge.textContent = count;
+            btn.appendChild(badge);
+        }
+    }
 }
 
 function formatProgressLines(rawContent) {
@@ -3610,6 +3711,55 @@ function showToast(message, type = 'info', duration = 4000) {
     }, duration);
 }
 window.showToast = showToast;
+
+// ─── Notification Sounds (Web Audio API) ───
+let _audioCtx = null;
+function _getAudioCtx() {
+    if (!_audioCtx) {
+        try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+    }
+    return _audioCtx;
+}
+
+function playAgentCompleteSound() {
+    const ctx = _getAudioCtx();
+    if (!ctx) return;
+    // Pleasant ascending chime: C-E-G arpeggio
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, now + i * 0.12);
+        gain.gain.linearRampToValueAtTime(0.15, now + i * 0.12 + 0.05);
+        gain.gain.linearRampToValueAtTime(0, now + i * 0.12 + 0.35);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now + i * 0.12); osc.stop(now + i * 0.12 + 0.35);
+    });
+}
+
+function playAgentErrorSound() {
+    const ctx = _getAudioCtx();
+    if (!ctx) return;
+    // Harsh descending buzz: two dissonant tones
+    const now = ctx.currentTime;
+    const notes = [440, 370, 311]; // A4, F#4, Eb4 — tense descending
+    notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, now + i * 0.1);
+        gain.gain.linearRampToValueAtTime(0.1, now + i * 0.1 + 0.03);
+        gain.gain.linearRampToValueAtTime(0, now + i * 0.1 + 0.3);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now + i * 0.1); osc.stop(now + i * 0.1 + 0.3);
+    });
+}
+window.playAgentCompleteSound = playAgentCompleteSound;
+window.playAgentErrorSound = playAgentErrorSound;
 
 async function improvePrompt(targetElementId, e) {
     const target = document.getElementById(targetElementId);
@@ -4375,6 +4525,11 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     } catch (e) {
         updateThinking(chat, false);
         chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
+        // 🔊 Error notification sound
+        try { playAgentErrorSound(); } catch(e) {}
+        // Mark chat as errored so Agents Room shows the cross
+        chat._errored = true;
+        chat._errorMessage = e.message || 'Error desconocido';
         renderMessages();
     } finally {
         // If triggered by admin, report back to admin log
@@ -4721,12 +4876,16 @@ function renderAdminMessages() {
 
     let thinkingHtml = '';
     if (state.adminIsThinking) {
+        const thinkingText = state.adminThinkingText 
+            ? state.adminThinkingText.split('\n').filter(l => l.trim()).map(l => `<div>${escapeHtml(l)}</div>`).join('')
+            : '';
         thinkingHtml = `
             <div class="message agent thinking">
                 <div class="thinking-bubble-content">
                     <div class="spinner"></div>
                     <div class="thinking-text-wrapper">
-                        <div class="thinking-status">Orquestador pensando...</div>
+                        <div class="thinking-status">💭 Orquestador pensando...</div>
+                        ${thinkingText ? `<div class="thinking-subtext thinking-stream">${thinkingText}</div>` : ''}
                     </div>
                 </div>
             </div>
@@ -4773,6 +4932,37 @@ window.clearAdminChat = () => {
     saveData();
 };
 
+// ─── TELEGRAM MONITOR ───
+function renderTelegramMessages() {
+    const container = document.getElementById('telegram-messages');
+    if (!container) return;
+    if (state.telegramMessages.length === 0) {
+        container.innerHTML = '<div class="telegram-placeholder">Esperando mensajes de Telegram...</div>';
+        return;
+    }
+    container.innerHTML = '';
+    state.telegramMessages.forEach(m => {
+        const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+        const div = document.createElement('div');
+        div.className = `telegram-msg telegram-${m.type}`;
+        let icon = '📩', label = 'Entrante';
+        if (m.type === 'outgoing') { icon = '📤'; label = 'Saliente'; }
+        else if (m.type === 'status') { icon = '🔵'; label = 'Estado'; }
+        else if (m.type === 'error') { icon = '❌'; label = 'Error'; }
+        else if (m.type === 'thinking') { icon = '💭'; label = 'Pensando'; }
+        div.innerHTML = `
+            <div class="telegram-msg-header">
+                <span class="telegram-msg-type">${icon} ${label}</span>
+                <span class="telegram-msg-time">${time}</span>
+            </div>
+            <div class="telegram-msg-from">${m.from ? `👤 ${m.from}` : ''}</div>
+            <div class="telegram-msg-text">${escapeHtml(m.text || m.error || '')}</div>
+        `;
+        container.appendChild(div);
+    });
+    setTimeout(() => { container.scrollTop = container.scrollHeight; }, 50);
+}
+
 function buildAdminSystemPrompt() {
     const agentsList = state.projects.flatMap(p => p.chats.map(c => {
         const lastMsg = c.messages.length > 0 ? c.messages[c.messages.length - 1].content : '(Sin actividad)';
@@ -4807,6 +4997,8 @@ INSTRUCCIONES ADICIONALES:
 window.stopAdminAgent = () => {
     state.adminIsStopped = true;
     state.adminIsThinking = false;
+    state.adminAbortController?.abort();
+    state.adminAbortController = null;
     if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
     adminLog(`🛑 Deteniendo Orquestador Administrativo`);
     renderAdminMessages();
@@ -4823,9 +5015,11 @@ async function triggerAdminAgentLogic(retryCount = 0) {
     state.adminIsThinking = true;
     state.adminIsStopped = false;
     state.adminNeedsRecheck = false;
+    state.adminThinkingText = ''; // Para streaming de pensamiento
     if (stopAdminBtn) stopAdminBtn.classList.remove('hidden');
     renderAdminMessages();
 
+    // ─── Build system prompt + history (igual que antes) ───
     const systemMsg = { role: 'system', content: buildAdminSystemPrompt() };
     const history = state.adminMessages.map(m => ({
         role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
@@ -4834,50 +5028,77 @@ async function triggerAdminAgentLogic(retryCount = 0) {
 
     const messages = [systemMsg, ...history];
 
+    // Obtener el último mensaje del usuario (el que disparó esta llamada)
+    const lastUserMsg = state.adminMessages.filter(m => m.role === 'user').pop();
+    const queryMessage = lastUserMsg ? lastUserMsg.content : '';
+
     try {
-        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+        // Usar Hermes ADMIN vía API streaming (ndjson)
+        console.log(`[ADMIN-HERMES] Consultando a Hermes ADMIN (streaming): "${queryMessage.slice(0, 80)}..."`);
+
+        // Crear AbortController para poder cancelar la petición
+        state.adminAbortController = new AbortController();
+
+        const response = await fetch(`${API_BASE}/admin/hermes-chat/stream`, {
             method: 'POST',
-            body: JSON.stringify({
-                model: state.selectedAdminModel || modelSelect.value,
-                messages: messages,
-                stream: true
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: queryMessage, history }),
+            signal: state.adminAbortController.signal
         });
 
-        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        if (!response.ok) {
+            let detail = response.statusText;
+            try {
+                const errBody = await response.json();
+                if (errBody.error) detail = errBody.error;
+                else if (errBody.response) detail = errBody.response;
+            } catch {}
+            throw new Error(`Hermes ADMIN API Error: ${detail}`);
+        }
 
-        // --- STREAMING PROCESSING for Admin ---
+        // ─── Leer el stream ndjson ───
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let assistantResponse = '';
+        let buffer = '';
+        let assistantResponse = '(sin respuesta)';
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // keep incomplete line in buffer
 
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
-                    const json = JSON.parse(line);
-                    if (json.done) break;
-                    if (json.message && json.message.content) {
-                        assistantResponse += json.message.content;
-                    }
-                } catch (e) { }
-            }
+                    const event = JSON.parse(line);
 
-            if (state.adminIsStopped) {
-                reader.cancel();
-                state.adminIsThinking = false;
-                if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
-                return;
+                    if (event.event === 'thinking') {
+                        // Actualizar pensamiento en tiempo real
+                        state.adminThinkingText = event.text;
+                        renderAdminMessages();
+                    } else if (event.event === 'done') {
+                        assistantResponse = event.response || '(sin respuesta)';
+                    } else if (event.event === 'error') {
+                        throw new Error(event.error);
+                    }
+                } catch (parseErr) {
+                    if (parseErr.message && !parseErr.message.includes('JSON')) {
+                        throw parseErr;
+                    }
+                    // Si falla el parseo de la línea, la ignoramos
+                }
             }
         }
-        // --- END STREAMING ---
 
+        // Si nunca llegó evento done pero el stream terminó, algo salió mal
+        if (!assistantResponse) {
+            throw new Error('La transmisión finalizó sin respuesta');
+        }
+        
+        // Mostrar la respuesta en el admin chat
         state.adminMessages.push({ role: 'agent', content: assistantResponse });
         renderAdminMessages();
         saveData();
@@ -4904,6 +5125,8 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         const createProjectRegex = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
         const createAgentRegex = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
         const deleteProjectRegex = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
+        const deleteAgentRegex = /\[DELETE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
+        const stopAgentRegex = /\[STOP_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
 
         while ((m = createProjectRegex.exec(assistantResponse)) !== null) {
             const name = cleanStr(m[1]);
@@ -4963,6 +5186,60 @@ async function triggerAdminAgentLogic(retryCount = 0) {
                 anyFailed = true;
                 failedTargets.push(`DELETE_PROJECT:${pId}`);
                 state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo eliminar el proyecto "${pId}" porque NO EXISTE.` });
+            }
+        }
+
+        // ─── DELETE_AGENT ───
+        while ((m = deleteAgentRegex.exec(assistantResponse)) !== null) {
+            const pId = cleanStr(m[1]);
+            const aId = cleanStr(m[2]);
+            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
+            if (project) {
+                const chatIndex = project.chats.findIndex(c => c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase());
+                if (chatIndex >= 0) {
+                    const agentName = project.chats[chatIndex].name || aId;
+                    project.chats.splice(chatIndex, 1);
+                    adminLog(`🗑️ Agente eliminado: <strong>${agentName}</strong> de <strong>${project.name}</strong>`);
+                    saveData();
+                    renderProjectList();
+                    renderTabs();
+                    renderAdminMonitor();
+                } else {
+                    adminLog(`❌ No se encontró el agente <strong>${aId}</strong> en el proyecto <strong>${project.name}</strong>`);
+                    anyFailed = true;
+                    failedTargets.push(`DELETE_AGENT:${pId}:${aId}`);
+                }
+            } else {
+                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para eliminar agente.`);
+                anyFailed = true;
+                failedTargets.push(`DELETE_AGENT:${pId}`);
+            }
+        }
+
+        // ─── STOP_AGENT ───
+        while ((m = stopAgentRegex.exec(assistantResponse)) !== null) {
+            const pId = cleanStr(m[1]);
+            const aId = cleanStr(m[2]);
+            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
+            if (project) {
+                const chat = project.chats.find(c => c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase());
+                if (chat) {
+                    chat.isThinking = false;
+                    chat.isRunning = false;
+                    chat.isStopped = true;
+                    // Intentar detener vía API
+                    fetch(`${API_BASE}/admin/agents/${encodeURIComponent(project.id)}/${encodeURIComponent(chat.id)}/stop`, { method: 'POST' })
+                        .catch(() => {});
+                    adminLog(`🛑 Agente detenido: <strong>${chat.name}</strong> en <strong>${project.name}</strong>`);
+                    saveData();
+                    renderAdminMonitor();
+                } else {
+                    anyFailed = true;
+                    failedTargets.push(`STOP_AGENT:${pId}:${aId}`);
+                }
+            } else {
+                anyFailed = true;
+                failedTargets.push(`STOP_AGENT:${pId}`);
             }
         }
         // -----------------------
@@ -5150,21 +5427,15 @@ function updateAgentBadge() {
         });
 }
 
-// Polling periódico para mantener el badge actualizado
-let _badgeInterval = null;
+// Badge update: ya no hay polling — se actualiza vía WS events
 function startBadgePolling() {
-    if (_badgeInterval) return;
-    _badgeInterval = setInterval(updateAgentBadge, 5000);
     // Actualizar inmediatamente al arrancar
     updateAgentBadge();
 }
 function stopBadgePolling() {
-    if (_badgeInterval) {
-        clearInterval(_badgeInterval);
-        _badgeInterval = null;
-    }
+    // No-op — polling eliminado, ahora es event-driven
 }
-// Arrancar el polling al cargar la página (type="module" se ejecuta después de DOMContentLoaded)
+// Actualizar badge al cargar la página
 startBadgePolling();
 
 // Función auxiliar para reparar JSON mal formado enviado por modelos de IA
@@ -6365,9 +6636,9 @@ async function nativePickFolder() {
     const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
     btns.forEach(b => b.innerHTML = '⏳');
     try {
-        // AbortController con timeout de 28s (servidor tiene 25s, damos 3s de margen)
+        // AbortController con timeout de 125s (servidor tiene 120s, damos 5s de margen)
         const ctrl = new AbortController();
-        const timeoutId = setTimeout(() => ctrl.abort(), 28000);
+        const timeoutId = setTimeout(() => ctrl.abort(), 125000);
         const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
         clearTimeout(timeoutId);
         if (res && res.ok) {
@@ -6399,7 +6670,7 @@ async function nativePickFolder() {
         }
     } catch (e) {
         if (e.name === 'AbortError') {
-            const msg = '⏰ Timeout: el selector tardó más de 28s. Reintentá.';
+            const msg = '⏰ Timeout: el selector tardó más de 125s. Reintentá.';
             console.error(msg);
             throw new Error(msg);
         } else {
@@ -6451,12 +6722,22 @@ function setupEventListeners() {
 
         const tableView = document.getElementById('admin-table-view');
         const chatView = document.getElementById('admin-chat-view');
+        const telegramView = document.getElementById('admin-telegram-view');
 
         if (subTab === 'table') {
             tableView.classList.remove('hidden');
             chatView.classList.add('hidden');
+            if (telegramView) telegramView.classList.add('hidden');
+        } else if (subTab === 'telegram') {
+            tableView.classList.add('hidden');
+            chatView.classList.add('hidden');
+            if (telegramView) {
+                telegramView.classList.remove('hidden');
+                renderTelegramMessages();
+            }
         } else {
             tableView.classList.add('hidden');
+            if (telegramView) telegramView.classList.add('hidden');
             chatView.classList.remove('hidden');
             renderAdminMessages();
         }
@@ -6548,17 +6829,12 @@ function setupEventListeners() {
         }
     }
 
-    // Interval de health-check periódico (cada 30s para la ventana activa)
+    // Interval de health-check periódico — ELIMINADO: ahora se actualiza vía WS events
     let healthCheckInterval = null;
     function startHealthCheck(projectId, chatId) {
         stopHealthCheck();
-        healthCheckInterval = setInterval(() => {
-            const activeChat = getActiveChat();
-            if (!activeChat) return;
-            const activeProject = getActiveProject();
-            if (!activeProject) return;
-            updateHermesUI(activeProject.id, activeChat.id);
-        }, 30000);
+        // Solo actualizar inmediatamente, sin intervalo
+        updateHermesUI(projectId, chatId);
     }
     function stopHealthCheck() {
         if (healthCheckInterval) {
@@ -7207,6 +7483,28 @@ init();
                     if (data.event === 'hermes:log' || data.event === 'hermes:status') {
                         refreshInstances();
                     }
+                    if (data.event === 'god:sync') {
+                        // Sincronizar mensaje del HERMES GOD al admin chat
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: data.role === 'user' ? 'user' : 'system',
+                                content: `👑 GOD ${data.role === 'user' ? '📤' : '📥'}: ${data.content}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                    }
+                    if (data.event === 'hermes:admin-sync' || data.event === 'god:sync') {
+                        // Sincronizar mensaje del Hermes ADMIN Bot al admin chat
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: data.role === 'user' ? 'user' : 'system',
+                                content: `📡 ${data.source === 'telegram' ? 'Telegram' : 'Sistema'}: ${data.content}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                    }
                     if (data.event === 'system:restart') {
                         console.log('[SYSTEM] Recibido evento de reinicio:', data.reason);
                         // Refresh console to show restart event
@@ -7246,6 +7544,27 @@ init();
                 refreshInstances();
             } catch (e) {
                 alert('Error: ' + e.message);
+            }
+        });
+    }
+
+    // Botón para limpiar identity files huérfanos
+    const purgeBtn = document.getElementById('hermes-purge-btn');
+    if (purgeBtn) {
+        purgeBtn.addEventListener('click', async () => {
+            if (!confirm('¿Eliminar identidades huérfanas (chats que ya no existen)? Esto no afecta agentes activos.')) return;
+            purgeBtn.disabled = true;
+            purgeBtn.textContent = '🧹 Limpiando...';
+            try {
+                const res = await fetch(`${API}/hermes/purge-identities`, { method: 'POST' });
+                const data = await res.json();
+                alert(`🧹 Limpieza completada:\n- ${data.purged} identidades huérfanas eliminadas\n- ${data.kept} identidades válidas conservadas\n- ${data.bridgeCleaned} instancias del bridge limpiadas`);
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                purgeBtn.disabled = false;
+                purgeBtn.textContent = '🧹 Limpiar Huérfanos';
             }
         });
     }
@@ -7441,11 +7760,12 @@ init();
         startHermesForTab();
     }
 
-    async function checkRunningInstance(projectId) {
+    async function checkRunningInstance(projectId, chatId) {
         try {
             const res = await fetch(`${API}/hermes/instances`);
             const data = await res.json();
-            const inst = (data.instances || []).find(i => i.id === projectId);
+            const key = `${projectId}:${chatId}`;
+            const inst = (data.instances || []).find(i => i.id === key);
             if (inst && (inst.status === 'running' || inst.status === 'starting')) {
                 isRunning = true;
                 setHermesStatus('● Activo', 'running');
@@ -7511,6 +7831,18 @@ init();
         const hermesNameInput = document.getElementById('hermes-agent-name');
         const agentName = hermesNameInput ? hermesNameInput.value.trim() || 'Hermes Agent' : 'Hermes Agent';
 
+        // Generar o reusar un chatId fijo para este proyecto (evita crear nuevos cada vez)
+        if (!project._hermesChatId) {
+            // Buscar si ya existe un chat Hermes en este proyecto
+            const existingHermesChat = project.chats?.find(c => c.id === 'hermes-' + projectId);
+            if (existingHermesChat) {
+                project._hermesChatId = existingHermesChat.id;
+            } else {
+                project._hermesChatId = 'hermes-' + projectId;
+            }
+        }
+        const chatId = project._hermesChatId;
+
         setHermesStatus('◐ Iniciando...', '');
         hermesStartBtn.disabled = true;
         hermesStartBtn.textContent = 'Iniciando...';
@@ -7521,7 +7853,7 @@ init();
             const res = await fetch(`${API}/hermes/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, workdir, model, name: agentName })
+                body: JSON.stringify({ projectId, chatId, workdir, model, name: agentName })
             });
             const data = await res.json();
             if (data.instance) {
@@ -7952,6 +8284,9 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             const doneTime = new Date().toLocaleTimeString();
             progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime;
 
+            // 🔊 Notification sound on successful completion
+            try { playAgentCompleteSound(); } catch(e) {}
+
             // ─── Token counter ───
             if (tokenUsage && tokenUsage.total_tokens > 0) {
                 // Track cumulative tokens per chat
@@ -8118,6 +8453,11 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             progressChatMsg.finished = true;
             progressChatMsg.minimized = false; // dejar visible para que se vea el error
         }
+        // 🔊 Error notification sound
+        try { playAgentErrorSound(); } catch(e) {}
+        // Mark chat as errored so Agents Room shows the cross
+        chat._errored = true;
+        chat._errorMessage = e.message || 'Error desconocido';
         if (e.name === 'AbortError') {
             chat.messages.push({
                 role: 'system',

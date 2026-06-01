@@ -1,6 +1,8 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import fetch from 'node-fetch';
@@ -9,6 +11,7 @@ import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
+import { Bot } from 'grammy';
 import { connectDB, getCollection } from './db.js';
 
 // LangGraph Integration
@@ -45,6 +48,577 @@ let isAgentBusy = false;
 let needsRestart = false;
 let restartTimer = null;
 let masterSocketId = null;
+
+// ─── HERMES GOD WebSocket ───
+// El HERMES GOD (Telegram standalone bot) se conecta via WebSocket
+// para recibir comandos y enviar notificaciones
+let godSocket = null;  // WebSocket del HERMES GOD conectado
+
+/**
+ * Notifica al HERMES GOD si está conectado
+ */
+function notifyGod(message) {
+    if (godSocket && godSocket.readyState === 1) {
+        try {
+            godSocket.send(JSON.stringify({
+                event: 'god:notification',
+                message,
+                timestamp: Date.now()
+            }));
+        } catch (e) {
+            console.warn('[GOD] Error notificando a HERMES GOD:', e.message);
+        }
+    }
+}
+
+// ─── TELEGRAM BOT INLINE (HERMES GOD integrado) ───
+let wss = null; // WebSocket server for frontend clients (initialized in startServer)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+let telegramBot = null;
+let telegramBotOwner = null;
+const TELEGRAM_AUTHORIZED = (process.env.TELEGRAM_AUTHORIZED_USERS || '')
+    .split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+
+function telegramBroadcast(event, data = {}) {
+    const msg = JSON.stringify({ event, ...data, timestamp: Date.now() });
+    for (const client of wss ? wss.clients : []) {
+        try { if (client.readyState === 1) client.send(msg); } catch {}
+    }
+}
+
+/**
+ * Llama a Hermes con skill BOTADMIN y devuelve la respuesta.
+ * FIX: Trunca history para evitar ENAMETOOLONG en Windows (límite ~32K CLI args).
+ * FIX: try-catch en console.error para evitar EPIPE → 500.
+ */
+async function callHermesAdmin(message, history = []) {
+    const hermesPath = await hermesBridge._findHermesPath(process.cwd());
+    let finalMsg = message;
+    if (history && history.length > 0) {
+        // ─── TRUNCAR HISTORY para evitar ENAMETOOLONG en Windows ───
+        // Límite de seguridad: mantener total < 15KB para CLI args
+        const MAX_HISTORY_MSGS = 10;
+        const MAX_MSG_LENGTH = 2000;
+        const truncated = history.slice(-MAX_HISTORY_MSGS).map(m => ({
+            role: m.role,
+            content: m.content.length > MAX_MSG_LENGTH
+                ? m.content.slice(0, MAX_MSG_LENGTH) + '...[truncado]'
+                : m.content
+        }));
+        const historyBlock = truncated
+            .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
+            .join('\n\n');
+        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+        // Safety: si finalMsg > 20KB, no pasamos history y mandamos solo el mensaje actual
+        if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
+            console.warn(`[ADMIN-HERMES] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual`);
+            finalMsg = message;
+        }
+    }
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
+    const { stdout, stderr } = await execFileAsync(hermesPath, args, {
+        cwd: process.cwd(), timeout: 600000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, HERMES_WORKDIR: process.cwd() }
+    }).catch(err => {
+        // Hermes puede fallar por timeout, clarify en no-interactivo, o errores del modelo
+        // Devolvemos stderr/stdout parcial si está disponible
+        const partial = { stdout: err.stdout || '', stderr: err.stderr || '' };
+        if (err.killed || err.code === 'ETIMEDOUT') {
+            partial.stderr += '\n[TIMEOUT] Hermes tardó demasiado (límite 10 min).';
+        }
+        // FIX: try-catch para evitar que console.error con EPIPE rompa el catch handler
+        try { console.error(`[ADMIN-HERMES] Hermes falló: ${err.message}`); } catch (logErr) {}
+        return partial;
+    });
+    const clean = stdout.replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
+    const lines = clean.split('\n');
+    let panelStart = -1, panelEnd = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].includes('╰') && panelEnd === -1) panelEnd = i;
+        if (lines[i].includes('╭') && lines[i].includes('Hermes') && panelStart === -1) {
+            panelStart = i;
+            if (panelEnd === -1) panelEnd = lines.length;
+            break;
+        }
+    }
+    let response = clean.trim();
+    if (panelStart !== -1 && panelEnd !== -1 && panelStart < panelEnd) {
+        response = lines.slice(panelStart + 1, panelEnd)
+            .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
+            .join('\n').trim();
+    }
+    const sessionIdMatch = stderr?.match(/session_id:\s*(\S+)/i);
+    return { response, sessionId: sessionIdMatch ? sessionIdMatch[1] : null };
+}
+
+/**
+ * Llama a Hermes con streaming de stderr (para mostrar pensamiento en tiempo real en Telegram).
+ * onThinking(stderrLine) se llama por cada línea significativa de stderr.
+ * onClarify(question, choices) se llama si Hermes intenta usar la herramienta clarify.
+ *   Debe retornar una Promise<string> con la respuesta del usuario (o null si no disponible).
+ */
+async function callHermesAdminStreaming(message, onThinking, history = [], onClarify = null) {
+    const hermesPath = await hermesBridge._findHermesPath(process.cwd());
+    let finalMsg = message;
+    if (history && history.length > 0) {
+        // ─── TRUNCAR HISTORY (mismo fix que callHermesAdmin) ───
+        const MAX_HISTORY_MSGS = 10;
+        const MAX_MSG_LENGTH = 2000;
+        const truncated = history.slice(-MAX_HISTORY_MSGS).map(m => ({
+            role: m.role,
+            content: m.content.length > MAX_MSG_LENGTH
+                ? m.content.slice(0, MAX_MSG_LENGTH) + '...[truncado]'
+                : m.content
+        }));
+        const historyBlock = truncated
+            .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
+            .join('\n\n');
+        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+        if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
+            console.warn(`[ADMIN-HERMES-STREAMING] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual`);
+            finalMsg = message;
+        }
+    }
+    const { spawn } = await import('child_process');
+    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
+    
+    return new Promise((resolve) => {
+        const proc = spawn(hermesPath, args, {
+            cwd: process.cwd(),
+            env: { ...process.env, HERMES_WORKDIR: process.cwd() },
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        let stdout = '';
+        let stderr = '';
+        let thinkingLines = [];
+        let thinkingTimer = null;
+        const THINKING_INTERVAL = 3000; // 3 segundos entre updates
+
+        proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+
+        proc.stderr.on('data', (chunk) => {
+            const text = chunk.toString();
+            stderr += text;
+
+            // Extraer líneas significativas para thinking
+            const lines = text.split('\n');
+            for (const rawLine of lines) {
+                // Limpiar ANSI codes y timestamps
+                const clean = rawLine
+                    .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
+                    .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+                    .replace(/^\d{2}:\d{2}:\d{2}\s*-\s*/, '')
+                    .trim();
+                
+                if (!clean) continue;
+                
+                // Filtrar líneas de debug/ruido
+                if (clean.includes('DEBUG') || clean.includes('Auxiliary') || 
+                    clean.includes('OpenAI client') || clean.includes('tcp_force_closed') ||
+                    clean.includes('Total message size') || clean.includes('Last message role') ||
+                    clean.includes('API Request') || clean.includes('Token usage') ||
+                    clean.startsWith('│') || clean.startsWith('╰') || clean.startsWith('╭')) continue;
+
+                // Categorizar
+                let prefix = '';
+                if (clean.includes('[thinking]')) {
+                    prefix = '💭 ';
+                    const thinkingContent = clean.replace(/.*\[thinking\]\s*/, '').slice(0, 100);
+                    thinkingLines.push(prefix + thinkingContent);
+                } else if (clean.includes('Tool call:')) {
+                    const toolMatch = clean.match(/Tool call:\s*(\w+)/);
+                    const toolName = toolMatch ? toolMatch[1] : '???';
+                    const emojis = {
+                        read_file: '📖', write_file: '✍️', search_files: '🔍', terminal: '💻',
+                        execute_code: '🐍', patch: '🔧', web_search: '🌐', web_extract: '📄',
+                        browser_navigate: '🌎', browser_snapshot: '📸', browser_click: '🖱️',
+                        skill_view: '📚', skill_manage: '🛠️', delegate_task: '🤖',
+                        vision_analyze: '👁️', todo: '📋', memory: '🧠',
+                        clarify: '❓', session_search: '🔎', file: '📁'
+                    };
+                    const emoji = emojis[toolName] || '⚙️';
+                    thinkingLines.push(`${emoji} ${toolName}`);
+                } else if (clean.includes('completed in') || clean.includes('Tool')) {
+                    // Skip timing lines
+                } else if (clean.includes('conversation turn') || clean.includes('session=')) {
+                    // Skip session info
+                } else if (clean.length > 5) {
+                    thinkingLines.push(clean.slice(0, 120));
+                }
+            }
+        });
+
+        // Timer para enviar updates de pensamiento cada 3 segundos
+        thinkingTimer = setInterval(() => {
+            if (thinkingLines.length > 0 && onThinking) {
+                const lastLines = thinkingLines.slice(-8);  // Últimas 8 líneas
+                onThinking(lastLines.join('\n'));
+            }
+        }, THINKING_INTERVAL);
+
+        // Timeout de 10 minutos
+        const timeout = setTimeout(() => {
+            if (thinkingTimer) clearInterval(thinkingTimer);
+            proc.kill();
+            stderr += '\n[TIMEOUT] Hermes tardó demasiado (límite 10 min).';
+            const clean = (stdout || '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
+            resolve({ response: clean.trim() || '(timeout)', stderr });
+        }, 600000);
+
+        proc.on('close', (code) => {
+            if (thinkingTimer) clearInterval(thinkingTimer);
+            clearTimeout(timeout);
+            
+            const cleanStdout = (stdout || '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
+            const lines = cleanStdout.split('\n');
+            let panelStart = -1, panelEnd = -1;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (lines[i].includes('╰') && panelEnd === -1) panelEnd = i;
+                if (lines[i].includes('╭') && lines[i].includes('Hermes') && panelStart === -1) {
+                    panelStart = i;
+                    if (panelEnd === -1) panelEnd = lines.length;
+                    break;
+                }
+            }
+            let response = cleanStdout.trim();
+            if (panelStart !== -1 && panelEnd !== -1 && panelStart < panelEnd) {
+                response = lines.slice(panelStart + 1, panelEnd)
+                    .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
+                    .join('\n').trim();
+            }
+            resolve({ response, stderr, exitCode: code });
+        });
+
+        proc.on('error', (err) => {
+            if (thinkingTimer) clearInterval(thinkingTimer);
+            clearTimeout(timeout);
+            resolve({ response: `❌ Error: ${err.message}`, stderr, exitCode: -1 });
+        });
+    });
+}
+
+/**
+ * Limpia la respuesta de Hermes: quita [thinking], metadatos de sesión,
+ * líneas de resumen (Conversation completed, Session:, Duration:, etc.)
+ */
+function cleanHermesResponse(text) {
+    if (!text) return '';
+    return text
+        // Quitar [thinking] lines
+        .replace(/^.*\[thinking\].*$/gm, '')
+        // Quitar líneas de resumen de sesión
+        .replace(/^.*¡+ Conversation completed after.*$/gm, '')
+        .replace(/^.*Resume this session with:.*$/gm, '')
+        .replace(/^.*hermes --resume.*$/gm, '')
+        .replace(/^Session:\s+\S+.*$/gm, '')
+        .replace(/^Duration:\s+.*$/gm, '')
+        .replace(/^Messages:\s+.*$/gm, '')
+        // Quitar tool call residual
+        .replace(/^.*Tool call:.*$/gm, '')
+        .replace(/^.*Turn ended:.*$/gm, '')
+        // Multiple newlines → single
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+/**
+ * Inicializa el bot de Telegram inline dentro del servidor.
+ */
+function initTelegramBot() {
+    if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN.length < 40) {
+        console.log('[TELEGRAM] ⚠️ TELEGRAM_BOT_TOKEN no configurado — bot desactivado');
+        return;
+    }
+    const OWNER_FILE = path.join(os.homedir(), '.hermes', 'god-bot-owner.json');
+    function loadOwner() {
+        try {
+            if (existsSync(OWNER_FILE)) return JSON.parse(readFileSync(OWNER_FILE, 'utf-8'));
+        } catch {}
+        return null;
+    }
+    function saveOwner(chatId, name) {
+        try {
+            mkdirSync(path.dirname(OWNER_FILE), { recursive: true });
+            writeFileSync(OWNER_FILE, JSON.stringify({ ownerChatId: chatId, name, timestamp: Date.now() }));
+        } catch {}
+    }
+    const savedOwner = loadOwner();
+
+    const bot = new Bot(TELEGRAM_BOT_TOKEN);
+
+    // Autorización
+    bot.use(async (ctx, next) => {
+        const userId = ctx.from?.id;
+        if (!userId) { await ctx.reply('⛔ No se pudo identificar tu usuario.'); return; }
+        if (TELEGRAM_AUTHORIZED.length > 0) {
+            if (!TELEGRAM_AUTHORIZED.includes(userId)) { await ctx.reply('⛔ No estás autorizado.'); return; }
+        } else if (telegramBotOwner) {
+            if (userId !== telegramBotOwner) { await ctx.reply('⛔ No estás autorizado.'); return; }
+        } else {
+            telegramBotOwner = userId;
+            saveOwner(userId, ctx.from?.first_name || 'Owner');
+            console.log(`[TELEGRAM] 👑 Dueño: ${ctx.from?.first_name} (${userId})`);
+            // Enviar mensaje de bienvenida si no se envió en startup
+            const bi = await bot.api.getMe().catch(() => null);
+            if (bi) {
+                const hname = os.hostname();
+                const totalMB = Math.round(os.totalmem() / 1024 / 1024);
+                const freeMB = Math.round(os.freemem() / 1024 / 1024);
+                const welcomeMsg = [
+                    `🟢 *JP Agents — Servidor Conectado*`,
+                    ``,
+                    `🤖 Bot: @${bi.username}`,
+                    `💻 Host: ${hname}`,
+                    `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
+                    `🖥️ CPU: ${os.cpus().length} cores`,
+                    `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
+                    ``,
+                    `✅ Todo listo — HERMES GOD escuchando.`,
+                ].join('\n');
+                await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' }).catch(() => {});
+                console.log(`[TELEGRAM] 📤 Bienvenida enviada al nuevo owner ${userId}`);
+            }
+        }
+        await next();
+    });
+
+    // Mensajes de texto → HERMES GOD BOTADMIN (con streaming de pensamiento)
+    bot.on('message:text', async (ctx) => {
+        let userMsg = ctx.message.text;
+        const chatId = ctx.chat.id;
+        const userName = ctx.from?.first_name || 'User';
+
+        // Inyectar respuesta de clarify pendiente si existe
+        if (global.clarifyAnswers && global.clarifyAnswers.has(chatId)) {
+            const prev = global.clarifyAnswers.get(chatId);
+            global.clarifyAnswers.delete(chatId);
+            userMsg = `[Respuesta a tu pregunta anterior: "${prev.question}" → Elegí: "${prev.answer}"]\n\n${userMsg}`;
+            console.log(`[TELEGRAM] 📎 Inyectada respuesta de clarify: "${prev.answer}"`);
+        }
+
+        console.log(`[TELEGRAM] 📩 ${userName}: "${userMsg.slice(0, 80)}..."`);
+
+        telegramBroadcast('telegram:incoming', { chatId, from: userName, text: userMsg, messageId: ctx.message.message_id });
+
+        const thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...').catch(() => null);
+        telegramBroadcast('telegram:thinking', { chatId, messageId: thinkingMsg?.message_id });
+
+        try {
+            let lastThinkingText = '';
+            const { response, stderr: hermesStderr } = await callHermesAdminStreaming(userMsg, (thinkingText) => {
+                lastThinkingText = thinkingText;
+                if (thinkingMsg && thinkingText) {
+                    const statusText = `👑 HERMES GOD está pensando...\n\n${thinkingText}`;
+                    bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
+                        .catch(() => {}); // ignorar errores de edición (rate limit, etc.)
+                }
+            });
+
+            // ─── Detectar clarify calls y enviar botones ───
+            if (hermesStderr && hermesStderr.includes('Tool call: clarify')) {
+                const clarifyMatch = hermesStderr.match(/Tool call: clarify with args:\s*(\{[^}]+\})/);
+                if (clarifyMatch) {
+                    try {
+                        const clarifyArgs = JSON.parse(clarifyMatch[1]);
+                        const question = clarifyArgs.question || '';
+                        const choices = clarifyArgs.choices || [];
+                        
+                        if (choices.length > 0) {
+                            // Enviar botones inline de Telegram
+                            const buttons = choices.map((choice, i) => [{
+                                text: choice.slice(0, 40), // Telegram limita a ~64 chars
+                                callback_data: `clarify:${chatId}:${i}:${Date.now()}`
+                            }]);
+                            // Guardar choices para referencia cuando el usuario responda
+                            pendingClarifies.set(`clarify:${chatId}`, {
+                                question, choices, timestamp: Date.now()
+                            });
+                            
+                            const clarifyMsg = await ctx.reply(
+                                `❓ ${question}\n\n(Elegí una opción — Hermes ya terminó, pero tu respuesta se usará en el próximo mensaje)`,
+                                { reply_markup: { inline_keyboard: buttons } }
+                            ).catch(() => {});
+                            console.log(`[TELEGRAM] 📋 Clarify detectado — botones enviados: "${question.slice(0, 60)}..."`);
+                        } else if (question) {
+                            // Pregunta abierta — sugerir que el usuario responda
+                            await ctx.reply(
+                                `❓ ${question}\n\n(Respondé a este mensaje y tu respuesta se usará como contexto adicional)`
+                            ).catch(() => {});
+                        }
+                    } catch (parseErr) {
+                        console.error('[TELEGRAM] Error parseando clarify args:', parseErr.message);
+                    }
+                }
+            }
+
+            const MAX_LEN = 3500;
+            if (response.length <= MAX_LEN) {
+                if (thinkingMsg) {
+                    await bot.api.editMessageText(chatId, thinkingMsg.message_id, response, { parse_mode: '' })
+                        .catch(() => ctx.reply(response).catch(() => {}));
+                } else {
+                    await ctx.reply(response).catch(() => {});
+                }
+            } else {
+                // Split cuidando párrafos
+                const parts = [];
+                let remaining = response;
+                while (remaining.length > 0) {
+                    if (remaining.length <= MAX_LEN) { parts.push(remaining); break; }
+                    let cut = remaining.lastIndexOf('\n\n', MAX_LEN);
+                    if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('\n', MAX_LEN);
+                    if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('. ', MAX_LEN) + 1;
+                    if (cut < 100) cut = MAX_LEN;
+                    parts.push(remaining.slice(0, cut).trim());
+                    remaining = remaining.slice(cut).trim();
+                }
+                if (thinkingMsg) {
+                    await bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: '' }).catch(() => {});
+                } else {
+                    await ctx.reply(parts[0]).catch(() => {});
+                }
+                for (let i = 1; i < parts.length; i++) {
+                    await bot.api.sendMessage(chatId, parts[i], { parse_mode: '' }).catch(() => {});
+                }
+            }
+            console.log(`[TELEGRAM] ✅ Respondido (${response.length} chars)`);
+            telegramBroadcast('telegram:outgoing', {
+                chatId, text: response.slice(0, 500) + (response.length > 500 ? '...' : ''), responseLength: response.length
+            });
+        } catch (err) {
+            console.error(`[TELEGRAM] ❌ Error:`, err.message);
+            if (thinkingMsg) {
+                await bot.api.editMessageText(chatId, thinkingMsg.message_id, `❌ Error: ${err.message.slice(0, 500)}`).catch(() => {});
+            } else {
+                await ctx.reply(`❌ Error: ${err.message.slice(0, 500)}`).catch(() => {});
+            }
+            telegramBroadcast('telegram:error', { chatId, error: err.message });
+        }
+    });
+
+    // ─── Callback Query: Botones inline (clarify, etc.) ───
+    bot.on('callback_query', async (ctx) => {
+        const data = ctx.callbackQuery.data;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        
+        if (data && data.startsWith('clarify:')) {
+            // Formato: clarify:<chatId>:<choiceIndex>:<timestamp>
+            const parts = data.split(':');
+            const choiceIndex = parseInt(parts[2]);
+            const key = `clarify:${chatId}`;
+            const pending = pendingClarifies.get(key);
+            
+            if (pending && pending.choices && choiceIndex >= 0 && choiceIndex < pending.choices.length) {
+                const chosen = pending.choices[choiceIndex];
+                pendingClarifies.delete(key);
+                
+                // Confirmar la elección y eliminar los botones
+                await ctx.answerCallbackQuery({ text: `Elegiste: ${chosen}` }).catch(() => {});
+                await ctx.editMessageText(
+                    `✅ *Elegiste:* ${chosen}\n\n_Esta respuesta se usará como contexto en tu próximo mensaje._`,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+                
+                // Guardar la respuesta para el próximo mensaje
+                if (!global.clarifyAnswers) global.clarifyAnswers = new Map();
+                global.clarifyAnswers.set(chatId, {
+                    question: pending.question,
+                    answer: chosen,
+                    timestamp: Date.now()
+                });
+                
+                console.log(`[TELEGRAM] 👆 Clarify respondido: chat=${chatId}, choice="${chosen}"`);
+            } else {
+                await ctx.answerCallbackQuery({ text: 'Esta pregunta ya expiró.' }).catch(() => {});
+            }
+        }
+    });
+
+    // Comandos
+    bot.command('start', async (ctx) => {
+        const uptime = Math.floor((Date.now() - botStartTime) / 1000);
+        const h = Math.floor(uptime / 3600), m = Math.floor((uptime % 3600) / 60);
+        await ctx.reply(
+            `👑 *HERMES GOD* — Integrado en JP Agents\n\nSoy HERMES GOD. Escribime cualquier cosa.\n\n📊 ${h}h ${m}m uptime, ${hermesBridge.listInstances().length} agentes\n\nComandos: /status`,
+            { parse_mode: 'Markdown' }
+        );
+    });
+    bot.command('status', async (ctx) => {
+        const uptime = Math.floor((Date.now() - botStartTime) / 1000);
+        const instances = hermesBridge.listInstances();
+        const running = instances.filter(i => i.status === 'running').length;
+        await ctx.reply(
+            `📊 *Estado*\n🖥️ Uptime: ${formatUptime(uptime)}\n🤖 Agentes: ${instances.length} (${running} activos)`,
+            { parse_mode: 'Markdown' }
+        );
+    });
+    bot.command('help', async (ctx) => {
+        await ctx.reply('👑 *HERMES GOD*\nCualquier texto → Hermes BOTADMIN\n/status — Estado\n/help — Ayuda', { parse_mode: 'Markdown' });
+    });
+
+    bot.catch((err) => console.error(`[TELEGRAM] ❌ Error del bot:`, err.message));
+
+    bot.start({ onStart: async (bi) => {
+        telegramBot = bot;
+        const hname = os.hostname();
+        const totalMB = Math.round(os.totalmem() / 1024 / 1024);
+        const freeMB = Math.round(os.freemem() / 1024 / 1024);
+        console.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (inline)`);
+        telegramBroadcast('telegram:status', { connected: true, username: bi.username });
+
+        // Mensaje automático de confirmación de conexión al owner
+        const ownerId = savedOwner?.ownerChatId || TELEGRAM_AUTHORIZED[0];
+        if (ownerId) {
+            const startupMsg = [
+                `🟢 *JP Agents — Servidor Conectado*`,
+                ``,
+                `🤖 Bot: @${bi.username}`,
+                `💻 Host: ${hname}`,
+                `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
+                `🖥️ CPU: ${os.cpus().length} cores`,
+                `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
+                ``,
+                `✅ Todo listo — HERMES GOD escuchando.`,
+            ].join('\n');
+            try {
+                await bot.api.sendMessage(ownerId, startupMsg, { parse_mode: 'Markdown' });
+                console.log(`[TELEGRAM] 📤 Startup confirmado a chat ${ownerId}`);
+            } catch (e) {
+                console.warn(`[TELEGRAM] ⚠️ No se pudo enviar mensaje de startup: ${e.message}`);
+            }
+        }
+    }});
+
+    console.log(`[TELEGRAM] 🚀 Inicializando bot...`);
+}
+
+function formatUptime(seconds) {
+    if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+    if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+let botStartTime = Date.now();
+
+// ─── Pending Clarify Questions ───
+// Almacena preguntas de clarify pendientes por chatId para responder vía botones inline
+// { chatId: { question, choices, resolve, timestamp, messageId } }
+const pendingClarifies = new Map();
+
+// Limpiar clarifies viejos cada 5 minutos
+setInterval(() => {
+    const now = Date.now();
+    for (const [chatId, pending] of pendingClarifies) {
+        if (now - pending.timestamp > 300000) { // 5 min timeout
+            pending.resolve('(timeout - sin respuesta)');
+            pendingClarifies.delete(chatId);
+        }
+    }
+}, 60000);
 
 app.get('/api/admin/traces', async (req, res) => {
     try {
@@ -224,6 +798,10 @@ app.post('/api/sessions/save', async (req, res) => {
         const projectCount = req.body.projects ? req.body.projects.length : 0;
         console.log(`[STATE] Guardando estado: ${projectCount} proyectos`);
         await saveSessions(req.body);
+        
+        // ─── WS Broadcast: state updated (agents/projects changed) ───
+        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'sessions/save' });
+        
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -514,14 +1092,33 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
 // ─── Native Folder Picker using PowerShell Shell.Application (sin Windows Forms → ultra confiable) ───
 let pickFolderInProgress = false;
 let pickFolderChildPid = null;
+let pickFolderChild = null;  // referencia directa al child process para kill sin exec
 
 async function killPickFolderProcess() {
+    const childToKill = pickFolderChild;
     const pidToKill = pickFolderChildPid;
     // Limpiar estado inmediatamente para que el handler close/error no lo pise después
+    pickFolderChild = null;
     pickFolderChildPid = null;
     pickFolderInProgress = false;
     if (!pidToKill) return;
-    // Intentar matar el proceso con taskkill (solo el PID específico, sin fallback masivo)
+    
+    // Método 1: kill directo al child process (más confiable, no requiere taskkill)
+    if (childToKill && !childToKill.killed) {
+        try {
+            childToKill.kill('SIGTERM');
+            // Darle 500ms para morir graceful, después SIGKILL
+            await new Promise(r => setTimeout(r, 500));
+            if (!childToKill.killed) {
+                try { childToKill.kill('SIGKILL'); } catch (_) {}
+            }
+            return; // éxito con child.kill()
+        } catch (err) {
+            console.warn('[SERVER] ⚠️ child.kill() falló, intentando taskkill:', err.message);
+        }
+    }
+    
+    // Método 2: fallback con taskkill (solo el PID específico, sin kill masivo)
     try {
         await new Promise((resolve) => {
             exec(`taskkill /PID ${pidToKill} /T /F 2>nul`, () => resolve());
@@ -557,7 +1154,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     // o directamente no se mostraba por falta de ventana padre en el Z-order.
     const psCommand = `
         Add-Type -AssemblyName System.Windows.Forms;
-        Add-Type @"
+        Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing @"
             using System;
             using System.Runtime.InteropServices;
             using System.Drawing;
@@ -617,6 +1214,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
         // presencia en el desktop para que SetForegroundWindow funcione.
     });
 
+    pickFolderChild = child;
     pickFolderChildPid = child.pid;
     console.log('[SERVER] PowerShell (HermesFolderPicker) spawn con PID:', child.pid);
 
@@ -626,21 +1224,29 @@ app.get('/api/utils/pick-folder', async (req, res) => {
     child.stdout.on('data', (data) => { stdout += data.toString(); });
     child.stderr.on('data', (data) => { stderr += data.toString(); });
 
-    // Timeout de 25s — suficiente para que el usuario elija
+    // Timeout de 120s (2 min) — suficiente para que el usuario explore carpetas sin prisa
     const timeout = setTimeout(() => {
-        console.log('[SERVER] ⏰ Timeout pick-folder (25s) — matando proceso...');
-        killPickFolderProcess();
-        if (!res.headersSent) {
-            res.status(500).json({ error: 'Selector de carpetas cancelado por timeout (25s).' });
+        console.log('[SERVER] ⏰ Timeout pick-folder (120s) — matando proceso...');
+        // Blindaje: killPickFolderProcess NUNCA debe tirar error (ni sincrónico ni rechazo)
+        try {
+            killPickFolderProcess().catch(err => {
+                console.error('[SERVER] ⚠️ killPickFolderProcess falló en timeout (no fatal):', err.message);
+            });
+        } catch (syncErr) {
+            console.error('[SERVER] ⚠️ killPickFolderProcess error sincrónico (no fatal):', syncErr.message);
         }
-    }, 25000);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Selector de carpetas cancelado por timeout (120s).' });
+        }
+    }, 120000);
 
     child.on('error', (err) => {
         clearTimeout(timeout);
         console.error('[SERVER] Fallo crítico en pick-folder:', err.message);
         if (pickFolderChildPid === child.pid) {
-            pickFolderInProgress = false;
+            pickFolderChild = null;
             pickFolderChildPid = null;
+            pickFolderInProgress = false;
         }
         if (!res.headersSent) {
             res.status(500).json({ error: 'No se pudo abrir el selector de carpetas.', details: err.message });
@@ -651,8 +1257,9 @@ app.get('/api/utils/pick-folder', async (req, res) => {
         clearTimeout(timeout);
         const isCurrent = pickFolderChildPid === child.pid;
         if (isCurrent) {
-            pickFolderInProgress = false;
+            pickFolderChild = null;
             pickFolderChildPid = null;
+            pickFolderInProgress = false;
         }
 
         if (res.headersSent) return;
@@ -1453,7 +2060,10 @@ app.get('/api/admin/agents', async (req, res) => {
                         let status = 'idle';
                         if (chat.isThinking) status = 'thinking';
                         else if (chat.isRunning) status = 'running';
+                        // Detectar errores: FAILED TO FETCH, ❌ en mensajes, o flag _errored
+                        else if (chat._errored) status = 'error';
                         else if (lastMsg && (lastMsg.content || '').includes('❌')) status = 'error';
+                        else if (lastMsg && /FAILED TO FETCH|failed to fetch/i.test(lastMsg.content || '')) status = 'error';
 
                         // Si es un agente Hermes pero no hay bridge activo → APAGADO
                         if (chat.useHermes === true && status === 'idle' && !chat.isThinking && !chat.isRunning) {
@@ -1522,7 +2132,7 @@ app.get('/api/admin/agents', async (req, res) => {
 
         // También escanear procesos Hermes externos (corriendo fuera de JP Agents)
         try {
-            cleanupDeadBridgeInstances();
+            await cleanupDeadBridgeInstances();
             const externalProcesses = await scanExternalHermesProcesses();
             // Obtener PIDs de instancias activas del bridge (acceso directo al Map)
             const bridgePids = new Set();
@@ -1893,11 +2503,20 @@ function triggerRestart(delay = 2000) {
     saveLog(restartLog).catch(() => {});
     console.log('[SYSTEM] >>> RESTARTING SERVER <<<');
     
-    restartTimer = setTimeout(() => {
+    restartTimer = setTimeout(async () => {
         // Broadcast restart event via WebSocket antes de morir
         const restartMsg = JSON.stringify({ event: 'system:restart', timestamp: Date.now(), reason });
         for (const ws of hermesBridge._wsClients) {
             try { ws.send(restartMsg); } catch {}
+        }
+        
+        // ─── HERMES GOD cleanup (si está conectado, se reconectará solo) ───
+        if (godSocket) {
+            try {
+                godSocket.close();
+                console.log('[SYSTEM] Conexión HERMES GOD cerrada.');
+            } catch (e) {}
+            godSocket = null;
         }
         
         // Attempt graceful close before exit
@@ -2015,6 +2634,15 @@ app.post('/api/hermes/start', async (req, res) => {
         } catch (idErr) {
             console.warn('[JPAGENTS-ID] No se pudo persistir identidad:', idErr.message);
         }
+
+        // ─── WS Broadcast: agent created/started ───
+        hermesBridge.broadcastToAll('hermes:agent:started', {
+            instanceKey: `${projectId}:${chatId}`,
+            projectId,
+            chatId,
+            status: 'idle',
+            name: name || chatId
+        });
 
         res.json({ instance });
     } catch (e) {
@@ -2331,6 +2959,25 @@ app.post('/api/hermes/message', async (req, res) => {
         }
 
         res.json({ response: responseText, usage: tokenUsage, changes: gitChanges });
+
+        // ─── Notificar a HERMES GOD cuando un agente termina ───
+        try {
+            const instance = hermesBridge.instances.get(`${projectId}:${chatId}`);
+            if (instance) {
+                const agentName = instance.name || chatId.slice(0, 8);
+                const preview = responseText.slice(0, 300);
+                notifyGod(
+                    `✅ *Agente completó tarea*\n` +
+                    `Agente: *${agentName}*\n` +
+                    `Proyecto: ${projectId.slice(0, 12)}\n` +
+                    (tokenUsage ? `Tokens: ${tokenUsage.total_tokens?.toLocaleString() || '?'} | Costo: $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
+                    `Respuesta: ${preview}${responseText.length > 300 ? '...' : ''}`
+                );
+            }
+        } catch (notifyErr) {
+            // Non-critical — no interrumpir la respuesta HTTP
+            console.warn('[TELEGRAM] Error enviando notificación:', notifyErr.message);
+        }
     } catch (e) {
         console.error('[HERMES] Error en sendMessage:', e.message);
         res.status(500).json({ error: e.message });
@@ -2366,6 +3013,13 @@ app.post('/api/hermes/stop', async (req, res) => {
             console.log(`[JPAGENTS-ID] Identidad eliminada para chatId: ${chatId}`);
         } catch {}
 
+        // ─── WS Broadcast: agent stopped ───
+        hermesBridge.broadcastToAll('hermes:agent:stopped', {
+            instanceKey: `${projectId}:${chatId}`,
+            projectId,
+            chatId
+        });
+
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2375,7 +3029,76 @@ app.post('/api/hermes/stop', async (req, res) => {
 app.post('/api/hermes/stop/all', async (req, res) => {
     try {
         const results = await hermesBridge.stopAll();
+        
+        // ─── WS Broadcast: all agents stopped ───
+        hermesBridge.broadcastToAll('hermes:agent:stopped', {
+            instanceKey: '*',
+            projectId: '*',
+            chatId: '*'
+        });
+        
         res.json({ stopped: results });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * Purga identity files huérfanos — aquellos cuyo chatId ya no existe en sessions.
+ * Se puede llamar manualmente desde el panel admin o automáticamente en startup.
+ */
+app.post('/api/hermes/purge-identities', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const identityDir = path.join(hermesHome, 'jpagents-identity');
+        let purged = 0;
+        let kept = 0;
+
+        try {
+            const files = await fs.readdir(identityDir);
+            for (const file of files) {
+                if (!file.startsWith('identity-') || !file.endsWith('.json')) continue;
+                const chatId = file.replace('identity-', '').replace('.json', '');
+                const identityPath = path.join(identityDir, file);
+
+                try {
+                    const content = await fs.readFile(identityPath, 'utf-8');
+                    const identity = JSON.parse(content);
+                    const project = sessions.projects?.find(p => p.id === identity.projectId);
+                    const chatExists = project?.chats?.some(c => c.id === chatId);
+
+                    if (!chatExists) {
+                        await fs.unlink(identityPath);
+                        purged++;
+                        console.log(`[PURGE] Identity huérfano eliminado: ${file} (agente: ${identity.agentName})`);
+                    } else {
+                        kept++;
+                    }
+                } catch {
+                    // Si no se puede leer, eliminar igual (corrupto)
+                    await fs.unlink(identityPath).catch(() => {});
+                    purged++;
+                }
+            }
+        } catch {}
+
+        // También eliminar del bridge las instancias 'off' que ya no tienen identity
+        const instances = hermesBridge.listInstances();
+        let bridgeCleaned = 0;
+        for (const inst of instances) {
+            if (inst.status !== 'off') continue;
+            const identityPath = path.join(identityDir, `identity-${inst.chatId}.json`);
+            try {
+                await fs.access(identityPath);
+            } catch {
+                // No tiene identity file → limpiar del bridge
+                hermesBridge.instances.delete(inst.id);
+                bridgeCleaned++;
+            }
+        }
+
+        res.json({ purged, kept, bridgeCleaned });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -2387,6 +3110,25 @@ app.get('/api/hermes/logs/:projectId', (req, res) => {
         const limit = parseInt(req.query.limit) || 100;
         const logs = hermesBridge.getLogs(projectId, limit);
         res.json({ logs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── HERMES GOD Status ───
+app.get('/api/admin/god-status', async (req, res) => {
+    try {
+        const isConnected = godSocket && godSocket.readyState === 1;
+        const instances = hermesBridge.listInstances();
+        const runningCount = instances.filter(i => i.status === 'running').length;
+        
+        // Test de conectividad con Telegram API
+        res.json({
+            connected: isConnected,
+            agentsMonitored: instances.length,
+            agentsRunning: runningCount,
+            godSocketId: godSocket ? (godSocket.id || 'unknown') : null
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -2590,14 +3332,33 @@ async function getDescendantPids(parentPid) {
 }
 
 // Limpiar instancias del bridge cuyo proceso hijo ya murió
-function cleanupDeadBridgeInstances() {
+// MODIFICADO: no borrar instancias recuperadas (recovered=true) ni instancias
+// con identity files (tienen status 'off' esperando que el usuario haga play)
+async function cleanupDeadBridgeInstances() {
     const instances = hermesBridge.listInstances();
+    const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+    const identityDir = path.join(hermesHome, 'jpagents-identity');
+    
     for (const inst of instances) {
+        // No borrar instancias recuperadas en startup
+        if (inst.recovered) continue;
+        
+        // No borrar instancias con status 'off' (son las que esperan play del usuario)
+        if (inst.status === 'off') continue;
+        
         // Las instancias con status 'idle' y sin proceso hijo real
         // se pueden limpiar después de un tiempo
         const age = Date.now() - new Date(inst.createdAt).getTime();
         if (inst.status === 'idle' && age > 60000) { // más de 1 minuto idle
-            hermesBridge.instances.delete(inst.id);
+            // Verificar que no tenga identity file (protección extra)
+            try {
+                const identityPath = path.join(identityDir, `identity-${inst.chatId}.json`);
+                await fs.access(identityPath);
+                // Tiene identity — no borrar
+            } catch {
+                // No tiene identity — seguro borrar
+                hermesBridge.instances.delete(inst.id);
+            }
         }
     }
 }
@@ -2605,7 +3366,7 @@ function cleanupDeadBridgeInstances() {
 app.get('/api/system/hermes-processes', async (req, res) => {
     try {
         // Primero limpiar instancias muertas del bridge
-        cleanupDeadBridgeInstances();
+        await cleanupDeadBridgeInstances();
 
         // Luego escanear procesos externos
         const externalProcesses = await scanExternalHermesProcesses();
@@ -2654,6 +3415,708 @@ app.get('/api/system/hermes-processes', async (req, res) => {
     } catch (e) {
         console.error('[SYSTEM] Error scanning Hermes processes:', e.message);
         res.json({ processes: [] });
+    }
+});
+
+// ─── SOCIAL MEDIA PUBLISHER ───
+
+// GET /api/social/platforms — Listar plataformas disponibles
+app.get('/api/social/platforms', async (req, res) => {
+    try {
+        const { default: sp } = await import('./social-publisher.js');
+        const platforms = sp.getPlatforms();
+        const creds = await sp.loadCredentials();
+        const platformsWithStatus = platforms.map(p => ({
+            ...p,
+            configured: p.requires.length === 0 || p.requires.every(r => creds[p.id]?.[r])
+        }));
+        res.json({ platforms: platformsWithStatus });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/social/publicar — Publicar en una plataforma
+// Body: { plataforma: string, contenido: object, credenciales?: object }
+app.post('/api/social/publicar', async (req, res) => {
+    try {
+        const { plataforma, contenido, credenciales } = req.body;
+        if (!plataforma || !contenido) {
+            return res.status(400).json({ error: 'Faltan campos: plataforma y contenido son requeridos' });
+        }
+        const { default: sp } = await import('./social-publisher.js');
+        const result = await sp.publish({ plataforma, contenido, credenciales });
+        console.log(`[SOCIAL] Publicado en ${plataforma}:`, result.id || result.status);
+        res.json({ success: true, result });
+    } catch (e) {
+        console.error('[SOCIAL] Error al publicar:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/social/credenciales — Guardar/configurar credenciales
+// Body: { plataforma: string, credenciales: object }
+app.post('/api/social/credenciales', async (req, res) => {
+    try {
+        const { plataforma, credenciales } = req.body;
+        if (!plataforma || !credenciales) {
+            return res.status(400).json({ error: 'Faltan campos: plataforma y credenciales' });
+        }
+        const { default: sp } = await import('./social-publisher.js');
+        const allCreds = await sp.loadCredentials();
+        allCreds[plataforma] = { ...(allCreds[plataforma] || {}), ...credenciales };
+        await sp.saveCredentials(allCreds);
+        console.log(`[SOCIAL] Credenciales guardadas para: ${plataforma}`);
+        res.json({ success: true, message: `Credenciales guardadas para ${plataforma}` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/social/credenciales — Ver qué plataformas están configuradas (sin exponer secrets)
+app.get('/api/social/credenciales', async (req, res) => {
+    try {
+        const { default: sp } = await import('./social-publisher.js');
+        const creds = await sp.loadCredentials();
+        const status = {};
+        for (const [platform, values] of Object.entries(creds)) {
+            status[platform] = Object.keys(values).map(k => ({
+                key: k,
+                configured: !!values[k],
+                masked: values[k] ? values[k].slice(0, 6) + '...' : null
+            }));
+        }
+        res.json({ configured: status });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/social/ayuda/:plataforma — Guía de configuración
+app.get('/api/social/ayuda/:plataforma', async (req, res) => {
+    try {
+        const { default: sp } = await import('./social-publisher.js');
+        const info = sp.getPlatformInfo(req.params.plataforma);
+        if (!info) {
+            return res.status(404).json({ error: 'Plataforma no encontrada' });
+        }
+        res.json(info);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/social/publicar-multiple — Publicar en MULTIPLES plataformas a la vez
+// Body: { plataformas: string[], contenido: object, contenidoPorPlataforma?: object, credenciales?: object }
+app.post('/api/social/publicar-multiple', async (req, res) => {
+    try {
+        const { plataformas, contenido, contenidoPorPlataforma, credenciales } = req.body;
+        const { default: sp } = await import('./social-publisher.js');
+        const result = await sp.publishMultiple({ plataformas, contenido, contenidoPorPlataforma, credenciales });
+        console.log(`[SOCIAL-MULTI] Resultado: ${result.resumen}`);
+        res.json({ success: result.success, partial: result.partial, ...result });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/social/resumen — Resumen completo del estado social
+app.get('/api/social/resumen', async (req, res) => {
+    try {
+        const { default: sp } = await import('./social-publisher.js');
+        const platforms = sp.getPlatforms();
+        const creds = await sp.loadCredentials();
+        const resumen = platforms.map(p => ({
+            id: p.id,
+            name: p.name,
+            icon: p.icon,
+            configured: p.requires.length === 0 || p.requires.every(r => creds[p.id]?.[r]),
+            requires: p.requires,
+            setupGuide: p.setupGuide || null,
+            notas: p.notas || null
+        }));
+        res.json({ plataformas: resumen, cantidad: resumen.length });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── ADMIN CONTROL ENDPOINTS ───
+// Estos endpoints son usados por el Hermes ADMIN Bot y por el admin chat del monitor
+
+/**
+ * GET /api/admin/server-status — Estado del servidor para Hermes ADMIN
+ */
+app.get('/api/admin/server-status', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        const bridgeInstances = hermesBridge.listInstances();
+        const projectCount = sessions.projects?.length || 0;
+        const agentCount = bridgeInstances.length;
+
+        let ollamaStatus = 'offline';
+        try {
+            const ollamaRes = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+            if (ollamaRes.ok) {
+                const data = await ollamaRes.json();
+                ollamaStatus = `online (${data.models?.length || 0} modelos)`;
+            }
+        } catch { }
+
+        res.json({
+            alive: true,
+            uptime: process.uptime(),
+            ollama: ollamaStatus,
+            projects: projectCount,
+            agents: agentCount,
+            running: bridgeInstances.filter(i => i.status === 'running').length,
+            idle: bridgeInstances.filter(i => i.status === 'idle').length,
+            stopped: bridgeInstances.filter(i => i.status === 'stopped').length,
+            totalTokens: bridgeInstances.reduce((s, i) => s + (i.cumulativeTokens || 0), 0),
+            pid: process.pid
+        });
+    } catch (e) {
+        res.status(500).json({ alive: false, error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/agent-message — Enviar mensaje a un agente específico
+ * Body: { projectId, chatId, message }
+ */
+app.post('/api/admin/agent-message', async (req, res) => {
+    const { projectId, chatId, message } = req.body;
+    if (!projectId || !chatId || !message) {
+        return res.status(400).json({ error: 'Se requieren projectId, chatId y message' });
+    }
+
+    try {
+        // Buscar la instancia del bridge
+        const instanceKey = `${projectId}:${chatId}`;
+        const instance = hermesBridge.instances.get(instanceKey);
+
+        if (!instance) {
+            // Si no hay bridge instance, intentar enviar directo al chat en sessions
+            const sessions = await loadSessions();
+            const project = sessions.projects?.find(p => p.id === projectId);
+            if (!project) return res.status(404).json({ error: 'Proyecto no encontrado' });
+
+            const chat = project.chats?.find(c => c.id === chatId);
+            if (!chat) return res.status(404).json({ error: 'Chat no encontrado' });
+
+            chat.messages.push({
+                role: 'user',
+                content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR (via Hermes ADMIN): ${message}`,
+                timestamp: Date.now()
+            });
+            await saveSessions(sessions);
+
+            // Notificar via WebSocket
+            const broadcastMsg = JSON.stringify({
+                event: 'hermes:admin-message',
+                projectId, chatId, message,
+                timestamp: Date.now()
+            });
+            for (const ws of hermesBridge._wsClients) {
+                try { ws.send(broadcastMsg); } catch {}
+            }
+
+            return res.json({ success: true, note: 'Mensaje enviado al historial del chat (sin bridge activo)' });
+        }
+
+        // Enviar via Hermes Bridge y devolver respuesta
+        const result = await hermesBridge.sendMessage(projectId, chatId, `🚨 INSTRUCCIÓN DEL ADMIN: ${message}`);
+        const responseText = typeof result === 'string' ? result : (result?.text || '(sin respuesta)');
+
+        res.json({ success: true, response: responseText, sessionId: result?.sessionId || null });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/hermes-chat — Enviar mensaje al Hermes ADMIN (para el admin chat del monitor)
+ * Body: { message, history }
+ * Usa Hermes oneshot con skill BOTADMIN
+ */
+app.post('/api/admin/hermes-chat', async (req, res) => {
+    const { message, history } = req.body;
+    if (!message) {
+        return res.status(400).json({ error: 'Se requiere message' });
+    }
+
+    try {
+        console.log(`[ADMIN-HERMES] Consultando a Hermes ADMIN: "${message.slice(0, 80)}..."`);
+
+        const { response, sessionId } = await callHermesAdmin(message, history);
+
+        // ─── Ejecutar comandos server-side ───
+        const executions = await executeAdminCommands(response);
+
+        console.log(`[ADMIN-HERMES] ✅ Respuesta (${response.length} chars), ${executions.length} comandos ejecutados`);
+        res.json({ success: true, response, sessionId, executions });
+    } catch (e) {
+        // FIX: try-catch en console.error para evitar EPIPE → respuesta nunca enviada
+        try { console.error('[ADMIN-HERMES] Error:', e.message); } catch (logErr) {}
+        res.status(500).json({ error: e.message, response: `❌ Error consultando a Hermes: ${e.message}` });
+    }
+});
+
+/**
+ * POST /api/admin/hermes-chat/stream — Versión streaming del admin chat
+ * Body: { message, history }
+ * Retorna ndjson (application/x-ndjson) con eventos:
+ *   {"event":"thinking","text":"..."} — updates de pensamiento en tiempo real
+ *   {"event":"done","response":"...","executions":[...]} — respuesta final
+ *   {"event":"error","error":"..."} — error
+ */
+app.post('/api/admin/hermes-chat/stream', async (req, res) => {
+    const { message, history } = req.body;
+    if (!message) {
+        return res.status(400).json({ error: 'Se requiere message' });
+    }
+
+    // Set headers for ndjson streaming
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Helper to write a JSON line
+    const writeEvent = (data) => {
+        try { res.write(JSON.stringify(data) + '\n'); } catch (e) {}
+    };
+
+    try {
+        console.log(`[ADMIN-HERMES-STREAM] Consultando a Hermes ADMIN: "${message.slice(0, 80)}..."`);
+
+        const onThinking = (text) => {
+            writeEvent({ event: 'thinking', text });
+        };
+
+        const { response, stderr: hermesStderr } = await callHermesAdminStreaming(
+            message, onThinking, history, null
+        );
+
+        // ─── Ejecutar comandos server-side ───
+        let executions = [];
+        try {
+            executions = await executeAdminCommands(response);
+        } catch (execErr) {
+            try { console.error('[ADMIN-HERMES-STREAM] Error en executeAdminCommands:', execErr.message); } catch {}
+        }
+
+        // Send final done event (con respuesta limpia)
+        writeEvent({
+            event: 'done',
+            response: cleanHermesResponse(response) || '(sin respuesta)',
+            executions,
+            stderr: hermesStderr || ''
+        });
+
+        console.log(`[ADMIN-HERMES-STREAM] ✅ Respuesta (${(response || '').length} chars), ${executions.length} comandos ejecutados`);
+    } catch (e) {
+        try { console.error('[ADMIN-HERMES-STREAM] Error:', e.message); } catch (logErr) {}
+        writeEvent({ event: 'error', error: e.message });
+    } finally {
+        try { res.end(); } catch {}
+    }
+});
+
+/**
+ * Ejecuta comandos de administración encontrados en la respuesta de Hermes.
+ * Soporta: CREATE_PROJECT, CREATE_AGENT, DELETE_AGENT, DELETE_PROJECT, STOP_AGENT
+ * Retorna array de resultados de ejecución.
+ */
+async function executeAdminCommands(responseText) {
+    const executions = [];
+    const cleanStr = (str) => (str || '').replace(/["'""]/g, '').trim();
+
+    // ─── CREATE_PROJECT ───
+    const createProjectRe = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
+    let m;
+    while ((m = createProjectRe.exec(responseText)) !== null) {
+        const name = cleanStr(m[1]);
+        try {
+            const data = await loadSessions();
+            const existing = data.projects?.find(p => (p.name || '').toLowerCase() === name.toLowerCase());
+            if (existing) {
+                executions.push({ command: 'CREATE_PROJECT', target: name, status: 'skipped', reason: 'Ya existe' });
+            } else {
+                const newProject = {
+                    id: 'proj-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                    name, chats: [], folder: '', model: 'deepseek-v4-pro'
+                };
+                data.projects = data.projects || [];
+                data.projects.push(newProject);
+                await saveSessions(data);
+                executions.push({ command: 'CREATE_PROJECT', target: name, status: 'ok', projectId: newProject.id });
+                console.log(`[ADMIN-EXEC] 📁 Proyecto creado: "${name}" (${newProject.id})`);
+            }
+        } catch (e) {
+            executions.push({ command: 'CREATE_PROJECT', target: name, status: 'error', error: e.message });
+        }
+    }
+
+    // ─── CREATE_AGENT ───
+    const createAgentRe = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
+    while ((m = createAgentRe.exec(responseText)) !== null) {
+        const pId = cleanStr(m[1]);
+        const aName = cleanStr(m[2]);
+        try {
+            const data = await loadSessions();
+            const project = data.projects?.find(p =>
+                p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase()
+            );
+            if (!project) {
+                executions.push({ command: 'CREATE_AGENT', target: `${pId}:${aName}`, status: 'error', error: `Proyecto "${pId}" no encontrado` });
+                continue;
+            }
+            const newChat = {
+                id: 'chat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+                name: aName, messages: [], isThinking: false, isRunning: false, isStopped: false,
+                mode: 'auto', lastProgress: Date.now(), model: project.model || 'deepseek-v4-pro',
+                useHermes: true
+            };
+            project.chats = project.chats || [];
+            project.chats.push(newChat);
+            await saveSessions(data);
+            executions.push({ command: 'CREATE_AGENT', target: `${pId}:${aName}`, status: 'ok', agentId: newChat.id });
+            console.log(`[ADMIN-EXEC] 🤖 Agente creado: "${aName}" en "${project.name}" (${newChat.id})`);
+        } catch (e) {
+            executions.push({ command: 'CREATE_AGENT', target: `${pId}:${aName}`, status: 'error', error: e.message });
+        }
+    }
+
+    // ─── DELETE_AGENT ───
+    const deleteAgentRe = /\[DELETE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
+    while ((m = deleteAgentRe.exec(responseText)) !== null) {
+        const pId = cleanStr(m[1]);
+        const aId = cleanStr(m[2]);
+        try {
+            const data = await loadSessions();
+            const project = data.projects?.find(p =>
+                p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase()
+            );
+            if (!project) {
+                executions.push({ command: 'DELETE_AGENT', target: `${pId}:${aId}`, status: 'error', error: `Proyecto "${pId}" no encontrado` });
+                continue;
+            }
+            const chatIndex = project.chats?.findIndex(c =>
+                c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase()
+            );
+            if (chatIndex < 0) {
+                executions.push({ command: 'DELETE_AGENT', target: `${pId}:${aId}`, status: 'error', error: `Agente no encontrado` });
+                continue;
+            }
+            const agentName = project.chats[chatIndex].name || aId;
+            try { await hermesBridge.stopInstance(project.id, project.chats[chatIndex].id); } catch {}
+            project.chats.splice(chatIndex, 1);
+            await saveSessions(data);
+            executions.push({ command: 'DELETE_AGENT', target: `${pId}:${agentName}`, status: 'ok' });
+            console.log(`[ADMIN-EXEC] 🗑️ Agente eliminado: "${agentName}"`);
+        } catch (e) {
+            executions.push({ command: 'DELETE_AGENT', target: `${pId}:${aId}`, status: 'error', error: e.message });
+        }
+    }
+
+    // ─── STOP_AGENT ───
+    const stopAgentRe = /\[STOP_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
+    while ((m = stopAgentRe.exec(responseText)) !== null) {
+        const pId = cleanStr(m[1]);
+        const aId = cleanStr(m[2]);
+        try {
+            const data = await loadSessions();
+            const project = data.projects?.find(p =>
+                p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase()
+            );
+            if (!project) {
+                executions.push({ command: 'STOP_AGENT', target: `${pId}:${aId}`, status: 'error', error: 'Proyecto no encontrado' });
+                continue;
+            }
+            const chat = project.chats?.find(c =>
+                c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase()
+            );
+            if (!chat) {
+                executions.push({ command: 'STOP_AGENT', target: `${pId}:${aId}`, status: 'error', error: 'Agente no encontrado' });
+                continue;
+            }
+            try { await hermesBridge.stopInstance(project.id, chat.id); } catch {}
+            chat.isThinking = false; chat.isRunning = false; chat.isStopped = true;
+            await saveSessions(data);
+            executions.push({ command: 'STOP_AGENT', target: `${pId}:${chat.name || aId}`, status: 'ok' });
+        } catch (e) {
+            executions.push({ command: 'STOP_AGENT', target: `${pId}:${aId}`, status: 'error', error: e.message });
+        }
+    }
+
+    // ─── DELETE_PROJECT ───
+    const deleteProjectRe = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
+    while ((m = deleteProjectRe.exec(responseText)) !== null) {
+        const pId = cleanStr(m[1]);
+        try {
+            const data = await loadSessions();
+            const idx = data.projects?.findIndex(p =>
+                p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase()
+            );
+            if (idx < 0) {
+                executions.push({ command: 'DELETE_PROJECT', target: pId, status: 'error', error: 'No encontrado' });
+                continue;
+            }
+            const projName = data.projects[idx].name || pId;
+            // Detener todas las instancias del proyecto
+            for (const chat of (data.projects[idx].chats || [])) {
+                try { await hermesBridge.stopInstance(data.projects[idx].id, chat.id); } catch {}
+            }
+            data.projects.splice(idx, 1);
+            await saveSessions(data);
+            executions.push({ command: 'DELETE_PROJECT', target: projName, status: 'ok' });
+            console.log(`[ADMIN-EXEC] 🗑️ Proyecto eliminado: "${projName}"`);
+        } catch (e) {
+            executions.push({ command: 'DELETE_PROJECT', target: pId, status: 'error', error: e.message });
+        }
+    }
+
+    return executions;
+}
+
+/**
+ * POST /api/admin/shutdown — Apagar el servidor gracefulmente
+ */
+app.post('/api/admin/shutdown', (req, res) => {
+    console.log('[ADMIN] 🛑 Shutdown solicitado via API');
+    res.json({ success: true, message: 'Apagando...' });
+
+    // Cerrar en 500ms para que la respuesta se envíe
+    setTimeout(() => {
+        console.log('[ADMIN] Apagando servidor...');
+        if (serverInstance) {
+            serverInstance.close(() => {
+                console.log('[ADMIN] Servidor detenido.');
+                process.exit(0);
+            });
+        } else {
+            process.exit(0);
+        }
+    }, 500);
+});
+
+/**
+ * POST /api/admin/sync-message — Sincronizar un mensaje del Hermes ADMIN Bot al monitor
+ * Body: { role, content, source: "telegram"|"monitor" }
+ */
+app.post('/api/admin/sync-message', async (req, res) => {
+    const { role, content, source } = req.body;
+    if (!role || !content) {
+        return res.status(400).json({ error: 'Se requieren role y content' });
+    }
+
+    try {
+        // Broadcast via WebSocket a todos los clientes conectados
+        const broadcastMsg = JSON.stringify({
+            event: 'hermes:admin-sync',
+            role,
+            content: content.slice(0, 500),
+            source: source || 'unknown',
+            timestamp: Date.now()
+        });
+        for (const ws of hermesBridge._wsClients) {
+            try { ws.send(broadcastMsg); } catch {}
+        }
+
+        console.log(`[SYNC] Mensaje sincronizado desde ${source}: ${role} — "${content.slice(0, 80)}..."`);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── AGENT MANAGEMENT ENDPOINTS (server-side) ───
+// Estos endpoints permiten que Hermes ADMIN controle agentes directamente
+// sin depender del frontend para parsear comandos.
+
+/**
+ * DELETE /api/admin/agents/:projectId/:chatId — Eliminar un agente
+ */
+app.delete('/api/admin/agents/:projectId/:chatId', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const data = await loadSessions();
+        const project = data.projects?.find(p => p.id === projectId);
+        if (!project) return res.status(404).json({ error: `Proyecto ${projectId} no encontrado` });
+
+        const chatIndex = project.chats?.findIndex(c => c.id === chatId);
+        if (chatIndex === undefined || chatIndex < 0) return res.status(404).json({ error: `Agente ${chatId} no encontrado` });
+
+        const agentName = project.chats[chatIndex].name || chatId;
+
+        // Detener instancia Hermes si existe
+        try { await hermesBridge.stopInstance(projectId, chatId); } catch {}
+
+        project.chats.splice(chatIndex, 1);
+        await saveSessions(data);
+        console.log(`[ADMIN] 🗑️ Agente eliminado: "${agentName}" de proyecto "${project.name}"`);
+        res.json({ success: true, agentName, projectName: project.name });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/agents/:projectId/:chatId/stop — Detener un agente
+ */
+app.post('/api/admin/agents/:projectId/:chatId/stop', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const data = await loadSessions();
+        const project = data.projects?.find(p => p.id === projectId);
+        if (!project) return res.status(404).json({ error: `Proyecto ${projectId} no encontrado` });
+
+        const chat = project.chats?.find(c => c.id === chatId);
+        if (!chat) return res.status(404).json({ error: `Agente ${chatId} no encontrado` });
+
+        // Detener instancia Hermes
+        let bridgeStopped = false;
+        try {
+            await hermesBridge.stopInstance(projectId, chatId);
+            bridgeStopped = true;
+        } catch (e) {
+            // Puede que no haya instancia corriendo
+        }
+
+        // Marcar como stopped en el estado
+        chat.isThinking = false;
+        chat.isRunning = false;
+        chat.isStopped = true;
+        await saveSessions(data);
+
+        console.log(`[ADMIN] 🛑 Agente detenido: "${chat.name}" (bridge=${bridgeStopped})`);
+        res.json({ success: true, agentName: chat.name, bridgeStopped });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/agents/:projectId/:chatId/message — Enviar mensaje a un agente
+ * Body: { message: string }
+ */
+app.post('/api/admin/agents/:projectId/:chatId/message', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const { message } = req.body;
+        if (!message) return res.status(400).json({ error: 'Se requiere message' });
+
+        const data = await loadSessions();
+        const project = data.projects?.find(p => p.id === projectId);
+        if (!project) return res.status(404).json({ error: `Proyecto ${projectId} no encontrado` });
+
+        const chat = project.chats?.find(c => c.id === chatId);
+        if (!chat) return res.status(404).json({ error: `Agente ${chatId} no encontrado` });
+
+        // Agregar mensaje al agente
+        chat.messages = chat.messages || [];
+        chat.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${message}`, timestamp: Date.now() });
+        await saveSessions(data);
+
+        // Intentar enviar vía Hermes bridge si la instancia existe
+        let bridgeResponse = null;
+        try {
+            const result = await hermesBridge.sendMessage(projectId, chatId, message);
+            bridgeResponse = result?.text?.slice(0, 500) || '(sin respuesta)';
+        } catch (e) {
+            bridgeResponse = `(Hermes bridge no disponible: ${e.message})`;
+        }
+
+        console.log(`[ADMIN] 📤 Mensaje enviado a "${chat.name}": "${message.slice(0, 60)}..."`);
+        res.json({ success: true, agentName: chat.name, bridgeResponse });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * GET /api/admin/agents/:projectId/:chatId/status — Estado detallado de un agente
+ */
+app.get('/api/admin/agents/:projectId/:chatId/status', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const data = await loadSessions();
+        const project = data.projects?.find(p => p.id === projectId);
+        if (!project) return res.status(404).json({ error: `Proyecto ${projectId} no encontrado` });
+
+        const chat = project.chats?.find(c => c.id === chatId);
+        if (!chat) return res.status(404).json({ error: `Agente ${chatId} no encontrado` });
+
+        const bridgeInstances = hermesBridge.listInstances();
+        const bridgeInst = bridgeInstances.find(i => i.projectId === projectId && i.chatId === chatId);
+
+        const lastMsg = chat.messages?.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+
+        res.json({
+            id: chat.id,
+            name: chat.name || '(sin nombre)',
+            projectId: project.id,
+            projectName: project.name || project.folder || project.id,
+            status: chat.isThinking ? 'thinking' : (chat.isRunning ? 'running' : (chat.isStopped ? 'stopped' : 'idle')),
+            model: chat.model || project.model || 'default',
+            folder: project.folder || '',
+            isHermes: chat.useHermes === true,
+            messageCount: chat.messages?.length || 0,
+            lastMessage: lastMsg ? {
+                role: lastMsg.role,
+                content: (lastMsg.content || '').slice(0, 500),
+                timestamp: lastMsg.timestamp
+            } : null,
+            bridge: bridgeInst ? {
+                status: bridgeInst.status,
+                pid: bridgeInst.pid,
+                cumulativeTokens: bridgeInst.cumulativeTokens || 0,
+                cumulativeCost: bridgeInst.cumulativeCost || 0,
+                cumulativeApiCalls: bridgeInst.cumulativeApiCalls || 0,
+                sessionId: bridgeInst.sessionId || null
+            } : null
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/agents/create — Crear un nuevo agente en un proyecto
+ * Body: { projectId, agentName, model?, systemPrompt? }
+ */
+app.post('/api/admin/agents/create', async (req, res) => {
+    try {
+        const { projectId, agentName, model, systemPrompt } = req.body;
+        if (!projectId || !agentName) return res.status(400).json({ error: 'Se requieren projectId y agentName' });
+
+        const data = await loadSessions();
+        const project = data.projects?.find(p => p.id === projectId || (p.name || '').toLowerCase() === projectId.toLowerCase());
+        if (!project) return res.status(404).json({ error: `Proyecto "${projectId}" no encontrado. Proyectos disponibles: ${(data.projects||[]).map(p => p.name).join(', ')}` });
+
+        const newChat = {
+            id: 'chat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+            name: agentName,
+            messages: [],
+            isThinking: false,
+            isRunning: false,
+            isStopped: false,
+            mode: 'auto',
+            lastProgress: Date.now(),
+            model: model || project.model || 'deepseek-v4-pro',
+            systemPrompt: systemPrompt || '',
+            useHermes: true
+        };
+
+        project.chats = project.chats || [];
+        project.chats.push(newChat);
+        await saveSessions(data);
+
+        console.log(`[ADMIN] 🤖 Agente creado: "${agentName}" en proyecto "${project.name}" (id=${newChat.id})`);
+        res.json({ success: true, agent: { id: newChat.id, name: agentName, projectId: project.id, projectName: project.name } });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -2829,10 +4292,35 @@ function startHermesProcessSyncMonitor() {
                                         await saveSessions(data);
                                         console.log(`[HERMES-SYNC] Respuesta de Hermes guardada en chat ${tracker.chatId}`);
                                         
+                                        // ─── Notificar a HERMES GOD ───
+                                        try {
+                                            const instance = hermesBridge.instances.get(`${tracker.projectId}:${tracker.chatId}`);
+                                            if (instance) {
+                                                const agentName = instance.name || tracker.chatId.slice(0, 8);
+                                                const preview = cleanResponse.slice(0, 300);
+                                                notifyGod(
+                                                    `✅ *Agente completó tarea (post-recuperación)*\n` +
+                                                    `Agente: *${agentName}*\n` +
+                                                    `Proyecto: ${tracker.projectId.slice(0, 12)}\n` +
+                                                    `Respuesta: ${preview}${cleanResponse.length > 300 ? '...' : ''}`
+                                                );
+                                            }
+                                        } catch (tgErr) {
+                                            console.warn('[TELEGRAM] Error notificando recuperación:', tgErr.message);
+                                        }
+                                        
                                         const broadcastMsg = JSON.stringify({ event: 'hermes:status', instanceKey: `${tracker.projectId}:${tracker.chatId}`, status: 'idle', timestamp: Date.now() });
                                         for (const ws of hermesBridge._wsClients) {
                                             try { ws.send(broadcastMsg); } catch {}
                                         }
+                                        
+                                        // ─── WS Broadcast: process completed (for non-bridge Hermes processes) ───
+                                        hermesBridge.broadcastToAll('hermes:agent:completed', {
+                                            instanceKey: `${tracker.projectId}:${tracker.chatId}`,
+                                            projectId: tracker.projectId,
+                                            chatId: tracker.chatId,
+                                            status: 'idle'
+                                        });
                                         
                                         const updateMsg = JSON.stringify({ event: 'hermes:log', instanceKey: `${tracker.projectId}:${tracker.chatId}`, projectId: tracker.projectId, type: 'progress', text: '✅ Tarea completada tras restauración del servidor\n', timestamp: Date.now() });
                                         for (const ws of hermesBridge._wsClients) {
@@ -2920,7 +4408,250 @@ function startHermesProcessSyncMonitor() {
         } catch (e) {
             console.error('[HERMES-SYNC] Error in sync loop:', e.message);
         }
-    }, 5000);
+    }, 30000); // Reducido de 5s a 30s — ahora los WS events cubren los cambios en tiempo real
+}
+
+// ─── STARTUP RECOVERY: Reconstruir bridge instances tras restart del server ───
+// Cuando el server muere y arranca de nuevo, HermesBridge.instances está vacío.
+// Esta función escanea procesos Hermes vivos, identity files y sessions para
+// reconstruir el estado del bridge y que el frontend pueda mostrar el estado real.
+async function recoverHermesInstances() {
+    console.log('[HERMES-RECOVER] 🔄 Iniciando recuperación de instancias Hermes...');
+    const sessions = await loadSessions();
+    const startTime = Date.now();
+    let recoveredCount = 0;
+    let offCount = 0;
+    let errorCount = 0;
+
+    // ─── FASE 1: Identity files → catalogar qué agentes JP Agents creó ───
+    // El identity file se escribe en /api/hermes/start y se borra en /api/hermes/stop.
+    // Si existe, este agente fue creado desde JP Agents y debería tener bridge instance.
+    const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+    const identityDir = path.join(hermesHome, 'jpagents-identity');
+    const identityMap = new Map(); // chatId → { projectId, agentName, projectName }
+
+    try {
+        const identityFiles = await fs.readdir(identityDir).catch(() => []);
+        for (const file of identityFiles) {
+            if (!file.startsWith('identity-') || !file.endsWith('.json')) continue;
+            const chatId = file.replace('identity-', '').replace('.json', '');
+            try {
+                const content = await fs.readFile(path.join(identityDir, file), 'utf-8');
+                const identity = JSON.parse(content);
+                identityMap.set(chatId, {
+                    projectId: identity.projectId,
+                    agentName: identity.agentName,
+                    projectName: identity.projectName
+                });
+            } catch (e) {
+                console.warn(`[HERMES-RECOVER] ⚠️ Error leyendo identity file ${file}:`, e.message);
+            }
+        }
+    } catch (e) {
+        // identity dir may not exist
+    }
+
+    if (identityMap.size > 0) {
+        console.log(`[HERMES-RECOVER] 📋 Encontrados ${identityMap.size} identity files de agentes JP Agents.`);
+    }
+
+    // ─── FASE 2: Escanear procesos Hermes vivos ───
+    const runningProcesses = await scanExternalHermesProcesses();
+    const processMap = new Map(); // instanceKey → { pid, commandLine, workdir }
+    const pidToInstanceKey = new Map(); // pid → instanceKey
+
+    // También obtener PIDs de procesos que ya están trackeados por el monitor
+    // (por si el monitor ya corrió antes que nosotros)
+    for (const [pid, tracker] of trackedHermesProcesses.entries()) {
+        const key = `${tracker.projectId}:${tracker.chatId}`;
+        if (!processMap.has(key)) {
+            processMap.set(key, { pid, commandLine: '', workdir: tracker.workdir });
+            pidToInstanceKey.set(pid, key);
+        }
+    }
+
+    for (const proc of runningProcesses) {
+        // Parsear --source jpagents|projectId|chatId
+        const sourceMatch = proc.commandLine?.match(/--source\s+["']?jpagents\|([^|]+)\|([^"'\s]+)["']?/i);
+        if (sourceMatch) {
+            const projectId = sourceMatch[1];
+            const chatId = sourceMatch[2];
+            const key = `${projectId}:${chatId}`;
+            if (!processMap.has(key)) {
+                processMap.set(key, { pid: proc.pid, commandLine: proc.commandLine, workdir: proc.workdir });
+                pidToInstanceKey.set(proc.pid, key);
+            }
+        }
+    }
+
+    if (processMap.size > 0) {
+        console.log(`[HERMES-RECOVER] 🔍 Detectados ${processMap.size} procesos Hermes con --source jpagents.`);
+    }
+
+    // ─── FASE 3: Reconstruir bridge instances ───
+    // 3a. Por cada proceso vivo con --source, crear bridge instance
+    for (const [instanceKey, procInfo] of processMap.entries()) {
+        const [projectId, chatId] = instanceKey.split(':');
+        
+        // Buscar datos del proyecto/chat en sessions
+        let workdir = procInfo.workdir || '';
+        let model = null;
+        let name = null;
+
+        const project = sessions.projects?.find(p => p.id === projectId);
+        if (project) {
+            workdir = workdir || project.folder || '';
+            model = project.model || null;
+            const chat = project.chats?.find(c => c.id === chatId);
+            if (chat) {
+                name = chat.name || null;
+                chat.useHermes = true; // Asegurar flag
+                // NO marcar isThinking — eso se reseteó al inicio
+            }
+        }
+
+        // Si no encontramos en sessions, buscar en identity
+        if (!name && identityMap.has(chatId)) {
+            const identity = identityMap.get(chatId);
+            name = identity.agentName;
+            if (!workdir && project) {
+                workdir = project.folder || '';
+            }
+        }
+
+        // Obtener session ID del status file de Hermes
+        let sessionId = null;
+        if (procInfo.pid) {
+            try {
+                const statusDir = path.join(hermesHome, 'status');
+                const statusPath = path.join(statusDir, `${procInfo.pid}.json`);
+                const content = await fs.readFile(statusPath, 'utf-8').catch(() => null);
+                if (content) {
+                    const status = JSON.parse(content);
+                    sessionId = status.session_id || null;
+                }
+            } catch {}
+        }
+
+        try {
+            await hermesBridge.recoverInstance({
+                projectId,
+                chatId,
+                workdir: workdir || process.cwd(),
+                model,
+                name,
+                pid: procInfo.pid,
+                sessionId
+            });
+
+            // También registrarlo en trackedHermesProcesses para el monitor
+            if (procInfo.pid && !trackedHermesProcesses.has(procInfo.pid)) {
+                trackedHermesProcesses.set(procInfo.pid, {
+                    projectId,
+                    chatId,
+                    sessionId: sessionId || `session_${procInfo.pid}`,
+                    workdir
+                });
+            }
+
+            recoveredCount++;
+        } catch (e) {
+            console.error(`[HERMES-RECOVER] ❌ Error recuperando ${instanceKey}:`, e.message);
+            errorCount++;
+        }
+    }
+
+    // 3b. Por cada identity sin proceso vivo, crear bridge instance en estado 'off'
+    // para que el frontend muestre el botón play
+    // IMPORTANTE: Solo restaurar identities cuyo chatId existe activamente en sessions.
+    // Si el identity apunta a un chat que ya no existe (fue eliminado de la UI),
+    // es un identity huérfano → se elimina para evitar acumulación.
+    const identityPurged = [];
+    for (const [chatId, identity] of identityMap.entries()) {
+        const projectId = identity.projectId;
+        const instanceKey = `${projectId}:${chatId}`;
+        
+        if (hermesBridge.instances.has(instanceKey)) continue; // ya recuperada más arriba
+        
+        // Verificar que el chat realmente existe en sessions activas
+        const project = sessions.projects?.find(p => p.id === projectId);
+        const chatExists = project?.chats?.some(c => c.id === chatId);
+        
+        if (!chatExists) {
+            // Identity huérfano: el chat fue eliminado de la UI pero el identity file quedó
+            console.log(`[HERMES-RECOVER] 🧹 Identity huérfano detectado: ${chatId} (proyecto: ${projectId}, agente: ${identity.agentName}) — eliminando...`);
+            try {
+                const identityPath = path.join(identityDir, `identity-${chatId}.json`);
+                await fs.unlink(identityPath);
+                identityPurged.push(chatId);
+            } catch (purgeErr) {
+                console.warn(`[HERMES-RECOVER] ⚠️ No se pudo eliminar identity huérfano ${chatId}:`, purgeErr.message);
+            }
+            continue; // No crear bridge instance para identities huérfanos
+        }
+        
+        // Buscar datos en sessions
+        let workdir = project.folder || '';
+        let model = project.model || null;
+
+        try {
+            await hermesBridge.recoverInstance({
+                projectId,
+                chatId,
+                workdir: workdir || process.cwd(),
+                model,
+                name: identity.agentName,
+                pid: null, // sin PID → status 'off'
+                sessionId: null
+            });
+            offCount++;
+        } catch (e) {
+            console.warn(`[HERMES-RECOVER] ⚠️ Error creando instancia off para ${instanceKey}:`, e.message);
+        }
+    }
+    if (identityPurged.length > 0) {
+        console.log(`[HERMES-RECOVER] 🧹 Identity files huérfanos eliminados: ${identityPurged.length}`);
+    }
+
+    // 3c. Por cada chat con useHermes=true en sessions, sin identity y sin proceso,
+    // también crear bridge instance en estado 'off'
+    if (sessions.projects) {
+        for (const project of sessions.projects) {
+            if (!project.chats) continue;
+            for (const chat of project.chats) {
+                if (!chat.useHermes) continue;
+                const instanceKey = `${project.id}:${chat.id}`;
+                if (hermesBridge.instances.has(instanceKey)) continue;
+
+                try {
+                    await hermesBridge.recoverInstance({
+                        projectId: project.id,
+                        chatId: chat.id,
+                        workdir: project.folder || process.cwd(),
+                        model: chat.model || project.model || null,
+                        name: chat.name || null,
+                        pid: null,
+                        sessionId: null
+                    });
+                    offCount++;
+                } catch (e) {
+                    console.warn(`[HERMES-RECOVER] ⚠️ Error creando instancia off para ${instanceKey}:`, e.message);
+                }
+            }
+        }
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[HERMES-RECOVER] ✅ Recuperación completada en ${elapsed}ms: ${recoveredCount} vivas, ${offCount} apagadas, ${errorCount} errores.`);
+    
+    // ─── Broadcast a WebSocket clients ───
+    hermesBridge.broadcastToAll('hermes:recoveryComplete', {
+        recoveredCount,
+        offCount,
+        total: recoveredCount + offCount
+    });
+
+    return { recoveredCount, offCount, errorCount };
 }
 
 // Start initialization and server
@@ -2953,6 +4684,13 @@ async function startServer() {
                 await saveSessions(sessions);
                 console.log(`[STATE] Resetearon ${resetCount} estados de agentes colgados (pensando/trabajando) al iniciar.`);
             }
+
+            // ─── RECOVER HERMES INSTANCES: reconstruir bridge instances ───
+            try {
+                await recoverHermesInstances();
+            } catch (recoverErr) {
+                console.error('[HERMES-RECOVER] ❌ Error en recuperación de instancias:', recoverErr.message);
+            }
         } catch (e) {
             console.error('[STATE] Error reseteando estados colgados al iniciar:', e.message);
         }
@@ -2963,8 +4701,30 @@ async function startServer() {
     // Use HTTP server instead of app.listen for WebSocket support
     const httpServer = createServer(app);
 
+    // ─── WebSocket with multiple paths ───
+    // NOTA: NO usar { server: httpServer, path: '...' } porque el primer
+    // WebSocketServer intercepta TODOS los upgrades y los paths que no matchean
+    // reciben 400. En su lugar, usamos noServer:true y un upgrade handler manual.
+    wss = new WebSocketServer({ noServer: true });
+    const godWss = new WebSocketServer({ noServer: true });
+
+    // Router manual de WebSocket paths
+    httpServer.on('upgrade', (req, socket, head) => {
+        const pathname = req.url.split('?')[0];
+        if (pathname === '/ws/hermes') {
+            wss.handleUpgrade(req, socket, head, (ws) => {
+                wss.emit('connection', ws, req);
+            });
+        } else if (pathname === '/ws/admin') {
+            godWss.handleUpgrade(req, socket, head, (ws) => {
+                godWss.emit('connection', ws, req);
+            });
+        } else {
+            socket.destroy();
+        }
+    });
+
     // WebSocket Server for Hermes live logs & state synchronization
-    const wss = new WebSocketServer({ server: httpServer, path: '/ws/hermes' });
     wss.on('connection', (ws) => {
         ws.id = Math.random().toString(36).substring(2, 15);
         console.log(`[WS] Cliente WebSocket conectado (${ws.id})`);
@@ -3008,13 +4768,182 @@ async function startServer() {
         });
     });
 
+    // ─── HERMES GOD WebSocket ───
+    // El HERMES GOD (Telegram standalone bot) se conecta aquí para:
+    // - Enviar comandos al administrador de JP Agents
+    // - Recibir notificaciones de eventos
+    // - Sincronizar el estado
+    godWss.on('connection', (ws) => {
+        ws.id = Math.random().toString(36).substring(2, 15);
+        console.log(`[GOD] 🟢 HERMES GOD conectado (${ws.id})`);
+        godSocket = ws;
+
+        ws.send(JSON.stringify({ event: 'god:handshake', message: 'Conectado como HERMES GOD', socketId: ws.id }));
+
+        ws.on('message', async (message) => {
+            try {
+                const data = JSON.parse(message.toString());
+
+                switch (data.event) {
+                    case 'god:command': {
+                        const { id, action, params } = data;
+                        console.log(`[GOD] ⚡ Comando recibido: ${action} (${id})`);
+
+                        try {
+                            let result;
+
+                            switch (action) {
+                                case 'agent-message': {
+                                    const { projectId, chatId, msg } = params || {};
+                                    if (!projectId || !chatId || !msg) {
+                                        throw new Error('Faltan projectId, chatId o msg');
+                                    }
+                                    const instanceKey = `${projectId}:${chatId}`;
+                                    const instance = hermesBridge.instances.get(instanceKey);
+                                    if (instance) {
+                                        const r = await hermesBridge.sendMessage(projectId, chatId, `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${msg}`);
+                                        result = { success: true, response: typeof r === 'string' ? r : (r?.text || 'ok') };
+                                    } else {
+                                        const sessions = await loadSessions();
+                                        const project = sessions.projects?.find(p => p.id === projectId);
+                                        const chat = project?.chats?.find(c => c.id === chatId);
+                                        if (chat) {
+                                            chat.messages.push({
+                                                role: 'user',
+                                                content: `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${msg}`,
+                                                timestamp: Date.now()
+                                            });
+                                            await saveSessions(sessions);
+                                            result = { success: true, note: 'Mensaje guardado en historial (sin bridge)' };
+                                        } else {
+                                            throw new Error(`Agente no encontrado: ${projectId}/${chatId}`);
+                                        }
+                                    }
+                                    break;
+                                }
+
+                                case 'server-status': {
+                                    const sessions = await loadSessions();
+                                    const bridgeInstances = hermesBridge.listInstances();
+                                    result = {
+                                        projects: sessions.projects?.length || 0,
+                                        agents: bridgeInstances.length,
+                                        running: bridgeInstances.filter(i => i.status === 'running').length,
+                                        idle: bridgeInstances.filter(i => i.status === 'idle').length,
+                                        ollama: 'unknown'
+                                    };
+                                    try {
+                                        const ollamaRes = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+                                        if (ollamaRes.ok) {
+                                            const d = await ollamaRes.json();
+                                            result.ollama = `online (${d.models?.length || 0} modelos)`;
+                                        }
+                                    } catch { result.ollama = 'offline'; }
+                                    break;
+                                }
+
+                                case 'list-agents': {
+                                    const instances = hermesBridge.listInstances();
+                                    result = instances.map(i => ({
+                                        id: i.id,
+                                        name: i.name,
+                                        projectId: i.projectId,
+                                        status: i.status,
+                                        model: i.model,
+                                        tokens: i.cumulativeTokens || 0
+                                    }));
+                                    break;
+                                }
+
+                                case 'list-projects': {
+                                    const sessions = await loadSessions();
+                                    result = (sessions.projects || []).map(p => ({
+                                        id: p.id,
+                                        name: p.name,
+                                        folder: p.folder,
+                                        chats: (p.chats || []).map(c => ({
+                                            id: c.id,
+                                            name: c.name,
+                                            status: c.isThinking ? 'thinking' : 'idle'
+                                        }))
+                                    }));
+                                    break;
+                                }
+
+                                case 'sync-conversation': {
+                                    const { role, content } = params || {};
+                                    if (role && content) {
+                                        // Broadcast to web admin monitor
+                                        const syncMsg = JSON.stringify({
+                                            event: 'god:sync',
+                                            role,
+                                            content: content.slice(0, 500),
+                                            source: 'telegram',
+                                            timestamp: Date.now()
+                                        });
+                                        for (const client of wss.clients) {
+                                            try { client.send(syncMsg); } catch {}
+                                        }
+                                        result = { success: true };
+                                    }
+                                    break;
+                                }
+
+                                default:
+                                    throw new Error(`Acción desconocida: ${action}`);
+                            }
+
+                            // Responder al GOD
+                            ws.send(JSON.stringify({
+                                event: 'god:response',
+                                id,
+                                result
+                            }));
+                        } catch (cmdErr) {
+                            ws.send(JSON.stringify({
+                                event: 'god:response',
+                                id,
+                                error: cmdErr.message
+                            }));
+                        }
+                        break;
+                    }
+
+                    case 'god:ping': {
+                        ws.send(JSON.stringify({ event: 'god:pong', timestamp: Date.now() }));
+                        break;
+                    }
+
+                    default:
+                        console.log(`[GOD] Evento desconocido: ${data.event}`);
+                }
+            } catch (e) {
+                console.error('[GOD] Error procesando mensaje:', e.message);
+            }
+        });
+
+        ws.on('close', () => {
+            console.log(`[GOD] 🔴 HERMES GOD desconectado (${ws.id})`);
+            if (godSocket === ws) godSocket = null;
+        });
+
+        ws.on('error', (err) => {
+            console.error('[GOD] Error de conexión:', err.message);
+            if (godSocket === ws) godSocket = null;
+        });
+    });
+
     serverInstance = httpServer.listen(port, () => {
         console.log(`Server running at http://localhost:${port}`);
         console.log(`[HERMES] WebSocket en ws://localhost:${port}/ws/hermes`);
+        console.log(`[GOD] 🕊️ WebSocket ADMIN en ws://localhost:${port}/ws/admin`);
         console.log(`[HERMES] API endpoints en http://localhost:${port}/api/hermes/*`);
         
         // Start process sync monitor on server startup
         startHermesProcessSyncMonitor();
+
+        // Iniciar Telegram bot inline (HERMES GOD)
+        initTelegramBot();
 
         // Log server start for restart history
         restartHistory.push({

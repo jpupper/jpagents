@@ -367,90 +367,51 @@ function filterThinkingLines(text) {
 }
 
 function extractResponse(stdout) {
-    const clean = stripAnsi(stdout);
-    const lines = clean.split('\n');
+    // Con -Q (quiet mode), stdout es DIRECTAMENTE la respuesta final del modelo:
+    //   - Sin banner, sin panel ╭╰, sin tool status, sin session_id (va a stderr)
+    //   - Solo el texto de la respuesta del asistente
+    //
+    // No necesitamos parsing de panel ni filtros de noise agresivos.
+    // Solo: limpiar ANSI, remover líneas [thinking] que el modelo pueda haber
+    // incluido como parte de su output, y devolver el texto limpio.
 
-    // Estrategia 1: Panel de Hermes (╭ ... ╰)
-    let s = -1, e = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].includes('╰') && e === -1) e = i;
-        if (lines[i].includes('╭') && lines[i].includes('Hermes') && s === -1) {
-            s = i;
-            if (e === -1) e = lines.length;
-            break;
-        }
-    }
-    if (s !== -1 && e !== -1 && s < e) {
-        const extracted = lines.slice(s + 1, e)
-            .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
-            .join('\n')
-            .trim();
-        if (extracted) {
-            // Filtrar líneas [thinking] del contenido del panel
-            const filtered = filterThinkingLines(extracted);
-            if (filtered && filtered.length >= 20) return filtered;
-            // Si solo había [thinking] en el panel, caer a otras estrategias
-        }
-    }
+    const clean = stripAnsi(stdout).trim();
+    if (!clean || clean.length < 3) return '';
 
-    // Estrategia 2: Buscar contenido real desde abajo,
-    // saltando líneas de noise boilerplate, verbose y [thinking]
-    const isNoise = (line) => {
-        const t = line.trim();
-        if (!t) return true;
-        if (t.startsWith('✅') || t.startsWith('⚠️') || t.startsWith('❌')) return true;
-        // Verbose init noise
-        if (t.startsWith('🤖') || t.startsWith('🔗') || t.startsWith('🔑')) return true;
-        if (t.match(/^Enabled toolset/) || t.match(/^🛠️ /)) return true;
-        if (t.startsWith('⚠️  Some tools')) return true;
-        if (t.startsWith('🔒 Ephemeral system')) return true;
-        if (t.startsWith('📊 Context limit') || t.startsWith('📊 *')) return true;
-        if (t === '...') return true;
-        if (t.startsWith('[thinking]')) return true;
-        if (t.match(/^\d+ messages?,/) || t.startsWith('Session') ||
-            t.startsWith('Tip:') || t.startsWith('Initializing')) return true;
-        return false;
-    };
+    // Remover session_id si por algún motivo apareció en stdout (fallback legacy)
+    const text = clean.replace(/^session_id:\s*\S+\s*/m, '').trim();
+    if (!text) return '';
 
-    let contentLines = [];
-    for (let i = lines.length - 1; i >= 0; i--) {
-        const trimmed = lines[i].trim();
-        if (isNoise(lines[i])) continue;
-        if (trimmed.length < 3) continue;
-        contentLines.unshift(trimmed);
-        if (contentLines.length > 30) break;
-    }
-
-    if (contentLines.length >= 1) {
-        const result = contentLines.join('\n').trim();
-        if (result.length >= 20) return result;
-    }
-
-    // Estrategia 3: Fallback — limpiar [thinking] residual y noise verbose
-    const fallbackLines = clean.split('\n')
+    // Filtrar solo líneas [thinking] que el modelo haya incluido en su output
+    // (NO filtramos 📊, ✅, ⚙️, 📝, 📋 — esos son parte del formato requerido)
+    const lines = text.split('\n')
         .map(l => l.trim())
         .filter(l => {
-            if (!l || l.length < 3) return false;
-            if (l.match(/^│/) || l.match(/[││]$/)) return false;
+            if (!l) return false;
             if (l.startsWith('[thinking]')) return false;
             if (l.match(/^```/)) return false;
-            if (l.startsWith('🤖') || l.startsWith('🔗') || l.startsWith('🔑')) return false;
-            if (l.startsWith('✅') || l.startsWith('⚠️') || l.startsWith('❌')) return false;
-            if (l.match(/^Enabled toolset/) || l.match(/^🛠️ /)) return false;
-            if (l.startsWith('📊 Context limit') || l.startsWith('📊 *')) return false;
-            if (l.startsWith('🔒 Ephemeral system')) return false;
-            if (l.match(/^\d+ messages?,/) || l.startsWith('Session ') ||
-                l.startsWith('Tip:') || l.startsWith('Initializing')) return false;
+            if (l.match(/^\d+ messages?,/) || l.startsWith('Session') ||
+                l.startsWith('Tip:') || l.startsWith('Initializing') ||
+                l.startsWith('Generated') || l.startsWith('Running ')) return false;
             return true;
         });
-    if (fallbackLines.length >= 3) {
-        return fallbackLines.slice(-15).join('\n').trim().slice(0, 4000);
-    }
 
-    // Estrategia 4: Último recurso — devolver stdout limpio o vacío
-    const lastResort = clean.trim();
-    if (lastResort.length >= 20) return lastResort.slice(0, 4000);
-    return '';
+    if (lines.length === 0) return '';
+    const result = lines.join('\n').trim();
+    return result.length >= 5 ? result : text.slice(0, 4000);
+}
+
+/**
+ * Valida que la respuesta contenga el formato obligatorio de 4 puntos.
+ * El skill BOTADMIN exige: 📋 OBJETIVO, ⚙️ REALIZACIÓN, 📝 MODIFICACIONES, 📊 ESTADO ACTUAL
+ */
+function hasRequiredFormat(text) {
+    if (!text || text.length < 20) return false;
+    const hasObjetivo = text.includes('📋') || text.toLowerCase().includes('objetivo');
+    const hasRealizacion = text.includes('⚙️') || text.toLowerCase().includes('realización') || text.toLowerCase().includes('realizacion');
+    const hasModificaciones = text.includes('📝') || text.toLowerCase().includes('modificaciones');
+    const hasEstado = text.includes('📊') || text.toLowerCase().includes('estado actual');
+    return hasObjetivo && hasRealizacion && hasModificaciones && hasEstado;
 }
 
 // ─── Hermes con streaming de pensamiento (IPC version) ───
@@ -958,20 +919,53 @@ async function processMessage(payload) {
     if (!result.text) {
         console.log(`[WORKER] ⚠️ result.text vacío, exitCode=${result.exitCode}, stdout=${result.stderr?.slice(0, 200)}`);
     }
-    saveChatHistory(chatId, 'user', isAudio ? `[🎤 Audio] ${text}` : text);
-    saveChatHistory(chatId, 'assistant', response);
-    syncConversation('assistant', `🤖 Hermes GOD: ${response.slice(0, 500)}`);
 
-    // Si la respuesta es larga, mandar resumen + fragmentos
+    // ─── Validar formato obligatorio de 4 puntos ───
+    let finalResponse = response;
+    if (finalResponse !== '(sin respuesta)' && !hasRequiredFormat(finalResponse)) {
+        console.log('[WORKER] ⚠️ Respuesta sin formato 4-puntos. Envolviendo con fallback...');
+        const originalText = finalResponse.length > 3000
+            ? finalResponse.slice(0, 3000) + '\n\n[...respuesta completa truncada para estructura]'
+            : finalResponse;
+        finalResponse = `📋 OBJETIVO:
+${text.slice(0, 300)}
+
+⚙️ REALIZACIÓN:
+Hermes procesó la consulta
+
+📝 MODIFICACIONES:
+Ver detalle a continuación
+
+📊 ESTADO ACTUAL:
+${originalText}
+
+━━━━━━━━━━━━━━━━
+⚠️ El modelo no siguió el formato estructurado. El contenido real está arriba.`;
+    }
+
+    saveChatHistory(chatId, 'user', isAudio ? `[🎤 Audio] ${text}` : text);
+    saveChatHistory(chatId, 'assistant', finalResponse);
+    syncConversation('assistant', `🤖 Hermes GOD: ${finalResponse.slice(0, 500)}`);
+
+    // Si la respuesta es larga (>3500 chars), partir en límite de palabra/oración
+    // para NO cortar medio texto. Buscamos el último \n\n, \n, o espacio antes de 3500.
+    const MAX_MAIN_LEN = 3500;
     let extraText = null;
-    if (response.length > 1500) {
-        extraText = response.slice(1500);
+    if (finalResponse.length > MAX_MAIN_LEN) {
+        const slice = finalResponse.slice(0, MAX_MAIN_LEN);
+        // Prioridad: doble salto (párrafo) > salto simple (línea) > espacio > hard cut
+        let cutAt = slice.lastIndexOf('\n\n');
+        if (cutAt < MAX_MAIN_LEN * 0.5) cutAt = slice.lastIndexOf('\n');
+        if (cutAt < MAX_MAIN_LEN * 0.5) cutAt = slice.lastIndexOf(' ');
+        if (cutAt < 100) cutAt = MAX_MAIN_LEN; // hard cut si no encuentra nada significativo
+        extraText = finalResponse.slice(cutAt).trimStart();
+        finalResponse = finalResponse.slice(0, cutAt).trimEnd();
     }
 
     sendEvent('response', {
         chatId: statusMsgChatId,
         messageId: statusMsgId,
-        text: response,
+        text: finalResponse,
         extraText
     });
 }
