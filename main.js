@@ -800,6 +800,12 @@ const gitCommitContainer = document.getElementById('git-commit-container');
 const gitCommitMessageInput = document.getElementById('git-commit-message');
 const gitConfirmBtn = document.getElementById('git-confirm-btn');
 
+// Git Controls (GIT Tab)
+const gitPushBtn = document.getElementById('git-push-btn');
+const gitResetOriginBtn = document.getElementById('git-reset-origin-btn');
+const gitRefreshBtn = document.getElementById('git-refresh-btn');
+const gitCommitMsgInput = document.getElementById('git-commit-msg');
+
 // Terminal Elements
 const terminalTabContent = document.getElementById('terminal-tab-content');
 const terminalOutput = document.getElementById('terminal-output');
@@ -2426,6 +2432,13 @@ function renderTabs() {
         </div>
     `;
 
+    // 7. GIT Tab
+    tabsHtml += `
+        <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
+            <span>🔀 GIT</span>
+        </div>
+    `;
+
     tabsNav.innerHTML = tabsHtml;
     // We only update visibility if we're not inside a recursive call
     updateViewVisibility();
@@ -2619,6 +2632,8 @@ function updateViewVisibility() {
     if (terminalTabContent) terminalTabContent.classList.add('hidden');
     const hermesTabContent = document.getElementById('hermes-tab-content');
     if (hermesTabContent) hermesTabContent.classList.add('hidden');
+    const gitTabContent = document.getElementById('git-tab-content');
+    if (gitTabContent) gitTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -2665,6 +2680,16 @@ function updateViewVisibility() {
                 }
             }
         }
+        return;
+    }
+
+    if (project && project.activeTabId === 'git') {
+        saveFileBtn.classList.add('hidden');
+        const gitTabContent = document.getElementById('git-tab-content');
+        if (gitTabContent) {
+            gitTabContent.classList.remove('hidden');
+        }
+        window.refreshGitTab();
         return;
     }
 
@@ -4102,17 +4127,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     await setAgentActive(true);
     await clearClientLogs();
 
-    const thinkingPhrases = [
-        "Analizando solicitud...",
-        "Consultando redes neuronales...",
-        "Diseñando solución...",
-        "Reflexionando...",
-        "Evaluando posibilidades...",
-        "Sintetizando respuesta...",
-        "Pensando profundamente..."
-    ];
-    const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
-    updateThinking(chat, true, "Esperando respuesta", randomPhrase);
+    updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
     renderMessages();
 
@@ -4159,6 +4174,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                         agentNameInput.value = generatedName;
                     }
                     renderTabs();
+                    renderAdminMonitor();
                     saveData();
                 }
             }
@@ -6970,8 +6986,10 @@ function setupEventListeners() {
                 chatNameInput.setAttribute('data-manual', 'true');
                 chat.name = chatNameInput.value || 'Agente';
                 saveData();
-                // Actualizar nombre en sidebar
+                // Actualizar nombre en sidebar, tabs y monitor
                 if (window.renderProjectList) window.renderProjectList();
+                renderTabs();
+                renderAdminMonitor();
             }
         });
         chatNameInput.addEventListener('blur', () => {
@@ -7163,7 +7181,28 @@ function setupEventListeners() {
         }
     };
 
-    // Modal Controls
+    // Git Tab Controls
+    if (gitPushBtn) {
+        gitPushBtn.onclick = window.handleGitPush;
+    }
+    if (gitCommitMsgInput) {
+        gitCommitMsgInput.onkeydown = (e) => {
+            if (e.key === 'Enter') window.handleGitPush();
+        };
+    }
+    if (gitResetOriginBtn) {
+        gitResetOriginBtn.onclick = window.handleGitResetOrigin;
+    }
+    if (gitRefreshBtn) {
+        gitRefreshBtn.onclick = () => { window.refreshGitTab(); };
+    }
+
+    // GIT detail panel close button
+    {
+        const closeBtn = document.getElementById('git-detail-close');
+        const panel = document.getElementById('git-detail-panel');
+        if (closeBtn && panel) { closeBtn.onclick = () => { panel.classList.add('hidden'); }; }
+    }
     const globalSettingsBtn = document.getElementById('global-settings-btn');
     const globalSettingsModal = document.getElementById('global-settings-modal');
     const closeModalBtn = document.querySelector('.close-modal');
@@ -7394,19 +7433,30 @@ function formatLogs(logs) {
 window.handleGitPush = async () => {
     const p = getActiveProject();
     const chat = getActiveChat();
-    const message = gitCommitMessageInput.value.trim();
+
+    // Determine which UI is active: git tab or old header
+    const isGitTab = p && p.activeTabId === 'git';
+    const msgInput = isGitTab ? gitCommitMsgInput : gitCommitMessageInput;
+    const btnEl = isGitTab ? gitPushBtn : gitConfirmBtn;
+
+    if (!msgInput) return;
+    const message = (msgInput.value || '').trim();
 
     if (!message) {
-        console.log("No commit message provided");
+        if (isGitTab && typeof showGitFeedback === 'function') {
+            showGitFeedback('Escribi un mensaje de commit', 'error');
+        }
         return;
     }
 
     if (!p || !p.folder) return;
 
-    gitConfirmBtn.disabled = true;
-    gitConfirmBtn.textContent = "WAIT...";
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...PUSHEANDO...'; }
 
-    updateThinking(chat, true, "GIT COMMIT & PUSH", "Añadiendo, comiteando y pusheando cambios...");
+    if (isGitTab && typeof showGitFeedback === 'function') {
+        showGitFeedback('Commiteando y pusheando...', 'info');
+    }
+    if (!isGitTab) updateThinking(chat, true, 'GIT COMMIT & PUSH', 'Commiteando y pusheando...');
 
     try {
         const res = await fetchWithLog(`${API_BASE}/utils/git-commit`, {
@@ -7420,25 +7470,31 @@ window.handleGitPush = async () => {
         const data = await res.json();
 
         if (data.success) {
-            chat.messages.push({
-                role: 'agent',
-                content: `🚀 **Git Push Exitoso**\nLos cambios han sido subidos correctamente.\n\n\`\`\`\n${data.stdout || 'Sin salida'}\n\`\`\``
-            });
-            gitCommitContainer.classList.add('hidden');
-            gitCommitMessageInput.value = '';
+            if (isGitTab) {
+                if (typeof showGitFeedback === 'function') showGitFeedback('Push exitoso!', 'success');
+                msgInput.value = '';
+                if (typeof loadGitLog === 'function') await loadGitLog();
+            } else {
+                chat.messages.push({ role: 'agent', content: `🚀 **Git Push Exitoso**\n${data.stdout || ''}` });
+                gitCommitContainer.classList.add('hidden');
+                msgInput.value = '';
+            }
         } else {
-            chat.messages.push({
-                role: 'agent',
-                content: `❌ **Error en Git**\nHubo un problema al realizar la operación:\n\n\`\`\`\n${data.error}\n${data.stderr || ''}\n\`\`\``
-            });
+            if (isGitTab) {
+                if (typeof showGitFeedback === 'function') showGitFeedback('Error en Git: ' + (data.error || 'Desconocido'), 'error');
+            } else {
+                chat.messages.push({ role: 'agent', content: `❌ **Error en Git**: ${data.error}\n${data.stderr || ''}` });
+            }
         }
     } catch (e) {
-        chat.messages.push({ role: 'agent', content: `❌ **Error de conexión**\nNo se pudo contactar con el servidor: ${e.message}` });
+        if (isGitTab) {
+            if (typeof showGitFeedback === 'function') showGitFeedback('Error de conexion: ' + e.message, 'error');
+        } else {
+            chat.messages.push({ role: 'agent', content: `❌ **Error de conexion**: ${e.message}` });
+        }
     } finally {
-        gitConfirmBtn.disabled = false;
-        gitConfirmBtn.textContent = "PUSH";
-        updateThinking(chat, false);
-        renderMessages();
+        if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = isGitTab ? `<svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg> COMMIT & PUSH` : 'PUSH'; }
+        if (!isGitTab) { updateThinking(chat, false); renderMessages(); }
     }
 };
 
@@ -7988,15 +8044,7 @@ init();
 async function triggerHermesLogic(project, chat, origin = 'user') {
     if (chat.isThinking) return;
 
-    const thinkingPhrases = [
-        "Invoco espiritus de la red...",
-        "Analizando con sabiduría arcana...",
-        "Tejiendo hechizos algorítmicos...",
-        "Conjurando respuesta...",
-        "Procesando con inteligencia artificial..."
-    ];
-    const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
-    updateThinking(chat, true, "Esperando respuesta", randomPhrase);
+    updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
     renderMessages();
 
@@ -8007,6 +8055,23 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     }
     let message = lastUserMsg.content;
     const images = lastUserMsg.images || [];
+
+    // ─── Auto-naming para agentes Hermes: nombrar desde el prompt ───
+    if (/^Agente \d+$/.test(chat.name)) {
+        const generatedName = generateChatNameFromPrompt(message);
+        if (generatedName) {
+            console.log(`[HERMES-NAMING] Auto-nombrando agente Hermes desde prompt: "${generatedName}"`);
+            chat.name = generatedName;
+            const agentNameInput = document.getElementById('chat-agent-name-input');
+            if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                agentNameInput.value = generatedName;
+            }
+            renderTabs();
+            renderAdminMonitor();
+            saveData();
+        }
+    }
+    // ─── Fin auto-naming Hermes ───
 
     const instanceKey = project.id + ':' + chat.id;
 
@@ -8070,9 +8135,23 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                         else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
                                             formatted = '✅ ' + clean.slice(0, 150);
                                         }
-                                        // Thinking/processing steps
-                                        else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
+                                        // Thinking/processing steps — handle both [thinking] prefixed and plain
+                                        const thinkingMatch = clean.match(/\[thinking\]\s*(.*)/i);
+                                        const thinkContent = thinkingMatch ? thinkingMatch[1].trim() : null;
+                                        const isThinkingLine = thinkContent && thinkContent.length > 3;
+
+                                        if (isThinkingLine) {
+                                            formatted = '🤔 ' + thinkContent.slice(0, 150);
+                                            // Update thinking-subtext with real Hermes thinking (the yellow message)
+                                            chat.thinkingSubtext = thinkContent.slice(0, 150);
+                                            const thinkingSubEl = chatMessages.querySelector('.thinking-subtext');
+                                            if (thinkingSubEl) thinkingSubEl.textContent = thinkContent.slice(0, 150);
+                                        } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
                                             formatted = '🤔 ' + clean.slice(0, 150);
+                                            // Update thinking-subtext with real Hermes thinking (the yellow message)
+                                            chat.thinkingSubtext = clean.slice(0, 150);
+                                            const thinkingSubEl = chatMessages.querySelector('.thinking-subtext');
+                                            if (thinkingSubEl) thinkingSubEl.textContent = clean.slice(0, 150);
                                         }
                                         // Error-like lines
                                         else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
@@ -8150,6 +8229,21 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                                     }
                                                     chatMessages.appendChild(div);
                                                 });
+                                                // ─── RE-INSERT thinking bubble if chat is still active and thinking ───
+                                                if (chat.isThinking) {
+                                                    const thinkingDiv = document.createElement('div');
+                                                    thinkingDiv.className = 'message agent thinking';
+                                                    thinkingDiv.innerHTML = `
+                                                        <div class="thinking-bubble-content">
+                                                            <div class="spinner"></div>
+                                                            <div class="thinking-text-wrapper">
+                                                                <div class="thinking-status">${escapeHtml(chat.thinkingStatus || 'El agente está pensando...')}</div>
+                                                                <div class="thinking-subtext">${escapeHtml(chat.thinkingSubtext || 'Procesando...')}</div>
+                                                            </div>
+                                                        </div>
+                                                    `;
+                                                    chatMessages.appendChild(thinkingDiv);
+                                                }
                                                 chatMessages.scrollTop = chatMessages.scrollHeight;
                                             }
                                         }, 200);
@@ -8268,9 +8362,29 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         }
 
         const data = await res.json();
+        // ─── AUTO-NAMING: Si el backend o Hermes devolvió un nombre de agente, actualizarlo ───
+        if (data.agentName && chat.name && /^Agente\s+\d+$/.test(chat.name)) {
+            chat.name = data.agentName;
+            renderTabs();
+            renderAdminMonitor();
+            console.log(`[AUTO-NAME] 🏷️ Agente Hermes renombrado a "${data.agentName}"`);
+        }
         // Strip ANSI escape codes
         const rawResponse = data.response;
         const response = rawResponse ? stripAnsi(rawResponse) : '(El agente completó pero no devolvió respuesta de texto)';
+        // ─── Extraer NOMBRE_AGENTE del texto de respuesta (si el nombre sigue siendo genérico) ───
+        if (/^Agente\s+\d+$/.test(chat.name)) {
+            const nameMatch = rawResponse.match(/NOMBRE_AGENTE\s*:\s*(.+?)(?:\n|$)/i);
+            if (nameMatch && nameMatch[1]) {
+                const extracted = nameMatch[1].trim().replace(/['"]/g, '').slice(0, 40);
+                if (extracted && extracted.length > 2) {
+                    chat.name = extracted;
+                    renderTabs();
+                    renderAdminMonitor();
+                    console.log(`[AUTO-NAME] 🏷️ Agente Hermes renombrado desde respuesta: "${extracted}"`);
+                }
+            }
+        }
         const backendChanges = data.changes || [];
         const tokenUsage = data.usage || null;
 
@@ -8793,6 +8907,547 @@ window.gotoSearchResult = (projectId) => {
     chatList.style.display = '';
     const searchInput = document.getElementById('project-search');
     if (searchInput) searchInput.value = '';
+};
+
+// ──────────────────────────────────────────────
+// GIT TAB FUNCTIONS
+// ──────────────────────────────────────────────
+
+// Show feedback message in the git actions bar area
+function showGitFeedback(msg, type = 'info') {
+    const bar = document.querySelector('.git-actions-bar');
+    if (!bar) return;
+    // Remove any existing feedback
+    const existing = bar.querySelector('.git-feedback');
+    if (existing) existing.remove();
+
+    const el = document.createElement('div');
+    el.className = `git-feedback git-feedback-${type}`;
+    el.textContent = msg;
+    bar.appendChild(el);
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => {
+        if (el.parentNode) el.remove();
+    }, 4000);
+}
+
+// Refresh the git tab view
+window.refreshGitTab = () => {
+    loadGitLog();
+};
+
+// Load git log from the backend
+async function loadGitLog() {
+    const project = getActiveProject();
+    if (!project || !project.folder) {
+        const list = document.getElementById('git-commit-list');
+        if (list) list.innerHTML = '<div class="git-empty-state">No hay proyecto activo con carpeta</div>';
+        return;
+    }
+
+    const commitList = document.getElementById('git-commit-list');
+    const branchBadge = document.getElementById('git-current-branch');
+    const commitCount = document.getElementById('git-commit-count');
+    const graphContainer = document.getElementById('git-branch-graph');
+    const legendContainer = document.getElementById('git-legend');
+
+    if (commitList) commitList.innerHTML = '<div class="git-empty-state">Cargando historial...</div>';
+    if (graphContainer) graphContainer.style.display = 'none';
+    if (legendContainer) legendContainer.style.display = 'none';
+
+    try {
+        const res = await fetchWithLog(`${API_BASE}/utils/git-log`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder })
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            if (commitList) commitList.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
+            return;
+        }
+
+        const commits = data.commits || [];
+        const currentBranch = data.currentBranch || 'main';
+
+        // Update badges
+        if (branchBadge) branchBadge.textContent = currentBranch;
+        if (commitCount) commitCount.textContent = `${commits.length} commit${commits.length !== 1 ? 's' : ''}`;
+
+        // Render
+        renderCommitTree(commits, currentBranch);
+
+    } catch (e) {
+        console.error('[GIT] Error loading log:', e);
+        if (commitList) commitList.innerHTML = '<div class="git-empty-state error">Error al cargar el historial</div>';
+    }
+}
+
+// SVG Branch Graph Renderer
+function renderBranchGraph(commits) {
+    if (!commits || commits.length < 2) return null;
+
+    const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
+    const ROW_H = 22;
+    const LANE_W = 24;
+    const NODE_R = 4;
+    const LX = 20;      // left margin for nodes
+    const TY = 12;      // top Y for first node
+    const TEXT_AREA_W = 280;
+
+    // Build lookup: hash -> commit object
+    const commitMap = {};
+    commits.forEach(c => { commitMap[c.hash] = c; });
+
+    // Identify branch refs and their tip commits
+    const branchTips = [];  // { name, hash, color }
+    let colorIdx = 0;
+    commits.forEach(c => {
+        if (c.refs && c.refs.length > 0) {
+            c.refs.forEach(ref => {
+                // Only add branch names (not HEAD, not tags starting with 'tag: ')
+                if (ref === 'HEAD') return;
+                if (ref.startsWith('tag: ')) return;
+                // Remove remote prefix for display
+                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
+                // Avoid duplicates
+                if (!branchTips.some(bt => bt.name === displayName && bt.hash === c.hash)) {
+                    branchTips.push({
+                        name: displayName,
+                        hash: c.hash,
+                        color: LANE_COLORS[colorIdx % LANE_COLORS.length]
+                    });
+                    colorIdx++;
+                }
+            });
+        }
+    });
+
+    // If no branch tips found, assign first commit a default lane
+    if (branchTips.length === 0) {
+        branchTips.push({ name: 'main', hash: commits[0].hash, color: LANE_COLORS[0] });
+    }
+
+    // Assign lanes: walk backwards from branch tips
+    // laneAssignments: hash -> { lane: number, color: string }
+    const laneAssignments = {};
+
+    // BFS from each branch tip, walking parents
+    branchTips.forEach((tip, idx) => {
+        const visited = new Set();
+        const queue = [tip.hash];
+        while (queue.length > 0) {
+            const hash = queue.shift();
+            if (visited.has(hash)) continue;
+            visited.add(hash);
+            const commit = commitMap[hash];
+            if (!commit) continue;
+
+            if (!laneAssignments[hash]) {
+                laneAssignments[hash] = { lane: idx, color: tip.color };
+            }
+            // Continue to parents
+            if (commit.parents && commit.parents.length > 0) {
+                commit.parents.forEach(ph => {
+                    if (commitMap[ph] && !visited.has(ph)) {
+                        queue.push(ph);
+                    }
+                });
+            }
+        }
+    });
+
+    // Assign lanes to any commits not yet assigned (walk forward from roots)
+    commits.forEach(c => {
+        if (!laneAssignments[c.hash]) {
+            // Find first parent with an assignment, or use default
+            let assigned = false;
+            if (c.parents && c.parents.length > 0) {
+                for (const ph of c.parents) {
+                    if (laneAssignments[ph]) {
+                        laneAssignments[c.hash] = { ...laneAssignments[ph] };
+                        assigned = true;
+                        break;
+                    }
+                }
+            }
+            if (!assigned) {
+                laneAssignments[c.hash] = { lane: 0, color: LANE_COLORS[0] };
+            }
+        }
+    });
+
+    // Determine max lane used
+    let maxLane = 0;
+    Object.values(laneAssignments).forEach(a => { if (a.lane > maxLane) maxLane = a.lane; });
+
+    const totalWidth = LX + (maxLane + 1) * LANE_W + TEXT_AREA_W;
+    const totalHeight = TY + commits.length * ROW_H + 10;
+
+    // Helper: HTML-escape for SVG attributes
+    const svgEscape = (str) => {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    };
+
+    let svgLines = '';
+    let legendItems = '';
+
+    // Draw connecting lines first (so they appear behind nodes)
+    commits.forEach((commit, i) => {
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+
+        // Draw lines to parents
+        if (commit.parents && commit.parents.length > 0) {
+            commit.parents.forEach(parentHash => {
+                const parentIdx = commits.findIndex(c => c.hash === parentHash);
+                if (parentIdx === -1) return;
+                const parentLa = laneAssignments[parentHash];
+                if (!parentLa) return;
+                const py = TY + parentIdx * ROW_H;
+                const pcx = LX + parentLa.lane * LANE_W + LANE_W / 2;
+
+                if (la.lane === parentLa.lane) {
+                    // Same lane: vertical line
+                    svgLines += `<line x1="${cx}" y1="${y}" x2="${pcx}" y2="${py}" stroke="${la.color}" stroke-width="2" opacity="0.6"/>`;
+                } else {
+                    // Different lane: bezier curve (merge)
+                    const midY = (y + py) / 2;
+                    svgLines += `<path d="M${cx},${y} C${cx},${midY} ${pcx},${midY} ${pcx},${py}" stroke="${la.color}" stroke-width="2" fill="none" opacity="0.6"/>`;
+                }
+            });
+        }
+    });
+
+    // Draw nodes
+    let nodesSvg = '';
+    commits.forEach((commit, i) => {
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+
+        const shortHash = commit.hash ? commit.hash.substring(0, 7) : '';
+        const escapedHash = svgEscape(commit.hash || '');
+        const escapedShortHash = svgEscape(shortHash);
+        const escapedSubject = svgEscape((commit.subject || '').substring(0, 60));
+
+        const refsLabel = (commit.refs && commit.refs.length > 0)
+            ? commit.refs.filter(r => r !== 'HEAD' && !r.startsWith('tag: ')).join(', ')
+            : '';
+
+        nodesSvg += `
+        <g class="git-node-group" data-hash="${escapedHash}" onclick="window.showCommitDetail('${escapedHash}')" ondblclick="window.handleGitCheckout('${escapedHash}')" style="cursor:pointer">
+            <!-- Invisible hit area -->
+            <circle cx="${cx}" cy="${y}" r="${LANE_W/2}" fill="transparent" stroke="none"/>
+            <!-- Visible node -->
+            <circle cx="${cx}" cy="${y}" r="${NODE_R}" fill="${la.color}" stroke="#1e1e2e" stroke-width="1.5"/>
+            <title>${escapedShortHash} — ${escapedSubject}${refsLabel ? ' [' + svgEscape(refsLabel) + ']' : ''}</title>
+            <!-- Hash label (right of node) -->
+            <text x="${cx + NODE_R + 4}" y="${y + 4}" font-family="monospace" font-size="11" fill="${la.color}">${escapedShortHash}</text>
+            <!-- Subject label (further right, grey) -->
+            <text x="${cx + NODE_R + 70}" y="${y + 4}" font-family="sans-serif" font-size="11" fill="#888">${escapedSubject}</text>
+        </g>`;
+    });
+
+    // Build legend
+    branchTips.forEach(tip => {
+        legendItems += `<span class="git-legend-item"><span class="git-legend-dot" style="background:${tip.color}"></span> ${escapeHtml(tip.name)}</span>`;
+    });
+
+    const svg = `<svg class="git-branch-graph-svg" viewBox="0 0 ${totalWidth} ${totalHeight}" width="${totalWidth}" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
+        ${svgLines}
+        ${nodesSvg}
+    </svg>`;
+
+    return { svg, legend: legendItems };
+}
+
+// Render the full commit tree into the DOM
+function renderCommitTree(commits, currentBranch) {
+    const graphContainer = document.getElementById('git-branch-graph');
+    const legendContainer = document.getElementById('git-legend');
+    const commitList = document.getElementById('git-commit-list');
+
+    // Build branch color map from refs
+    const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
+    const branchColorMap = {};
+    let colorIdx = 0;
+    commits.forEach(c => {
+        if (c.refs && c.refs.length > 0) {
+            c.refs.forEach(ref => {
+                if (ref === 'HEAD') return;
+                if (ref.startsWith('tag: ')) return;
+                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
+                if (!branchColorMap[displayName]) {
+                    branchColorMap[displayName] = LANE_COLORS[colorIdx % LANE_COLORS.length];
+                    colorIdx++;
+                }
+            });
+        }
+    });
+
+    // Render branch graph
+    const graphResult = renderBranchGraph(commits);
+    if (graphResult) {
+        if (graphContainer) {
+            graphContainer.innerHTML = graphResult.svg;
+            graphContainer.style.display = 'block';
+        }
+        if (legendContainer) {
+            legendContainer.innerHTML = graphResult.legend;
+            legendContainer.style.display = 'flex';
+        }
+    } else {
+        if (graphContainer) graphContainer.style.display = 'none';
+        if (legendContainer) legendContainer.style.display = 'none';
+    }
+
+    // Render commit list
+    if (!commitList) return;
+
+    if (commits.length === 0) {
+        commitList.innerHTML = '<div class="git-empty-state">No hay commits en este repositorio</div>';
+        return;
+    }
+
+    let html = '';
+    commits.forEach((commit, idx) => {
+        const hash = escapeHtml(commit.hash || '');
+        const shortHash = hash.substring(0, 7);
+        const subject = escapeHtml((commit.subject || '').substring(0, 80));
+        const author = escapeHtml(commit.author || '');
+        const date = escapeHtml(commit.date || '');
+
+        // Determine color from branch refs
+        let borderColor = '#444';
+        if (commit.refs && commit.refs.length > 0 && commit.hash) {
+            for (const ref of commit.refs) {
+                if (ref === 'HEAD') continue;
+                if (ref.startsWith('tag: ')) continue;
+                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
+                if (branchColorMap[displayName]) {
+                    borderColor = branchColorMap[displayName];
+                    break;
+                }
+            }
+        }
+
+        // Is this the HEAD commit?
+        const isHead = idx === 0;
+        const headClass = isHead ? ' git-commit-head' : '';
+        const dotColor = isHead ? '#34d399' : borderColor;
+
+        // Build branch badges
+        let badgesHtml = '';
+        if (commit.refs && commit.refs.length > 0) {
+            commit.refs.forEach(ref => {
+                if (ref.startsWith('tag: ')) return;
+                let displayRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
+                if (displayRef === 'HEAD') {
+                    badgesHtml += `<span class="git-branch-badge git-badge-head">HEAD</span>`;
+                } else {
+                    badgesHtml += `<span class="git-branch-badge" style="background:${branchColorMap[displayRef] || '#555'}20;color:${branchColorMap[displayRef] || '#ccc'};border:1px solid ${branchColorMap[displayRef] || '#555'}40">${escapeHtml(displayRef)}</span>`;
+                }
+            });
+        }
+
+        html += `
+        <div class="git-commit-item${headClass}" data-hash="${hash}" style="border-left:3px solid ${borderColor}" ondblclick="window.handleGitCheckout('${hash}')" onclick="window.showCommitDetail('${hash}')" title="Click: ver codigo | Doble click: restaurar">
+            <div class="git-commit-row">
+                <span class="git-commit-hash" style="color:${dotColor}">${dotColor === '#34d399' ? '●' : '○'} ${shortHash}</span>
+                <span class="git-commit-subject">${subject}</span>
+            </div>
+            <div class="git-commit-meta">
+                <span class="git-commit-author">${author}</span>
+                <span class="git-commit-date">${date}</span>
+                ${badgesHtml}
+            </div>
+        </div>`;
+    });
+
+    commitList.innerHTML = html;
+}
+
+// Show commit detail panel with diff
+window.showCommitDetail = async (hash) => {
+    const project = getActiveProject();
+    if (!project || !project.folder) return;
+
+    const panel = document.getElementById('git-detail-panel');
+    const content = document.getElementById('git-detail-content');
+    const title = document.getElementById('git-detail-title');
+
+    if (!panel || !content) return;
+
+    panel.classList.remove('hidden');
+    if (title) title.textContent = `Detalle del Commit — ${hash.substring(0, 7)}`;
+    content.innerHTML = '<div class="loading-small">Cargando diff...</div>';
+
+    try {
+        const res = await fetch(`${API_BASE}/utils/git-show`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder, commitHash: hash })
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            content.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
+            return;
+        }
+
+        const commit = data.commit || {};
+        const diff = data.diff || '';
+
+        let html = '';
+
+        // Commit info
+        html += `<div class="git-detail-info">`;
+        html += `<div class="git-detail-field"><strong>Hash:</strong> <code>${escapeHtml(commit.hash || hash)}</code></div>`;
+        html += `<div class="git-detail-field"><strong>Autor:</strong> ${escapeHtml(commit.author || '')}</div>`;
+        html += `<div class="git-detail-field"><strong>Fecha:</strong> ${escapeHtml(commit.date || '')}</div>`;
+        if (commit.subject) {
+            html += `<div class="git-detail-field"><strong>Mensaje:</strong> ${escapeHtml(commit.subject)}</div>`;
+        }
+        if (commit.body) {
+            html += `<div class="git-detail-field"><pre>${escapeHtml(commit.body)}</pre></div>`;
+        }
+        html += `</div>`;
+
+        // Diff with syntax highlighting
+        if (diff) {
+            const escapedDiff = escapeHtml(diff);
+            // Simple diff highlighting
+            const highlightedDiff = escapedDiff
+                .split('\n')
+                .map(line => {
+                    if (line.startsWith('+') && !line.startsWith('+++')) {
+                        return `<span class="diff-add">${line}</span>`;
+                    } else if (line.startsWith('-') && !line.startsWith('---')) {
+                        return `<span class="diff-del">${line}</span>`;
+                    } else if (line.startsWith('@@')) {
+                        return `<span class="diff-hunk">${line}</span>`;
+                    }
+                    return line;
+                })
+                .join('\n');
+            html += `<div class="git-detail-diff"><pre><code>${highlightedDiff}</code></pre></div>`;
+        } else {
+            html += `<div class="git-empty-state">Sin cambios en este commit (commit inicial)</div>`;
+        }
+
+        // Restore button
+        html += `<div class="git-detail-actions">
+            <button class="git-restore-btn" onclick="window.handleGitCheckout('${escapeHtml(hash)}')">Restaurar a este commit</button>
+        </div>`;
+
+        content.innerHTML = html;
+
+    } catch (e) {
+        console.error('[GIT] Error showing commit detail:', e);
+        content.innerHTML = '<div class="git-empty-state error">Error al cargar el detalle</div>';
+    }
+};
+
+// Handle git checkout confirmation
+window.handleGitCheckout = (hash) => {
+    const overlay = document.getElementById('git-checkout-confirm');
+    const msg = document.getElementById('git-confirm-msg');
+    const cancelBtn = document.getElementById('git-confirm-cancel');
+    const confirmBtn = document.getElementById('git-confirm-checkout');
+
+    if (!overlay) return;
+
+    if (msg) {
+        msg.innerHTML = `Esto hará un <code>git checkout</code> al commit <code>${escapeHtml(hash.substring(0, 7))}</code>. Los cambios sin commitear se guardarán en el stash.`;
+    }
+
+    overlay.classList.remove('hidden');
+
+    // Store hash for confirm
+    overlay.setAttribute('data-checkout-hash', hash);
+
+    // Cancel handler
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            overlay.classList.add('hidden');
+        };
+    }
+
+    // Confirm handler
+    if (confirmBtn) {
+        confirmBtn.onclick = async () => {
+            overlay.classList.add('hidden');
+            const project = getActiveProject();
+            if (!project || !project.folder) return;
+
+            const targetHash = overlay.getAttribute('data-checkout-hash');
+            if (!targetHash) return;
+
+            showGitFeedback('Restaurando commit...', 'info');
+
+            try {
+                const res = await fetch(`${API_BASE}/utils/git-checkout`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath: project.folder, target: targetHash })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showGitFeedback('Commit restaurado exitosamente', 'success');
+                    // Refresh git log
+                    setTimeout(() => loadGitLog(), 500);
+                } else {
+                    showGitFeedback(`Error: ${data.error || 'Error al restaurar'}`, 'error');
+                }
+            } catch (e) {
+                console.error('[GIT] Checkout error:', e);
+                showGitFeedback('Error de conexión al restaurar commit', 'error');
+            }
+        };
+    }
+};
+
+// Reset hard to origin
+window.handleGitResetOrigin = async () => {
+    const project = getActiveProject();
+    if (!project || !project.folder) return;
+
+    if (!confirm('⚠️ ¿Estás seguro? Esto hará un reset --hard al origen (origin/master o origin/main). Todos los cambios locales no commiteados se perderán.')) return;
+
+    showGitFeedback('Reseteando al origen...', 'info');
+
+    try {
+        const res = await fetch(`${API_BASE}/utils/git-reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showGitFeedback('Reset al origen exitoso', 'success');
+            // Refresh git log
+            setTimeout(() => loadGitLog(), 500);
+        } else {
+            showGitFeedback(`Error: ${data.error || 'Error al resetear'}`, 'error');
+        }
+    } catch (e) {
+        console.error('[GIT] Reset error:', e);
+        showGitFeedback('Error de conexión o remoto no disponible', 'error');
+    }
 };
 
 // Initialize search input when DOM is ready

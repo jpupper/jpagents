@@ -275,85 +275,214 @@ class HermesBridge extends EventEmitter {
      * @returns {Promise<{stdout: string, stderr: string}>}
      */
     async _runHermesQuery(instanceKey, projectId, workdir, query, model = null) {
-        return new Promise(async (resolve, reject) => {
-            const hermesPath = await this._findHermesPath(workdir);
-            const [projId, chatId] = instanceKey.split(':');
+        const hermesPath = await this._findHermesPath(workdir);
+        const chatId = instanceKey.split(':')[1];
 
-            // ─── JP AGENTS IDENTITY: cargar identidad persistida ───
-            // Cada agente Hermes creado desde JP Agents tiene un archivo de identidad.
-            // Lo inyectamos como contexto en cada consulta para que quede
-            // registrado en la conversación de Hermes (state.db).
-            let identityBlock = '';
+        // ─── JP AGENTS IDENTITY ───
+        let identityBlock = '';
+        try {
+            const fsp = await import('fs/promises');
+            const identityPath = path.join(
+                process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
+                'jpagents-identity', `identity-${chatId}.json`
+            );
+            const content = await fsp.readFile(identityPath, 'utf-8').catch(() => null);
+            if (content) {
+                const id = JSON.parse(content);
+                if (id?.agentName) {
+                    identityBlock = `\n\n=== 🌐 JP AGENTS IDENTITY ===\nSos el agente "${id.agentName}" del proyecto "${id.projectName}" (ID: ${projectId}), chat ${chatId} en JP Agents.\n=============================\n\n`;
+                }
+            }
+        } catch {}
+
+        const augmentedQuery = identityBlock ? identityBlock + query : query;
+
+        // ─── Guardar task en identity file ───
+        try {
+            const fsp = await import('fs/promises');
+            const identityPath = path.join(
+                process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
+                'jpagents-identity', `identity-${chatId}.json`
+            );
+            const existing = await fsp.readFile(identityPath, 'utf-8').catch(() => '{}');
+            const id = JSON.parse(existing);
+            id.lastTask = query.slice(0, 500);
+            id.lastTaskAt = Date.now();
+            await fsp.writeFile(identityPath, JSON.stringify(id, null, 2));
+        } catch {}
+
+        const args = ['chat', '-q', augmentedQuery, '--verbose'];
+        if (model && model !== '' && model !== 'default') args.push('--model', model);
+        args.push('--source', `jpagents|${projectId}|${chatId}`);
+
+        // ─── OUTPUT FILES: sobreviven al restart del servidor ───
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const outputDir = path.join(hermesHome, 'jpagents-output');
+        try { if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true }); } catch {}
+
+        const outFilePath = path.join(outputDir, `${chatId}-out.log`);
+        const errFilePath = path.join(outputDir, `${chatId}-err.log`);
+        const outFd = fs.openSync(outFilePath, 'a');
+        const errFd = fs.openSync(errFilePath, 'a');
+
+        const taskMarker = `\n=== TASK START: ${new Date().toISOString()} ===\n`;
+        fs.writeSync(outFd, taskMarker);
+
+        // ─── SPAWN: detached + file descriptors = sobrevive al restart ───
+        const proc = spawn(hermesPath, args, {
+            cwd: workdir,
+            detached: true,
+            stdio: ['ignore', outFd, errFd],
+            windowsHide: true,
+            env: { ...process.env, HERMES_WORKDIR: workdir, HERMES_JPAGENTS: '1' }
+        });
+        proc.unref();
+
+        // ─── PID MAP: archivo compartido que sobrevive al restart ───
+        try {
+            const pidMapPath = path.join(hermesHome, 'jpagents-identity', 'pid-map.json');
+            let pidMap = {};
+            try { pidMap = JSON.parse(fs.readFileSync(pidMapPath, 'utf-8')); } catch {}
+            pidMap[String(proc.pid)] = { projectId, chatId, startedAt: new Date().toISOString() };
+            fs.writeFileSync(pidMapPath, JSON.stringify(pidMap, null, 2));
+        } catch {}
+
+        const instance = this.instances.get(instanceKey);
+        if (instance) {
+            instance.proc = proc;
+            instance._outFile = outFilePath;
+            instance._errFile = errFilePath;
+            instance._outPos = fs.statSync(outFilePath).size;
+        }
+
+        // ─── FILE POLLING: live streaming desde los archivos ───
+        let outPos = fs.statSync(outFilePath).size;
+        let errPos = fs.statSync(errFilePath).size;
+        const pollInterval = setInterval(() => {
             try {
-                const fs = await import('fs/promises');
-                const identityPath = path.join(
-                    process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
-                    'jpagents-identity',
-                    `identity-${chatId}.json`
-                );
-                const identityContent = await fs.readFile(identityPath, 'utf-8').catch(() => null);
-                if (identityContent) {
-                    const identity = JSON.parse(identityContent);
-                    if (identity && identity.agentName) {
-                        identityBlock = `\n\n=== 🌐 JP AGENTS IDENTITY ===\nSos el agente "${identity.agentName}" del proyecto "${identity.projectName}" (ID: ${projectId}), chat ${chatId} en JP Agents.\n=============================\n\n`;
+                const cos = fs.statSync(outFilePath).size;
+                if (cos > outPos) {
+                    const buf = Buffer.alloc(cos - outPos);
+                    const fd = fs.openSync(outFilePath, 'r');
+                    fs.readSync(fd, buf, 0, buf.length, outPos);
+                    fs.closeSync(fd);
+                    outPos = cos;
+                    const text = buf.toString('utf-8');
+                    if (text.trim()) this._broadcastLog(instanceKey, projectId, 'stdout', text);
+                }
+                const ces = fs.statSync(errFilePath).size;
+                if (ces > errPos) {
+                    const buf = Buffer.alloc(ces - errPos);
+                    const fd = fs.openSync(errFilePath, 'r');
+                    fs.readSync(fd, buf, 0, buf.length, errPos);
+                    fs.closeSync(fd);
+                    errPos = ces;
+                    const lines = buf.toString('utf-8').split('\n');
+                    for (const line of lines) {
+                        if (line.trim()) this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
                     }
                 }
-            } catch { /* identity file may not exist — fine on first run */ }
+            } catch {}
+        }, 500);
 
-            const augmentedQuery = identityBlock ? identityBlock + query : query;
-
-            const args = ['chat', '-q', augmentedQuery, '--verbose'];
-            if (model && model !== '' && model !== 'default') {
-                args.push('--model', model);
-            }
-            args.push('--source', `jpagents|${projectId}|${chatId}`);
-
-            const proc = spawn(hermesPath, args, {
-                cwd: workdir,
-                stdio: ['pipe', 'pipe', 'pipe'],
-                shell: false,
-                env: {
-                    ...process.env,
-                    HERMES_WORKDIR: workdir,
-                    HERMES_JPAGENTS: '1'
+        // ─── ESPERAR a que Hermes termine ───
+        return new Promise((resolve) => {
+            const checkDone = setInterval(() => {
+                try { process.kill(proc.pid, 0); } catch {
+                    clearInterval(checkDone);
+                    clearInterval(pollInterval);
+                    this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
                 }
-            });
+            }, 1000);
 
-            const instance = this.instances.get(instanceKey);
-            if (instance) {
-                instance.proc = proc;
-            }
-
-            let stdout = '';
-            let stderr = '';
-
-            proc.stderr.on('data', (data) => {
-                const text = data.toString();
-                stderr += text;
-                const lines = text.split('\n');
-                for (const line of lines) {
-                    if (line.trim()) {
-                        this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
-                    }
-                }
-            });
-
-            proc.stdout.on('data', (data) => {
-                const text = data.toString();
-                stdout += text;
-                this._broadcastLog(instanceKey, projectId, 'stdout', text);
-            });
-
-            proc.on('error', (err) => reject(err));
-
-            proc.on('exit', (code) => {
-                if (instance && instance.proc === proc) {
-                    delete instance.proc;
-                }
-                resolve({ stdout, stderr, exitCode: code });
-            });
+            setTimeout(() => {
+                clearInterval(checkDone);
+                clearInterval(pollInterval);
+                console.warn(`[HERMES-BRIDGE] ⏱️ Timeout ${instanceKey}`);
+                try { process.kill(proc.pid); } catch {}
+                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
+            }, 600000);
         });
     }
+
+    _finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve) {
+        try {
+            const stdout = fs.readFileSync(outFilePath, 'utf-8') || '';
+            const stderr = fs.readFileSync(errFilePath, 'utf-8') || '';
+            const instance = this.instances.get(instanceKey);
+            if (instance) { delete instance.proc; delete instance._outFile; delete instance._errFile; }
+            resolve({ stdout, stderr, exitCode: 0 });
+        } catch (e) {
+            console.error(`[HERMES-BRIDGE] Error reading output ${instanceKey}:`, e.message);
+            resolve({ stdout: '', stderr: '', exitCode: -1 });
+        }
+    }
+
+    startOutputFilePolling(instanceKey, projectId, chatId) {
+        const instance = this.instances.get(instanceKey);
+        if (!instance) return;
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const outputDir = path.join(hermesHome, 'jpagents-output');
+        const outFilePath = path.join(outputDir, `${chatId}-out.log`);
+        const errFilePath = path.join(outputDir, `${chatId}-err.log`);
+        try {
+            let outPos = 0, errPos = 0;
+            try { outPos = fs.statSync(outFilePath).size; errPos = fs.statSync(errFilePath).size; } catch {}
+            instance._outFile = outFilePath;
+            instance._errFile = errFilePath;
+            instance._outPos = outPos;
+            this._broadcastRecoveredOutput(instanceKey, projectId, outFilePath, errFilePath);
+            const pollInterval = setInterval(() => {
+                try {
+                    const cos = fs.statSync(outFilePath).size;
+                    if (cos > outPos) {
+                        const buf = Buffer.alloc(cos - outPos);
+                        const fd = fs.openSync(outFilePath, 'r');
+                        fs.readSync(fd, buf, 0, buf.length, outPos);
+                        fs.closeSync(fd);
+                        outPos = cos;
+                        this._broadcastLog(instanceKey, projectId, 'stdout', buf.toString('utf-8'));
+                    }
+                    const ces = fs.statSync(errFilePath).size;
+                    if (ces > errPos) {
+                        const buf = Buffer.alloc(ces - errPos);
+                        const fd = fs.openSync(errFilePath, 'r');
+                        fs.readSync(fd, buf, 0, buf.length, errPos);
+                        fs.closeSync(fd);
+                        errPos = ces;
+                        const lines = buf.toString('utf-8').split('\n');
+                        for (const line of lines) {
+                            if (line.trim()) this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
+                        }
+                    }
+                } catch {}
+            }, 2000);
+            instance._pollInterval = pollInterval;
+        } catch (e) {
+            console.warn(`[HERMES-BRIDGE] No se pudo iniciar polling output ${instanceKey}:`, e.message);
+        }
+    }
+
+    _broadcastRecoveredOutput(instanceKey, projectId, outFilePath, errFilePath) {
+        try {
+            const outContent = fs.readFileSync(outFilePath, 'utf-8');
+            if (outContent.trim()) {
+                this._broadcastLog(instanceKey, projectId, 'stdout',
+                    `\n--- 📡 CONTENIDO RECUPERADO POST-RESTART ---\n${outContent}\n--- FIN ---\n`);
+            }
+            const errContent = fs.readFileSync(errFilePath, 'utf-8');
+            if (errContent.trim()) {
+                const lines = errContent.split('\n').slice(-50);
+                for (const line of lines) {
+                    if (line.trim()) this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
+                }
+            }
+        } catch {}
+    }
+
+    /**
+     * Extrae el session ID del stderr/stdout de Hermes
+     */
 
     /**
      * "Inicia" una instancia de Hermes para un chat específico.

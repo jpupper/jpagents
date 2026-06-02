@@ -1978,6 +1978,178 @@ app.post('/api/utils/git-reset', async (req, res) => {
     }
 });
 
+app.post('/api/utils/git-log', async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
+
+    console.log(`[SERVER] Git Log en: ${folderPath}`);
+
+    try {
+        const { stdout: logOutput } = await execAsync(
+            'git log --all --format="COMMIT%n%H||%P||%an||%ai||%s%nBRANCHES%n%D" -n 100',
+            { cwd: folderPath }
+        );
+
+        const commits = [];
+        const blocks = logOutput.split('COMMIT\n').filter(b => b.trim());
+
+        for (const block of blocks) {
+            const lines = block.split('\n').filter(l => l.trim());
+            const infoLine = lines[0];
+            if (!infoLine || !infoLine.includes('||')) continue;
+
+            const parts = infoLine.split('||');
+            const hash = parts[0] || '';
+            const parentsStr = parts[1] || '';
+            const author = parts[2] || '';
+            const date = parts[3] || '';
+            const subject = parts.slice(4).join('||') || '';
+
+            const parents = parentsStr ? parentsStr.split(' ').filter(p => p) : [];
+            const refs = lines.slice(1).filter(l => l !== 'BRANCHES' && l.trim());
+
+            commits.push({
+                hash: hash.substring(0, 8),
+                fullHash: hash,
+                parents,
+                author,
+                date,
+                subject,
+                refs
+            });
+        }
+
+        let currentBranch = '';
+        try {
+            const { stdout: branchOutput } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: folderPath });
+            currentBranch = branchOutput.trim();
+        } catch (branchError) {
+            console.log('[SERVER] Could not determine current branch:', branchError.message);
+        }
+
+        res.json({ success: true, commits, currentBranch });
+    } catch (error) {
+        console.error('[SERVER] Git Log Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/utils/git-checkout', async (req, res) => {
+    const { folderPath, target } = req.body;
+    if (!folderPath || !target) return res.status(400).json({ error: 'Missing folderPath or target' });
+
+    console.log(`[SERVER] Git Checkout en: ${folderPath} a ${target}`);
+
+    try {
+        // Stash before checkout to avoid losing changes
+        try {
+            await execAsync('git stash', { cwd: folderPath });
+        } catch (stashError) {
+            console.log('[SERVER] Git stash (no changes or failed):', stashError.message);
+        }
+
+        const { stdout, stderr } = await execAsync(`git checkout "${target}"`, { cwd: folderPath });
+        res.json({ success: true, stdout, stderr });
+    } catch (error) {
+        console.error('[SERVER] Git Checkout Error:', error.message);
+        res.status(500).json({
+            error: error.message,
+            stdout: error.stdout,
+            stderr: error.stderr
+        });
+    }
+});
+
+app.post('/api/utils/git-show', async (req, res) => {
+    const { folderPath, commitHash } = req.body;
+    if (!folderPath || !commitHash) return res.status(400).json({ error: 'Missing folderPath or commitHash' });
+
+    console.log(`[SERVER] Git Show en: ${folderPath} commit: ${commitHash}`);
+
+    try {
+        const { stdout: infoOutput } = await execAsync(
+            `git show --stat --format="%H||%an||%ai||%s" "${commitHash}"`,
+            { cwd: folderPath, maxBuffer: 10 * 1024 * 1024 }
+        );
+
+        // Parse commit info from the stat output
+        const infoLines = infoOutput.split('\n');
+        const infoLine = infoLines.find(l => l.includes('||'));
+        if (!infoLine) throw new Error('Could not parse commit info');
+
+        const parts = infoLine.split('||');
+        const hash = parts[0] || '';
+        const author = parts[1] || '';
+        const date = parts[2] || '';
+        const subject = parts.slice(3).join('||') || '';
+
+        // Parse file list from stat lines containing '|'
+        const files = [];
+        for (const line of infoLines) {
+            const trimmed = line.trim();
+            if (
+                trimmed.includes('|') &&
+                !trimmed.startsWith('commit ') &&
+                !trimmed.startsWith('Date:') &&
+                !trimmed.startsWith('Author:')
+            ) {
+                const filePart = trimmed.split('|')[0].trim();
+                if (filePart && !filePart.includes('file changed') && !filePart.includes('files changed')) {
+                    files.push(filePart);
+                }
+            }
+        }
+
+        // Get the diff
+        const { stdout: diffOutput } = await execAsync(
+            `git show "${commitHash}" --format=""`,
+            { cwd: folderPath, maxBuffer: 10 * 1024 * 1024 }
+        );
+
+        res.json({
+            success: true,
+            commit: {
+                hash: hash.substring(0, 8),
+                fullHash: hash,
+                author,
+                date,
+                subject,
+                files
+            },
+            diff: diffOutput
+        });
+    } catch (error) {
+        console.error('[SERVER] Git Show Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ── Git Reset Hard to Origin ──
+app.post('/api/utils/git-reset-origin', async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
+
+    console.log(`[SERVER] Git Hard Reset to Origin en: ${folderPath}`);
+
+    try {
+        // 1. Fetch latest from origin
+        const { stdout: fetchOut } = await execAsync('git fetch origin', { cwd: folderPath });
+
+        // 2. Get current branch
+        const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: folderPath });
+        const branch = branchOut.trim();
+
+        // 3. Reset hard to origin/<branch>
+        const target = `origin/${branch}`;
+        const { stdout: resetOut } = await execAsync(`git reset --hard "${target}"`, { cwd: folderPath });
+
+        res.json({ success: true, target, fetchOut, resetOut });
+    } catch (error) {
+        console.error('[SERVER] Git Reset Origin Error:', error.message);
+        res.status(500).json({ error: error.message, stdout: error.stdout, stderr: error.stderr });
+    }
+});
+
 app.post('/api/utils/search', async (req, res) => {
     const { filePath, query } = req.body;
     if (!filePath || !query) return res.status(400).json({ error: 'Missing filePath or query' });
@@ -3011,6 +3183,24 @@ app.post('/api/hermes/stop', async (req, res) => {
             const identityPath = path.join(hermesHome, 'jpagents-identity', `identity-${chatId}.json`);
             await fs.unlink(identityPath).catch(() => {});
             console.log(`[JPAGENTS-ID] Identidad eliminada para chatId: ${chatId}`);
+        } catch {}
+
+        // ─── PID MAP: limpiar entradas de este chat ───
+        try {
+            const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+            const pidMapPath = path.join(hermesHome, 'jpagents-identity', 'pid-map.json');
+            const content = await fs.readFile(pidMapPath, 'utf-8').catch(() => null);
+            if (content) {
+                const pidMap = JSON.parse(content);
+                let changed = false;
+                for (const [pid, info] of Object.entries(pidMap)) {
+                    if (info.chatId === chatId) {
+                        delete pidMap[pid];
+                        changed = true;
+                    }
+                }
+                if (changed) await fs.writeFile(pidMapPath, JSON.stringify(pidMap, null, 2));
+            }
         } catch {}
 
         // ─── WS Broadcast: agent stopped ───
@@ -4334,6 +4524,15 @@ function startHermesProcessSyncMonitor() {
                         console.error('[HERMES-SYNC] Error en sincronización de salida:', syncErr.message);
                     }
                     trackedHermesProcesses.delete(pid);
+                    // ─── Limpiar PID Map ───
+                    try {
+                        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+                        const pidMapPath = path.join(hermesHome, 'jpagents-identity', 'pid-map.json');
+                        const mapContent = fs.readFileSync(pidMapPath, 'utf-8');
+                        const pidMap = JSON.parse(mapContent);
+                        delete pidMap[String(pid)];
+                        fs.writeFileSync(pidMapPath, JSON.stringify(pidMap, null, 2));
+                    } catch {}
                 }
             }
 
@@ -4459,6 +4658,39 @@ async function recoverHermesInstances() {
     const runningProcesses = await scanExternalHermesProcesses();
     const processMap = new Map(); // instanceKey → { pid, commandLine, workdir }
     const pidToInstanceKey = new Map(); // pid → instanceKey
+
+    // ─── FASE 2a: PID MAP — fuente de verdad primaria ───
+    // El pid-map.json lo escribe JP Agents cada vez que spawn ea un proceso Hermes.
+    // Sobrevive al restart del servidor y permite match PIDs → chats sin depender
+    // de --source en command line (que Windows puede truncar).
+    try {
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const pidMapPath = path.join(hermesHome, 'jpagents-identity', 'pid-map.json');
+        const pidMapContent = await fs.readFile(pidMapPath, 'utf-8').catch(() => null);
+        if (pidMapContent) {
+            const pidMap = JSON.parse(pidMapContent);
+            let matched = 0, cleaned = 0;
+            for (const [pidStr, info] of Object.entries(pidMap)) {
+                const pid = parseInt(pidStr);
+                const alive = runningProcesses.some(p => p.pid === pid) || await isPidAlive(pid);
+                if (alive) {
+                    const key = `${info.projectId}:${info.chatId}`;
+                    if (!processMap.has(key)) {
+                        processMap.set(key, { pid, commandLine: '', workdir: '' });
+                        pidToInstanceKey.set(pid, key);
+                        matched++;
+                    }
+                } else {
+                    // PID muerto → limpiar del mapa
+                    delete pidMap[pidStr];
+                    cleaned++;
+                }
+            }
+            if (matched > 0 || cleaned > 0) {
+                fs.writeFileSync(pidMapPath, JSON.stringify(pidMap, null, 2));
+            }
+        }
+    } catch {}
 
     // También obtener PIDs de procesos que ya están trackeados por el monitor
     // (por si el monitor ya corrió antes que nosotros)

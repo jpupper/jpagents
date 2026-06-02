@@ -370,6 +370,80 @@
         </div>
         <!-- /Hermes View -->
 
+        <!-- GIT Tab Content -->
+        <div id="git-tab-content" class="tab-content hidden">
+          <div class="git-tab-header">
+            <h2>🔀 GIT — Control de Versiones</h2>
+            <span id="git-current-branch" class="git-branch-badge">main</span>
+          </div>
+
+          <!-- Git Actions Bar -->
+          <div class="git-actions-bar">
+            <div class="git-commit-group">
+              <input type="text" id="git-commit-msg" class="git-commit-input" placeholder="Mensaje del commit..." />
+              <button id="git-push-btn" class="git-action-btn git-push-btn" title="Commit & Push" onclick="window.handleGitPush()">
+                <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/>
+                </svg>
+                COMMIT & PUSH
+              </button>
+            </div>
+            <button id="git-reset-origin-btn" class="git-action-btn git-reset-danger-btn" title="Reset --hard al origen (¡Peligroso!)" onclick="window.handleGitResetOrigin()">
+              <svg height="18" width="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <!-- rewind circle -->
+                <polyline points="3 4 3 10 9 10"/>
+                <path d="M5.64 16.36A9 9 0 1 0 3 12"/>
+                <!-- danger slash -->
+                <line x1="17" y1="7" x2="8" y2="17" stroke-width="2.4" opacity="0.8"/>
+              </svg>
+              RESET HARD ORIGIN
+            </button>
+            <button id="git-refresh-btn" class="git-action-btn git-refresh-btn" title="Refrescar log" onclick="window.refreshGitTab()">
+              <svg height="18" width="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              REFRESCAR
+            </button>
+          </div>
+
+          <!-- Commit Tree View -->
+          <div class="git-tree-container">
+            <div class="git-tree-header">
+              <h3>📜 Historial de Commits</h3>
+              <span id="git-commit-count" class="git-count-badge">0 commits</span>
+            </div>
+            <div id="git-branch-graph" class="git-branch-graph-container" style="display:none"></div>
+            <div id="git-legend" class="git-legend" style="display:none"></div>
+            <div id="git-commit-list" class="git-commit-list">
+              <div class="git-empty-state">Cargando historial de commits...</div>
+            </div>
+          </div>
+
+          <!-- Commit Detail Panel (shown on double-click) -->
+          <div id="git-detail-panel" class="git-detail-panel hidden">
+            <div class="git-detail-header">
+              <h3 id="git-detail-title">Detalle del Commit</h3>
+              <button id="git-detail-close" class="git-detail-close" onclick="document.getElementById('git-detail-panel').classList.add('hidden')">&times;</button>
+            </div>
+            <div id="git-detail-content" class="git-detail-content"></div>
+          </div>
+
+          <!-- Checkout Confirmation Overlay -->
+          <div id="git-checkout-confirm" class="git-confirm-overlay hidden">
+            <div class="git-confirm-card">
+              <div class="git-confirm-icon">⚠️</div>
+              <h3>¿Restaurar a este commit?</h3>
+              <p id="git-confirm-msg">Esto hará un <code>git checkout</code> al commit seleccionado. Los cambios sin commitear se guardarán en el stash.</p>
+              <div class="git-confirm-actions">
+                <button id="git-confirm-cancel" class="git-confirm-cancel-btn">Cancelar</button>
+                <button id="git-confirm-checkout" class="git-confirm-checkout-btn">Sí, restaurar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- /GIT Tab -->
+
         <!-- Chat View -->
         <div id="chat-tab-content" class="tab-content hidden">
           <div id="chat-header" class="chat-header">
