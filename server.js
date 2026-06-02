@@ -1986,7 +1986,7 @@ app.post('/api/utils/git-log', async (req, res) => {
 
     try {
         const { stdout: logOutput } = await execAsync(
-            'git log --all --format="COMMIT%n%H||%P||%an||%ai||%s%nBRANCHES%n%D" -n 100',
+            'git log --all --format="COMMIT%n%H||%P||%an||%ai||%s%nBRANCHES%n%D" --shortstat -n 100',
             { cwd: folderPath }
         );
 
@@ -2006,7 +2006,24 @@ app.post('/api/utils/git-log', async (req, res) => {
             const subject = parts.slice(4).join('||') || '';
 
             const parents = parentsStr ? parentsStr.split(' ').filter(p => p) : [];
-            const refs = lines.slice(1).filter(l => l !== 'BRANCHES' && l.trim());
+
+            // Parse refs and shortstat from remaining lines
+            const statLine = lines.find(l => l.includes(' file') && l.includes('changed'));
+            const refs = lines.slice(1).filter(l =>
+                l !== 'BRANCHES' && l.trim() && l !== statLine
+            );
+
+            // Parse shortstat into "+X -Y N files" format
+            let statsStr = '';
+            if (statLine) {
+                const parts = statLine.match(/(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/);
+                if (parts) {
+                    const files = parts[1];
+                    const insertions = parts[2] || '0';
+                    const deletions = parts[3] || '0';
+                    statsStr = `+${insertions} -${deletions} ${files} archivos`;
+                }
+            }
 
             commits.push({
                 hash: hash.substring(0, 8),
@@ -2015,7 +2032,8 @@ app.post('/api/utils/git-log', async (req, res) => {
                 author,
                 date,
                 subject,
-                refs
+                refs,
+                stats: statsStr
             });
         }
 

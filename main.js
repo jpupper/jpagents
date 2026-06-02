@@ -8941,19 +8941,16 @@ window.refreshGitTab = () => {
 async function loadGitLog() {
     const project = getActiveProject();
     if (!project || !project.folder) {
-        const list = document.getElementById('git-commit-list');
-        if (list) list.innerHTML = '<div class="git-empty-state">No hay proyecto activo con carpeta</div>';
+        const graph = document.getElementById('git-branch-graph');
+        if (graph) graph.innerHTML = '<div class="git-empty-state">No hay proyecto activo con carpeta</div>';
         return;
     }
 
-    const commitList = document.getElementById('git-commit-list');
     const branchBadge = document.getElementById('git-current-branch');
-    const commitCount = document.getElementById('git-commit-count');
     const graphContainer = document.getElementById('git-branch-graph');
     const legendContainer = document.getElementById('git-legend');
 
-    if (commitList) commitList.innerHTML = '<div class="git-empty-state">Cargando historial...</div>';
-    if (graphContainer) graphContainer.style.display = 'none';
+    if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state">Cargando historial...</div>';
     if (legendContainer) legendContainer.style.display = 'none';
 
     try {
@@ -8965,55 +8962,64 @@ async function loadGitLog() {
         const data = await res.json();
 
         if (!data.success) {
-            if (commitList) commitList.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
+            if (graphContainer) graphContainer.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
             return;
         }
 
         const commits = data.commits || [];
         const currentBranch = data.currentBranch || 'main';
 
-        // Update badges
+        // Update branch badge
         if (branchBadge) branchBadge.textContent = currentBranch;
-        if (commitCount) commitCount.textContent = `${commits.length} commit${commits.length !== 1 ? 's' : ''}`;
 
         // Render
         renderCommitTree(commits, currentBranch);
 
     } catch (e) {
         console.error('[GIT] Error loading log:', e);
-        if (commitList) commitList.innerHTML = '<div class="git-empty-state error">Error al cargar el historial</div>';
+        if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state error">Error al cargar el historial</div>';
     }
 }
 
-// SVG Branch Graph Renderer
+// SVG Branch Graph Renderer — unified view (no separate commit list)
 function renderBranchGraph(commits) {
     if (!commits || commits.length < 2) return null;
 
     const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
-    const ROW_H = 22;
-    const LANE_W = 24;
-    const NODE_R = 4;
-    const LX = 20;      // left margin for nodes
-    const TY = 12;      // top Y for first node
-    const TEXT_AREA_W = 280;
+    const ROW_H = 32;       // taller rows for stats line
+    const LANE_W = 28;
+    const NODE_R = 5;
+    const LX = 24;          // left margin
+    const TY = 16;          // top Y for first node
+    const TEXT_AREA_W = 480;
 
-    // Build lookup: hash -> commit object
+    // Build lookup: hash -> commit object (index by short AND full hash)
     const commitMap = {};
-    commits.forEach(c => { commitMap[c.hash] = c; });
+    const fullToShort = {};
+    commits.forEach(c => {
+        commitMap[c.hash] = c;
+        if (c.fullHash) {
+            commitMap[c.fullHash] = c;
+            fullToShort[c.fullHash] = c.hash;
+        }
+    });
+
+    // Helper: resolve any hash (short or full) to short hash used in commits array
+    const resolveHash = (h) => fullToShort[h] || h;
 
     // Identify branch refs and their tip commits
-    const branchTips = [];  // { name, hash, color }
+    const branchTips = [];
     let colorIdx = 0;
+    const seenTips = new Set();
     commits.forEach(c => {
         if (c.refs && c.refs.length > 0) {
             c.refs.forEach(ref => {
-                // Only add branch names (not HEAD, not tags starting with 'tag: ')
                 if (ref === 'HEAD') return;
                 if (ref.startsWith('tag: ')) return;
-                // Remove remote prefix for display
                 const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
-                // Avoid duplicates
-                if (!branchTips.some(bt => bt.name === displayName && bt.hash === c.hash)) {
+                const key = displayName + '::' + c.hash;
+                if (!seenTips.has(key)) {
+                    seenTips.add(key);
                     branchTips.push({
                         name: displayName,
                         hash: c.hash,
@@ -9025,16 +9031,12 @@ function renderBranchGraph(commits) {
         }
     });
 
-    // If no branch tips found, assign first commit a default lane
     if (branchTips.length === 0) {
         branchTips.push({ name: 'main', hash: commits[0].hash, color: LANE_COLORS[0] });
     }
 
-    // Assign lanes: walk backwards from branch tips
-    // laneAssignments: hash -> { lane: number, color: string }
+    // Assign lanes: BFS from branch tips
     const laneAssignments = {};
-
-    // BFS from each branch tip, walking parents
     branchTips.forEach((tip, idx) => {
         const visited = new Set();
         const queue = [tip.hash];
@@ -9048,26 +9050,26 @@ function renderBranchGraph(commits) {
             if (!laneAssignments[hash]) {
                 laneAssignments[hash] = { lane: idx, color: tip.color };
             }
-            // Continue to parents
             if (commit.parents && commit.parents.length > 0) {
                 commit.parents.forEach(ph => {
-                    if (commitMap[ph] && !visited.has(ph)) {
-                        queue.push(ph);
+                    const shortPH = resolveHash(ph);
+                    if (commitMap[shortPH] && !visited.has(shortPH)) {
+                        queue.push(shortPH);
                     }
                 });
             }
         }
     });
 
-    // Assign lanes to any commits not yet assigned (walk forward from roots)
+    // Assign unassigned commits from parents
     commits.forEach(c => {
         if (!laneAssignments[c.hash]) {
-            // Find first parent with an assignment, or use default
             let assigned = false;
             if (c.parents && c.parents.length > 0) {
                 for (const ph of c.parents) {
-                    if (laneAssignments[ph]) {
-                        laneAssignments[c.hash] = { ...laneAssignments[ph] };
+                    const shortPH = resolveHash(ph);
+                    if (laneAssignments[shortPH]) {
+                        laneAssignments[c.hash] = { ...laneAssignments[shortPH] };
                         assigned = true;
                         break;
                     }
@@ -9079,14 +9081,13 @@ function renderBranchGraph(commits) {
         }
     });
 
-    // Determine max lane used
+    // Determine max lane
     let maxLane = 0;
     Object.values(laneAssignments).forEach(a => { if (a.lane > maxLane) maxLane = a.lane; });
 
     const totalWidth = LX + (maxLane + 1) * LANE_W + TEXT_AREA_W;
-    const totalHeight = TY + commits.length * ROW_H + 10;
+    const totalHeight = TY + commits.length * ROW_H + 12;
 
-    // Helper: HTML-escape for SVG attributes
     const svgEscape = (str) => {
         if (!str) return '';
         return String(str)
@@ -9100,36 +9101,66 @@ function renderBranchGraph(commits) {
     let svgLines = '';
     let legendItems = '';
 
-    // Draw connecting lines first (so they appear behind nodes)
+    // ── Draw connecting lines (behind nodes) ──
+    // First pass: collect merge points (commits with >1 parent from different lanes)
+    const mergePoints = new Set();
+    commits.forEach(commit => {
+        if (!commit.parents || commit.parents.length < 2) return;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        let hasMultiLane = false;
+        for (const ph of commit.parents) {
+            const shortPH = resolveHash(ph);
+            const pla = laneAssignments[shortPH];
+            if (pla && pla.lane !== la.lane) { hasMultiLane = true; break; }
+        }
+        if (hasMultiLane) mergePoints.add(commit.hash);
+    });
+
     commits.forEach((commit, i) => {
         const y = TY + i * ROW_H;
         const la = laneAssignments[commit.hash];
         if (!la) return;
         const cx = LX + la.lane * LANE_W + LANE_W / 2;
 
-        // Draw lines to parents
-        if (commit.parents && commit.parents.length > 0) {
-            commit.parents.forEach(parentHash => {
-                const parentIdx = commits.findIndex(c => c.hash === parentHash);
-                if (parentIdx === -1) return;
-                const parentLa = laneAssignments[parentHash];
-                if (!parentLa) return;
-                const py = TY + parentIdx * ROW_H;
-                const pcx = LX + parentLa.lane * LANE_W + LANE_W / 2;
+        if (!commit.parents || commit.parents.length === 0) return;
 
-                if (la.lane === parentLa.lane) {
-                    // Same lane: vertical line
-                    svgLines += `<line x1="${cx}" y1="${y}" x2="${pcx}" y2="${py}" stroke="${la.color}" stroke-width="2" opacity="0.6"/>`;
-                } else {
-                    // Different lane: bezier curve (merge)
-                    const midY = (y + py) / 2;
-                    svgLines += `<path d="M${cx},${y} C${cx},${midY} ${pcx},${midY} ${pcx},${py}" stroke="${la.color}" stroke-width="2" fill="none" opacity="0.6"/>`;
-                }
-            });
-        }
+        commit.parents.forEach(parentHash => {
+            const shortPH = resolveHash(parentHash);
+            const parentIdx = commits.findIndex(c => c.hash === shortPH);
+            if (parentIdx === -1) return;
+            const parentLa = laneAssignments[shortPH];
+            if (!parentLa) return;
+            const py = TY + parentIdx * ROW_H;
+            const pcx = LX + parentLa.lane * LANE_W + LANE_W / 2;
+
+            if (la.lane === parentLa.lane) {
+                // Same lane: vertical line
+                svgLines += `<line x1="${cx}" y1="${y}" x2="${pcx}" y2="${py}" stroke="${la.color}" stroke-width="2.5" opacity="0.7"/>`;
+            } else {
+                // Different lane: bezier curve (merge/branch)
+                const midY = (y + py) / 2;
+                const isMerge = parentIdx > i; // parent is earlier (higher up in display)
+                const fromColor = isMerge ? parentLa.color : la.color;
+                svgLines += `<path d="M${cx},${y} C${cx},${midY} ${pcx},${midY} ${pcx},${py}" stroke="${fromColor}" stroke-width="2" fill="none" opacity="0.6"/>`;
+            }
+        });
     });
 
-    // Draw nodes
+    // ── Draw merge indicator dots ──
+    let mergeDotsSvg = '';
+    mergePoints.forEach(hash => {
+        const commit = commitMap[hash];
+        if (!commit) return;
+        const i = commits.findIndex(c => c.hash === hash);
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+        mergeDotsSvg += `<circle cx="${cx}" cy="${y}" r="${NODE_R + 3}" fill="none" stroke="${la.color}" stroke-width="2" stroke-dasharray="3,2" opacity="0.5"/>`;
+    });
+
+    // ── Draw nodes with stats ──
     let nodesSvg = '';
     commits.forEach((commit, i) => {
         const y = TY + i * ROW_H;
@@ -9137,35 +9168,54 @@ function renderBranchGraph(commits) {
         if (!la) return;
         const cx = LX + la.lane * LANE_W + LANE_W / 2;
 
-        const shortHash = commit.hash ? commit.hash.substring(0, 7) : '';
-        const escapedHash = svgEscape(commit.hash || '');
-        const escapedShortHash = svgEscape(shortHash);
-        const escapedSubject = svgEscape((commit.subject || '').substring(0, 60));
+        const shortHash = svgEscape(commit.hash || '');
+        const escapedHash = svgEscape(commit.fullHash || commit.hash || '');
+        const escapedSubject = svgEscape((commit.subject || '').substring(0, 72));
+        const escapedStats = svgEscape(commit.stats || '');
+        const escapedAuthor = svgEscape((commit.author || '').split('<')[0].trim());
+        const escapedDate = svgEscape((commit.date || '').substring(0, 10));
 
+        const isHead = i === 0;
+        const nodeColor = isHead ? '#34d399' : la.color;
+        const nodeStrokeWidth = isHead ? 2.5 : 1.5;
+        const nodeR = isHead ? 6 : NODE_R;
+
+        // Build refs badge
         const refsLabel = (commit.refs && commit.refs.length > 0)
             ? commit.refs.filter(r => r !== 'HEAD' && !r.startsWith('tag: ')).join(', ')
             : '';
+
+        // Hover tooltip
+        let tooltip = `${shortHash} — ${svgEscape(commit.subject || '')}`;
+        if (escapedStats) tooltip += ` | ${escapedStats}`;
+        if (refsLabel) tooltip += ` [${svgEscape(refsLabel)}]`;
+        tooltip += ` | ${escapedAuthor} | Doble click: restaurar`;
 
         nodesSvg += `
         <g class="git-node-group" data-hash="${escapedHash}" onclick="window.showCommitDetail('${escapedHash}')" ondblclick="window.handleGitCheckout('${escapedHash}')" style="cursor:pointer">
             <!-- Invisible hit area -->
             <circle cx="${cx}" cy="${y}" r="${LANE_W/2}" fill="transparent" stroke="none"/>
             <!-- Visible node -->
-            <circle cx="${cx}" cy="${y}" r="${NODE_R}" fill="${la.color}" stroke="#1e1e2e" stroke-width="1.5"/>
-            <title>${escapedShortHash} — ${escapedSubject}${refsLabel ? ' [' + svgEscape(refsLabel) + ']' : ''}</title>
-            <!-- Hash label (right of node) -->
-            <text x="${cx + NODE_R + 4}" y="${y + 4}" font-family="monospace" font-size="11" fill="${la.color}">${escapedShortHash}</text>
-            <!-- Subject label (further right, grey) -->
-            <text x="${cx + NODE_R + 70}" y="${y + 4}" font-family="sans-serif" font-size="11" fill="#888">${escapedSubject}</text>
+            <circle cx="${cx}" cy="${y}" r="${nodeR}" fill="${nodeColor}" stroke="#1e1e2e" stroke-width="${nodeStrokeWidth}"/>
+            <title>${tooltip}</title>
+            <!-- Row 1: hash + subject -->
+            <text x="${cx + nodeR + 6}" y="${y + 3}" font-family="'JetBrains Mono',monospace" font-size="10" fill="${nodeColor}" font-weight="${isHead ? 'bold' : 'normal'}">${shortHash}</text>
+            <text x="${cx + nodeR + 72}" y="${y + 3}" font-family="sans-serif" font-size="10" fill="#ccc">${escapedSubject}</text>
+            <!-- Row 2: stats + author (smaller, darker) -->
+            ${escapedStats ? `<text x="${cx + nodeR + 6}" y="${y + 16}" font-family="'JetBrains Mono',monospace" font-size="9" fill="#888">${escapedStats}</text>` : ''}
+            <text x="${cx + nodeR + 6}" y="${y + 28}" font-family="sans-serif" font-size="8.5" fill="#666">${escapedAuthor} · ${escapedDate}</text>
         </g>`;
     });
 
     // Build legend
     branchTips.forEach(tip => {
-        legendItems += `<span class="git-legend-item"><span class="git-legend-dot" style="background:${tip.color}"></span> ${escapeHtml(tip.name)}</span>`;
+        const isActive = tip.name === (window._currentBranch || '');
+        const dotExtra = isActive ? 'box-shadow:0 0 6px currentColor;' : '';
+        legendItems += `<span class="git-legend-item ${isActive ? 'active' : ''}"><span class="git-legend-dot" style="background:${tip.color};${dotExtra}"></span> ${escapeHtml(tip.name)}${isActive ? ' <span style="opacity:0.5;font-size:0.6rem">(actual)</span>' : ''}</span>`;
     });
 
-    const svg = `<svg class="git-branch-graph-svg" viewBox="0 0 ${totalWidth} ${totalHeight}" width="${totalWidth}" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
+    const svg = `<svg class="git-branch-graph-svg" viewBox="0 0 ${totalWidth} ${totalHeight}" width="100%" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
+        ${mergeDotsSvg}
         ${svgLines}
         ${nodesSvg}
     </svg>`;
@@ -9173,29 +9223,13 @@ function renderBranchGraph(commits) {
     return { svg, legend: legendItems };
 }
 
-// Render the full commit tree into the DOM
+// Render the full commit tree — SVG graph + legend only (no separate commit list)
 function renderCommitTree(commits, currentBranch) {
     const graphContainer = document.getElementById('git-branch-graph');
     const legendContainer = document.getElementById('git-legend');
-    const commitList = document.getElementById('git-commit-list');
 
-    // Build branch color map from refs
-    const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
-    const branchColorMap = {};
-    let colorIdx = 0;
-    commits.forEach(c => {
-        if (c.refs && c.refs.length > 0) {
-            c.refs.forEach(ref => {
-                if (ref === 'HEAD') return;
-                if (ref.startsWith('tag: ')) return;
-                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
-                if (!branchColorMap[displayName]) {
-                    branchColorMap[displayName] = LANE_COLORS[colorIdx % LANE_COLORS.length];
-                    colorIdx++;
-                }
-            });
-        }
-    });
+    // Store current branch for legend highlighting
+    window._currentBranch = currentBranch;
 
     // Render branch graph
     const graphResult = renderBranchGraph(commits);
@@ -9209,77 +9243,15 @@ function renderCommitTree(commits, currentBranch) {
             legendContainer.style.display = 'flex';
         }
     } else {
-        if (graphContainer) graphContainer.style.display = 'none';
+        if (graphContainer) {
+            graphContainer.innerHTML = '<div class="git-empty-state">No hay suficientes commits para mostrar el grafo</div>';
+            graphContainer.style.display = 'block';
+        }
         if (legendContainer) legendContainer.style.display = 'none';
     }
-
-    // Render commit list
-    if (!commitList) return;
-
-    if (commits.length === 0) {
-        commitList.innerHTML = '<div class="git-empty-state">No hay commits en este repositorio</div>';
-        return;
-    }
-
-    let html = '';
-    commits.forEach((commit, idx) => {
-        const hash = escapeHtml(commit.hash || '');
-        const shortHash = hash.substring(0, 7);
-        const subject = escapeHtml((commit.subject || '').substring(0, 80));
-        const author = escapeHtml(commit.author || '');
-        const date = escapeHtml(commit.date || '');
-
-        // Determine color from branch refs
-        let borderColor = '#444';
-        if (commit.refs && commit.refs.length > 0 && commit.hash) {
-            for (const ref of commit.refs) {
-                if (ref === 'HEAD') continue;
-                if (ref.startsWith('tag: ')) continue;
-                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
-                if (branchColorMap[displayName]) {
-                    borderColor = branchColorMap[displayName];
-                    break;
-                }
-            }
-        }
-
-        // Is this the HEAD commit?
-        const isHead = idx === 0;
-        const headClass = isHead ? ' git-commit-head' : '';
-        const dotColor = isHead ? '#34d399' : borderColor;
-
-        // Build branch badges
-        let badgesHtml = '';
-        if (commit.refs && commit.refs.length > 0) {
-            commit.refs.forEach(ref => {
-                if (ref.startsWith('tag: ')) return;
-                let displayRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
-                if (displayRef === 'HEAD') {
-                    badgesHtml += `<span class="git-branch-badge git-badge-head">HEAD</span>`;
-                } else {
-                    badgesHtml += `<span class="git-branch-badge" style="background:${branchColorMap[displayRef] || '#555'}20;color:${branchColorMap[displayRef] || '#ccc'};border:1px solid ${branchColorMap[displayRef] || '#555'}40">${escapeHtml(displayRef)}</span>`;
-                }
-            });
-        }
-
-        html += `
-        <div class="git-commit-item${headClass}" data-hash="${hash}" style="border-left:3px solid ${borderColor}" ondblclick="window.handleGitCheckout('${hash}')" onclick="window.showCommitDetail('${hash}')" title="Click: ver codigo | Doble click: restaurar">
-            <div class="git-commit-row">
-                <span class="git-commit-hash" style="color:${dotColor}">${dotColor === '#34d399' ? '●' : '○'} ${shortHash}</span>
-                <span class="git-commit-subject">${subject}</span>
-            </div>
-            <div class="git-commit-meta">
-                <span class="git-commit-author">${author}</span>
-                <span class="git-commit-date">${date}</span>
-                ${badgesHtml}
-            </div>
-        </div>`;
-    });
-
-    commitList.innerHTML = html;
 }
 
-// Show commit detail panel with diff
+// Show commit detail panel with diff — files are clickable for per-file diff
 window.showCommitDetail = async (hash) => {
     const project = getActiveProject();
     if (!project || !project.folder) return;
@@ -9310,55 +9282,219 @@ window.showCommitDetail = async (hash) => {
         const commit = data.commit || {};
         const diff = data.diff || '';
 
+        // Store full diff for per-file filtering (escaped version)
+        const encodedDiff = btoa(unescape(encodeURIComponent(diff)));
+
         let html = '';
 
-        // Commit info
+        // ── Commit info ──
         html += `<div class="git-detail-info">`;
-        html += `<div class="git-detail-field"><strong>Hash:</strong> <code>${escapeHtml(commit.hash || hash)}</code></div>`;
-        html += `<div class="git-detail-field"><strong>Autor:</strong> ${escapeHtml(commit.author || '')}</div>`;
-        html += `<div class="git-detail-field"><strong>Fecha:</strong> ${escapeHtml(commit.date || '')}</div>`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Hash</span><code>${escapeHtml(commit.hash || hash)}</code></div>`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Autor</span>${escapeHtml(commit.author || '')}</div>`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Fecha</span>${escapeHtml(commit.date || '')}</div>`;
         if (commit.subject) {
-            html += `<div class="git-detail-field"><strong>Mensaje:</strong> ${escapeHtml(commit.subject)}</div>`;
+            html += `<div class="git-detail-row"><span class="git-detail-label">Mensaje</span><span class="git-detail-msg">${escapeHtml(commit.subject)}</span></div>`;
         }
         if (commit.body) {
-            html += `<div class="git-detail-field"><pre>${escapeHtml(commit.body)}</pre></div>`;
+            html += `<div class="git-detail-body"><pre>${escapeHtml(commit.body)}</pre></div>`;
         }
-        html += `</div>`;
 
-        // Diff with syntax highlighting
+        // Files bar with clickable tags
+        if (commit.files && commit.files.length > 0) {
+            html += `<div class="git-detail-files-bar"><span class="git-detail-label">Archivos</span><div class="git-detail-files-list">`;
+            commit.files.forEach((f, fi) => {
+                const escapedFile = escapeHtml(f);
+                html += `<span class="git-file-tag git-file-clickable" data-file="${escapedFile}" data-idx="${fi}" title="Click: ver diff de este archivo">${escapedFile}</span>`;
+            });
+            html += `</div></div>`;
+        }
+        html += `</div>`; // close git-detail-info
+
+        // ── Restore button (moved up, BEFORE diff) ──
+        html += `<div class="git-detail-actions git-detail-actions-top">
+            <button class="git-detail-checkout-btn" onclick="window.handleGitCheckout('${escapeHtml(hash)}')">↩ Restaurar a este commit</button>
+        </div>`;
+
+        // ── Diff container (full diff, or per-file after click) ──
+        html += `<div class="git-detail-diff-container" id="git-detail-diff-area">`;
+
         if (diff) {
             const escapedDiff = escapeHtml(diff);
             // Simple diff highlighting
             const highlightedDiff = escapedDiff
+                .replace(/\r\n/g, '\n')
                 .split('\n')
                 .map(line => {
                     if (line.startsWith('+') && !line.startsWith('+++')) {
-                        return `<span class="diff-add">${line}</span>`;
+                        return `<span class="git-diff-add">${line}</span>`;
                     } else if (line.startsWith('-') && !line.startsWith('---')) {
-                        return `<span class="diff-del">${line}</span>`;
+                        return `<span class="git-diff-rem">${line}</span>`;
                     } else if (line.startsWith('@@')) {
-                        return `<span class="diff-hunk">${line}</span>`;
+                        return `<span class="git-diff-hunk">${line}</span>`;
                     }
                     return line;
                 })
                 .join('\n');
-            html += `<div class="git-detail-diff"><pre><code>${highlightedDiff}</code></pre></div>`;
+            html += `<div class="git-detail-diff" id="git-full-diff"><pre><code>${highlightedDiff}</code></pre></div>`;
+            // Per-file diff area (hidden initially) — header + diff separate
+            html += `<div id="git-file-diff-area" class="hidden">
+              <div class="git-file-diff-header" id="git-file-diff-header"></div>
+              <div class="git-detail-diff"><pre><code id="git-file-diff-code"></code></pre></div>
+            </div>`;
         } else {
             html += `<div class="git-empty-state">Sin cambios en este commit (commit inicial)</div>`;
         }
 
-        // Restore button
-        html += `<div class="git-detail-actions">
-            <button class="git-restore-btn" onclick="window.handleGitCheckout('${escapeHtml(hash)}')">Restaurar a este commit</button>
-        </div>`;
+        html += `</div>`; // close git-detail-diff-container
 
         content.innerHTML = html;
+
+        // ── Attach click handlers to file tags ──
+        const fileTags = content.querySelectorAll('.git-file-clickable');
+        fileTags.forEach(tag => {
+            tag.addEventListener('click', () => {
+                const fileName = tag.getAttribute('data-file');
+                const fullDiffEl = document.getElementById('git-full-diff');
+                const fileDiffArea = document.getElementById('git-file-diff-area');
+                const fileDiffHeader = document.getElementById('git-file-diff-header');
+                const fileDiffCode = document.getElementById('git-file-diff-code');
+
+                if (!fileName || !fullDiffEl || !fileDiffArea) return;
+
+                // Toggle: if already showing this file's diff, go back to full
+                if (!fileDiffArea.classList.contains('hidden') && fileDiffArea.getAttribute('data-current-file') === fileName) {
+                    // Back to full diff
+                    fileDiffArea.classList.add('hidden');
+                    fullDiffEl.classList.remove('hidden');
+                    fileDiffArea.removeAttribute('data-current-file');
+                    fileTags.forEach(t => t.classList.remove('active'));
+                    return;
+                }
+
+                // Extract per-file diff from the stored full diff
+                const fullDiff = decodeURIComponent(escape(atob(encodedDiff)));
+                const fileSection = extractFileDiff(fullDiff, fileName);
+
+                // Highlight active file tag
+                fileTags.forEach(t => t.classList.remove('active'));
+                tag.classList.add('active');
+
+                fullDiffEl.classList.add('hidden');
+                fileDiffArea.classList.remove('hidden');
+                fileDiffArea.setAttribute('data-current-file', fileName);
+
+                // Render header
+                if (fileDiffHeader) {
+                    fileDiffHeader.innerHTML = `📄 ${escapeHtml(fileName)} <span class="git-file-diff-back" title="Volver al diff completo">← Ver diff completo</span>`;
+                }
+
+                // Render the per-file diff
+                if (fileDiffCode) {
+                    const escapedSection = escapeHtml(fileSection);
+                    const highlighted = escapedSection
+                        .replace(/\r\n/g, '\n')
+                        .split('\n')
+                        .map(line => {
+                            if (line.startsWith('+') && !line.startsWith('+++')) {
+                                return `<span class="git-diff-add">${line}</span>`;
+                            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                                return `<span class="git-diff-rem">${line}</span>`;
+                            } else if (line.startsWith('@@')) {
+                                return `<span class="git-diff-hunk">${line}</span>`;
+                            }
+                            return line;
+                        })
+                        .join('\n');
+                    fileDiffCode.innerHTML = highlighted;
+                }
+
+                // Click on "back" text to return to full diff
+                const backLink = fileDiffArea.querySelector('.git-file-diff-back');
+                if (backLink) {
+                    backLink.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        fileDiffArea.classList.add('hidden');
+                        fullDiffEl.classList.remove('hidden');
+                        fileDiffArea.removeAttribute('data-current-file');
+                        fileTags.forEach(t => t.classList.remove('active'));
+                    });
+                }
+            });
+        });
 
     } catch (e) {
         console.error('[GIT] Error showing commit detail:', e);
         content.innerHTML = '<div class="git-empty-state error">Error al cargar el detalle</div>';
     }
 };
+
+// Extract diff for a single file from a full git diff
+function extractFileDiff(fullDiff, fileName) {
+    // Normalize line endings
+    const normalized = fullDiff.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+
+    let sectionStart = -1;
+    let sectionEnd = lines.length;
+
+    // Find the section for this file
+    // git diff format: "diff --git a/<path> b/<path>"
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git ')) {
+            if (sectionStart !== -1) {
+                // End of previous section
+                sectionEnd = i;
+                break;
+            }
+            // Check if this section is for our file
+            // Format: "diff --git a/file.txt b/file.txt" or "diff --git "a/path with spaces" "b/path with spaces""
+            const aIdx = line.indexOf(' a/');
+            const bIdx = line.indexOf(' b/');
+            if (aIdx !== -1 && bIdx !== -1 && bIdx > aIdx) {
+                let aFile = line.substring(aIdx + 3, bIdx).trim();
+                let bFile = line.substring(bIdx + 3).trim();
+                // Strip surrounding quotes
+                aFile = aFile.replace(/^"|"$/g, '');
+                bFile = bFile.replace(/^"|"$/g, '');
+                if (aFile === fileName || bFile === fileName || aFile.endsWith('/' + fileName) || bFile.endsWith('/' + fileName)) {
+                    sectionStart = i;
+                }
+            }
+        }
+    }
+
+    if (sectionStart === -1) {
+        // Try alternative: look for "--- a/file" or "+++ b/file"
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line === `--- a/${fileName}` || line === `+++ b/${fileName}`) {
+                // Walk back to find the "diff --git" header
+                for (let j = i - 1; j >= 0; j--) {
+                    if (lines[j].startsWith('diff --git ')) {
+                        sectionStart = j;
+                        break;
+                    }
+                }
+                if (sectionStart !== -1) break;
+            }
+        }
+    }
+
+    if (sectionStart === -1) {
+        return `No se encontró diff para: ${fileName}`;
+    }
+
+    // Find the end of this section (next "diff --git" or end of file)
+    for (let i = sectionStart + 1; i < lines.length; i++) {
+        if (lines[i].startsWith('diff --git ')) {
+            sectionEnd = i;
+            break;
+        }
+    }
+
+    return lines.slice(sectionStart, sectionEnd).join('\n');
+}
 
 // Handle git checkout confirmation
 window.handleGitCheckout = (hash) => {

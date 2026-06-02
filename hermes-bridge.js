@@ -9,9 +9,10 @@
  * - Detener instancias
  */
 
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
+import fs from 'fs';
 import sqlite3 from 'sqlite3';
 import os from 'os';
 
@@ -388,12 +389,22 @@ class HermesBridge extends EventEmitter {
         // ─── ESPERAR a que Hermes termine ───
         return new Promise((resolve) => {
             const checkDone = setInterval(() => {
-                try { process.kill(proc.pid, 0); } catch {
-                    clearInterval(checkDone);
-                    clearInterval(pollInterval);
-                    this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
+                try {
+                    execFile('tasklist', ['/FI', `PID eq ${proc.pid}`, '/NH', '/FO', 'CSV'],
+                        { timeout: 3000 },
+                        (err) => {
+                            if (err) {
+                                // PID no encontrado → proceso terminó
+                                clearInterval(checkDone);
+                                clearInterval(pollInterval);
+                                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
+                            }
+                        }
+                    );
+                } catch {
+                    // execFile throw (timeout, etc.) — ignorar, reintentar en próximo ciclo
                 }
-            }, 1000);
+            }, 5000);
 
             setTimeout(() => {
                 clearInterval(checkDone);
