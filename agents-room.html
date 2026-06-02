@@ -91,6 +91,44 @@
       background: #7c4dff; cursor: pointer; border: none;
     }
     .calib-desc { font-size: 0.5rem; color: rgba(255,255,255,0.2); letter-spacing: 0.5px; margin-top: 3px; }
+    .calib-toggle-group {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 18px; padding: 10px 0;
+      border-top: 1px solid rgba(124,77,255,0.08);
+      border-bottom: 1px solid rgba(124,77,255,0.08);
+    }
+    .calib-toggle-label {
+      font-size: 0.6rem; color: rgba(255,255,255,0.5);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .calib-toggle-label .calib-toggle-desc {
+      font-size: 0.5rem; color: rgba(255,255,255,0.2);
+    }
+    .calib-toggle-switch {
+      position: relative; width: 44px; height: 24px; flex-shrink: 0;
+    }
+    .calib-toggle-switch input {
+      opacity: 0; width: 0; height: 0;
+    }
+    .calib-toggle-slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: rgba(124,77,255,0.12); border-radius: 24px;
+      border: 1px solid rgba(124,77,255,0.15);
+      transition: all 0.3s;
+    }
+    .calib-toggle-slider::before {
+      content: ''; position: absolute; height: 18px; width: 18px;
+      left: 3px; bottom: 2px; background: #7c4dff;
+      border-radius: 50%; transition: transform 0.3s;
+      box-shadow: 0 0 6px rgba(124,77,255,0.3);
+    }
+    .calib-toggle-switch input:checked + .calib-toggle-slider {
+      background: rgba(0,229,255,0.15); border-color: rgba(0,229,255,0.25);
+    }
+    .calib-toggle-switch input:checked + .calib-toggle-slider::before {
+      transform: translateX(20px); background: #00e5ff;
+      box-shadow: 0 0 8px rgba(0,229,255,0.4);
+    }
     .calib-reset {
       display: block; margin-top: 20px; width: 100%; padding: 8px;
       background: rgba(124,77,255,0.08); border: 1px solid rgba(124,77,255,0.15);
@@ -237,6 +275,17 @@
       <input type="range" class="calib-slider" id="orbit-radius-slider"
              min="20" max="120" value="42" step="2">
       <div class="calib-desc">Separación de cada mago a su pedestal</div>
+    </div>
+
+    <div class="calib-toggle-group">
+      <div class="calib-toggle-label">
+        <span>Fantasma</span>
+        <span class="calib-toggle-desc">Mostrar Hermes externos</span>
+      </div>
+      <label class="calib-toggle-switch">
+        <input type="checkbox" id="ghost-toggle" checked>
+        <span class="calib-toggle-slider"></span>
+      </label>
     </div>
 
     <button class="calib-reset" id="calib-reset">⟲ Restaurar defecto</button>
@@ -395,10 +444,11 @@ let projectCount = 0;
 const calibState = {
   polarRadius: 180,
   orbitRadius: 42,
+  showGhosts: true,
 };
 let calibPanelOpen = false;
 // Guardamos originales para reset
-const CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42 };
+const CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42, showGhosts: true };
 
 // ─── GEOMETRY POOL ───
 // Todas las geometrías reusables se crean UNA VEZ y se comparten entre magos.
@@ -1637,8 +1687,8 @@ function rebuildScene() {
 
   cleanupScene();
 
-  allAgentsWithData = [...agents];
-  const visibleAgents = agents;
+  const visibleAgents = calibState.showGhosts ? agents : agents.filter(a => !a.isExternal);
+  allAgentsWithData = [...visibleAgents];
 
   if (visibleAgents.length === 0) {
     scene.add(mageGroup);
@@ -2163,8 +2213,8 @@ window.refreshAgents = async function(forceRebuild = false) {
     const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, sessionTitle: a.sessionTitle, isExternal: a.isExternal, projectId: a.projectId })));
     if (dataKey === lastAgentData && agents.length > 0 && !forceRebuild) {
       // Sin cambios estructurales, solo actualizar estados
-      agents = newAgents;
-      allAgentsWithData = [...newAgents];
+      agents = calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
+      allAgentsWithData = [...agents];
       // Update statuses in existing mages
       for (const agent of newAgents) {
         const id = agent.id || agent.pid;
@@ -2182,7 +2232,7 @@ window.refreshAgents = async function(forceRebuild = false) {
     }
 
     lastAgentData = dataKey;
-    agents = newAgents;
+    agents = calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
 
     // Si es el primer build o hay muchos cambios, hacer rebuild completo
     const currentIds = new Set(agentMap.keys());
@@ -2677,6 +2727,7 @@ const polarVal = document.getElementById('polar-radius-val');
 const orbitSlider = document.getElementById('orbit-radius-slider');
 const orbitVal = document.getElementById('orbit-radius-val');
 const calibReset = document.getElementById('calib-reset');
+const ghostToggle = document.getElementById('ghost-toggle');
 
 calibBtn.addEventListener('click', () => {
   calibPanelOpen = !calibPanelOpen;
@@ -2699,10 +2750,19 @@ function applyCalibration() {
 polarSlider.addEventListener('input', applyCalibration);
 orbitSlider.addEventListener('input', applyCalibration);
 
+ghostToggle.addEventListener('change', () => {
+  calibState.showGhosts = ghostToggle.checked;
+  // Force full rebuild to show/hide ghosts
+  refreshAgents(true);
+});
+
 calibReset.addEventListener('click', () => {
   polarSlider.value = CALIB_DEFAULTS.polarRadius;
   orbitSlider.value = CALIB_DEFAULTS.orbitRadius;
+  ghostToggle.checked = CALIB_DEFAULTS.showGhosts;
+  calibState.showGhosts = CALIB_DEFAULTS.showGhosts;
   applyCalibration();
+  refreshAgents(true);
 });
 
 // ─── BORRAR ETIQUETAS AL ABRIR ───

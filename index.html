@@ -409,7 +409,15 @@
 
           <!-- Commit Tree View — fills entire remaining space -->
           <div class="git-tree-container">
+            <div class="git-zoom-controls" id="git-zoom-controls" style="display:none">
+              <button class="git-zoom-btn" onclick="window.gitZoomIn()" title="Zoom In">＋</button>
+              <span class="git-zoom-level" id="git-zoom-level">100%</span>
+              <button class="git-zoom-btn" onclick="window.gitZoomOut()" title="Zoom Out">－</button>
+              <button class="git-zoom-btn git-zoom-reset" onclick="window.gitZoomReset()" title="Reset Zoom">↺</button>
+            </div>
+            <div class="git-graph-wrapper" id="git-graph-wrapper">
             <div id="git-branch-graph" class="git-branch-graph-container"><div class="git-empty-state">Cargando historial de commits...</div></div>
+            </div>
             <div id="git-legend" class="git-legend" style="display:none"></div>
           </div>
 
@@ -522,6 +530,8 @@
                 </svg>
               </button>
             </div>
+            <!-- Slash Command Autocomplete Dropdown -->
+            <div id="slash-dropdown" class="slash-dropdown hidden"></div>
           </div>
         </div>
 
@@ -590,6 +600,9 @@
               <button class="modal-side-tab" data-modal-tab="validation-loop">
                 <span>🔄 Bucle de Validación</span>
               </button>
+              <button class="modal-side-tab" data-modal-tab="second-agent">
+                <span>⚡ Second Agent</span>
+              </button>
               <button class="modal-side-tab" data-modal-tab="project-history">
                 <span>📜 Historial de Proyectos</span>
               </button>
@@ -603,6 +616,7 @@
                 <button class="modal-sub-tab active" data-modal-sub-tab="global">User System Prompt</button>
                 <button class="modal-sub-tab" data-modal-sub-tab="orchestrator">System Prompt del Orquestador (Admin)</button>
                 <button class="modal-sub-tab" data-modal-sub-tab="improver">Prompt del Improver (IA ✨)</button>
+                <button class="modal-sub-tab" data-modal-sub-tab="naming">NAMING PROMPT 🏷️</button>
                 <button class="modal-sub-tab" data-modal-sub-tab="internal">Instrucciones de Agente (Solo Lectura)</button>
               </div>
 
@@ -645,6 +659,19 @@
                     <p class="field-help">Este es el prompt que usa la IA para mejorar tus propios textos cuando pulsas el botón ✨.</p>
                     <textarea id="improver-prompt" class="config-textarea" rows="12"
                       placeholder="Eres un experto en ingeniería de prompts..."></textarea>
+                  </div>
+                </div>
+
+                <!-- Naming Prompt Pane -->
+                <div id="sub-tab-naming" class="sub-tab-pane hidden">
+                  <div class="config-field">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <label>NAMING PROMPT (Nombres de Agentes)</label>
+                        <button id="improve-naming-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                    </div>
+                    <p class="field-help">Este prompt se envía a <strong>Gemma4 (Ollama)</strong> cada vez que un agente recibe su primer mensaje técnico. El modelo inventa un nombre corto (2-4 palabras) para el agente. Si lo cambias, reinicia la página para que se aplique.</p>
+                    <textarea id="naming-prompt" class="config-textarea" rows="12"
+                      placeholder="Eres un generador de nombres creativos..."></textarea>
                   </div>
                 </div>
 
@@ -770,6 +797,51 @@
                     <div class="toggle-container">
                       <input type="checkbox" id="auto-validation-toggle" checked />
                       <span>Activar validación automática</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Second Agent Tab -->
+            <div id="modal-tab-second-agent" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <div class="sub-tab-pane">
+                  <h3 style="margin-top: 0;">⚡ Second Agent</h3>
+                  <p class="field-help">Agente minimal que corre en <strong>paralelo</strong> al agente principal. Se encarga de tareas livianas como nombrar agentes, validaciones rápidas y otros detalles — sin bloquear al agente principal.</p>
+
+                  <div class="config-field">
+                    <label>Activar Second Agent</label>
+                    <div class="toggle-container">
+                      <input type="checkbox" id="second-agent-toggle" checked />
+                      <span>Usar Second Agent para tareas auxiliares</span>
+                    </div>
+                  </div>
+
+                  <div class="config-field">
+                    <label>Modelo (Ollama)</label>
+                    <p class="field-help">Modelo local de Ollama para las tareas del Second Agent. Debe ser rápido y liviano.</p>
+                    <select id="second-agent-model" class="config-input">
+                      <option value="">Cargando modelos de Ollama...</option>
+                    </select>
+                  </div>
+
+                  <div class="config-field" style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 150px;">
+                      <label>Temperatura</label>
+                      <input type="number" id="second-agent-temperature" class="config-input" min="0" max="2" step="0.1" value="0.7" />
+                    </div>
+                    <div style="flex: 1; min-width: 150px;">
+                      <label>Max Tokens</label>
+                      <input type="number" id="second-agent-max-tokens" class="config-input" min="10" max="500" step="10" value="50" />
+                    </div>
+                  </div>
+
+                  <div class="config-field">
+                    <label>Estado de Ollama</label>
+                    <div id="second-agent-status">
+                      <span id="second-agent-status-dot" class="dot live"></span>
+                      <span id="second-agent-status-text">Verificando conexión...</span>
                     </div>
                   </div>
                 </div>

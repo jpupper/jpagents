@@ -1191,6 +1191,7 @@ optgroup {
 .input-area {
   padding: 1rem 0;
   flex-shrink: 0;
+  position: relative; /* anchor for slash dropdown */
 }
 
 textarea {
@@ -1415,6 +1416,83 @@ textarea {
 .chat-item-actions {
   display: flex;
   gap: 4px;
+}
+
+/* ══════════════════════════════════════════════
+   SLASH COMMAND AUTOCOMPLETE DROPDOWN
+   ══════════════════════════════════════════════ */
+.slash-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 6px;
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+  border-radius: 12px;
+  overflow: hidden;
+  z-index: 1000;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05);
+  max-height: 340px;
+  overflow-y: auto;
+  animation: slashSlideUp 0.15s ease-out;
+}
+
+@keyframes slashSlideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.slash-dropdown.hidden {
+  display: none;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.slash-item:last-child {
+  border-bottom: none;
+}
+
+.slash-item:hover,
+.slash-item.selected {
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.slash-item.selected {
+  border-left: 3px solid var(--accent, #00d4ff);
+  padding-left: 11px;
+}
+
+.slash-icon {
+  font-size: 16px;
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.slash-cmd {
+  font-family: 'Outfit', 'Fira Code', monospace;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent, #00d4ff);
+  min-width: 70px;
+  flex-shrink: 0;
+}
+
+.slash-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .btn-item-action {
@@ -5224,12 +5302,64 @@ pre code.hljs {
   border-radius: 999px;
 }
 
-/* Branch graph fills remaining vertical space — no max-height */
+/* Branch graph fills remaining vertical space — no max-height, pan/zoom replaces scrolling */
 #git-branch-graph {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: auto;
+  overflow: visible;
+}
+
+.git-graph-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  transform-origin: top left;
+}
+
+/* Zoom controls */
+.git-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(30, 30, 46, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.git-zoom-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ccc;
+  font-size: 1rem;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.git-zoom-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.git-zoom-reset {
+  font-size: 0.8rem;
+  margin-left: 2px;
+}
+
+.git-zoom-level {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #888;
+  min-width: 40px;
+  text-align: center;
 }
 
 .git-branch-graph-svg {
@@ -5528,6 +5658,21 @@ pre code.hljs {
   color: #f85149;
   background: rgba(248, 81, 73, 0.07);
   display: block;
+}
+
+/* Colored diff stats badges in detail panel */
+.git-stats-add {
+  color: #3fb950;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.git-stats-del {
+  color: #f85149;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .git-diff-hunk {

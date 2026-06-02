@@ -613,6 +613,22 @@ async function performPeriodicSync() {
 }
 
 // New State Structure
+const DEFAULT_NAMING_PROMPT = `Eres un generador de nombres creativos para AGENTES de IA.
+
+Tu tarea: dado el mensaje de un usuario, genera un NOMBRE CORTO (2-4 palabras) en español que describa creativamente la tarea o el objetivo.
+
+REGLAS:
+- Solo devuelve el nombre, sin explicaciones, sin comillas, sin puntos.
+- Máximo 4 palabras, mínimo 2.
+- Debe sonar como un NOMBRE PROPIO de proyecto/misión, no una descripción.
+- Sé creativo: usa metáforas, conceptos abstractos o combinaciones originales.
+- Ejemplo: usuario dice "crea un juego de naves espaciales" → nombre: "Galaxia Atómica"
+- Ejemplo: usuario dice "haz un análisis de ventas del mes" → nombre: "Balance Financiero"
+- Ejemplo: usuario dice "escribe un script para ordenar archivos" → nombre: "Clasificador Digital"
+- NO copies el prompt del usuario literalmente. INVENTA un nombre.
+
+Respuesta solo el nombre:`;
+
 const DEFAULT_USER_SYSTEM_PROMPT = `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
 
 Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
@@ -671,7 +687,14 @@ let state = {
     selectedAdminModel: '', // Dedicated model for Admin
     mode: 'auto', // 'auto' or 'supervised'
     userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
+    namingPrompt: DEFAULT_NAMING_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
+    secondAgentConfig: {
+        enabled: true,
+        model: 'gemma4:e4b',
+        temperature: 0.7,
+        maxTokens: 50
+    },
     improverPrompt: "",
     deepseekApiKey: '',
     openaiApiKey: '',
@@ -715,10 +738,46 @@ function generateRandomProjectName() {
  * Genera un nombre corto para un agente a partir del prompt del usuario.
  * Extrae las primeras ~4-6 palabras significativas del prompt.
  */
-function generateChatNameFromPrompt(prompt) {
+async function generateChatNameFromPrompt(prompt) {
     if (!prompt || typeof prompt !== 'string') return null;
 
-    // Limpiar: quitar saludos iniciales, signos, articles
+    // Intentar con el Second Agent (Gemma4 / Ollama local)
+    if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
+        try {
+            const namingInstruction = state.namingPrompt || DEFAULT_NAMING_PROMPT;
+            const saModel = state.secondAgentConfig.model;
+            const temperature = state.secondAgentConfig.temperature || 0.7;
+            const maxTokens = state.secondAgentConfig.maxTokens || 50;
+
+            const response = await fetch(`${OLLAMA_BASE}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: saModel,
+                    prompt: `${namingInstruction}\n\nMensaje del usuario: ${prompt.trim()}`,
+                    stream: false,
+                    options: {
+                        temperature: temperature,
+                        num_predict: maxTokens
+                    }
+                }),
+                signal: AbortSignal.timeout(8000)
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                let name = (data.response || '').trim().replace(/["']/g, '').split('\n')[0];
+                if (name && name.length > 2 && name.length <= 40) {
+                    console.log(`[NAMING] 🦙 ${saModel} generó: "${name}" desde Ollama`);
+                    return name;
+                }
+            }
+        } catch (e) {
+            console.warn(`[NAMING] ⚠️ Second Agent (Ollama) no disponible (${e.message}), usando fallback...`);
+        }
+    }
+
+    // ─── FALLBACK: método antiguo (primeras palabras) ───
     let text = prompt.trim()
         .replace(/^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|saludos)[,\s!.]*/i, '')
         .replace(/^(necesito|quiero|puedes|podrias|necesitamos|tenemos que|hay que|me gustaria|quisiera|hace falta)[,\s]*/i, '')
@@ -726,19 +785,15 @@ function generateChatNameFromPrompt(prompt) {
         .replace(/^(que me|ayudame|hazme|creame|hacé|che[,\s]*)/i, '')
         .trim();
 
-    // Si después de limpiar queda vacío, usar el original acortado
     if (!text) text = prompt.trim();
 
-    // Tomar primeras 6 palabras
     const words = text.split(/\s+/).filter(w => w.length > 0);
-    const nameWords = words.slice(0, 5);
+    const nameWords = words.slice(0, 3);
 
-    // Capitalizar primera letra de cada palabra
     const name = nameWords
         .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())
         .join(' ');
 
-    // Limitar longitud
     if (name.length > 28) {
         return name.slice(0, 25).trim() + '...';
     }
@@ -1016,6 +1071,13 @@ async function loadData(shouldScan = true) {
         } else if (data && typeof data === 'object') {
             state.projects = (data.projects || []).map(sanitizeProject);
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
+            state.namingPrompt = data.namingPrompt || DEFAULT_NAMING_PROMPT;
+            state.secondAgentConfig = data.secondAgentConfig || {
+                enabled: true,
+                model: 'gemma4:e4b',
+                temperature: 0.7,
+                maxTokens: 50
+            };
             state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
             state.improverPrompt = data.improverPrompt || "";
             state.activeProjectId = data.activeProjectId || null;
@@ -1424,6 +1486,8 @@ async function saveData() {
         const payload = {
             projects: state.projects,
             userSystemPrompt: state.userSystemPrompt,
+            namingPrompt: state.namingPrompt,
+            secondAgentConfig: state.secondAgentConfig,
             orchestratorPrompt: state.orchestratorPrompt,
             improverPrompt: state.improverPrompt,
             activeProjectId: state.activeProjectId,
@@ -2271,12 +2335,46 @@ function checkVisionCapability() {
     const isVision = selected && selected.dataset.vision === 'true';
     // We keep it visible as requested, but maybe style it differently
     attachImgBtn.classList.remove('hidden');
-    if (!isVision) {
-        attachImgBtn.title = "Adjuntar imagen (El modelo actual podría no soportar visión)";
-    } else {
-        attachImgBtn.title = "Adjuntar imagen (Modelo Vision detectado)";
+}
+
+// ─── Second Agent helpers ───
+
+function populateSecondAgentModelSelect() {
+    const sel = document.getElementById('second-agent-model');
+    if (!sel) return;
+    const models = state.ollamaModels || [];
+    if (models.length === 0) {
+        sel.innerHTML = '<option value="">No hay modelos Ollama disponibles</option>';
+        return;
+    }
+    sel.innerHTML = models.map(m =>
+        `<option value="${m.name}">${m.name}</option>`
+    ).join('');
+}
+
+async function checkSecondAgentHealth() {
+    const dot = document.getElementById('second-agent-status-dot');
+    const text = document.getElementById('second-agent-status-text');
+    if (!dot || !text) return;
+    try {
+        const res = await fetch(`${OLLAMA_BASE}/tags`);
+        if (res.ok) {
+            dot.className = 'dot live';
+            dot.style.background = '#22d3ee';
+            text.textContent = 'Ollama conectado ✅';
+        } else {
+            dot.className = 'dot dead';
+            dot.style.background = '#ef4444';
+            text.textContent = 'Ollama no responde ❌';
+        }
+    } catch (e) {
+        dot.className = 'dot dead';
+        dot.style.background = '#ef4444';
+        text.textContent = 'Ollama no disponible ❌';
     }
 }
+
+// Imported Chat Summary (Chat History) Functions
 
 function renderProjectList() {
     chatList.innerHTML = state.projects.map((p, idx) => {
@@ -4164,19 +4262,20 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
             // ─── Auto-naming: Si el agente tiene nombre genérico ("Agente N"), asignar nombre desde el prompt ───
             if (/^Agente \d+$/.test(chat.name)) {
-                const generatedName = generateChatNameFromPrompt(lastUserMsg.content);
-                if (generatedName) {
-                    console.log(`[NAMING] Auto-nombrando agente desde prompt: "${generatedName}"`);
-                    chat.name = generatedName;
-                    // Sincronizar UI
-                    const agentNameInput = document.getElementById('chat-agent-name-input');
-                    if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
-                        agentNameInput.value = generatedName;
+                // 🔥 ASINCRÓNICO: no bloquea al agente, nombra en paralelo
+                generateChatNameFromPrompt(lastUserMsg.content).then(generatedName => {
+                    if (generatedName) {
+                        console.log(`[NAMING] Auto-nombrando agente desde prompt: "${generatedName}"`);
+                        chat.name = generatedName;
+                        const agentNameInput = document.getElementById('chat-agent-name-input');
+                        if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                            agentNameInput.value = generatedName;
+                        }
+                        renderTabs();
+                        renderAdminMonitor();
+                        saveData();
                     }
-                    renderTabs();
-                    renderAdminMonitor();
-                    saveData();
-                }
+                });
             }
             // ─── Fin auto-naming ───
 
@@ -6795,7 +6894,291 @@ function setupEventListeners() {
 
     saveFileBtn.onclick = () => window.saveActiveFile();
     sendBtn.onclick = sendMessage;
-    chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+    
+    // ══════════════════════════════════════════════
+    //  SLASH COMMAND AUTOCOMPLETE SYSTEM
+    // ══════════════════════════════════════════════
+    const slashDropdown = document.getElementById('slash-dropdown');
+    let slashCommandsVisible = false;
+    let slashSelectedIndex = -1;
+
+    const SLASH_COMMANDS = [
+        { cmd: '/help', desc: 'Ver todos los comandos disponibles', action: 'help', icon: '❓' },
+        { cmd: '/new', desc: 'Crear nuevo proyecto/chat', action: 'new', icon: '✨' },
+        { cmd: '/clear', desc: 'Limpiar mensajes del chat actual', action: 'clear', icon: '🧹' },
+        { cmd: '/status', desc: 'Estado del agente Hermes', action: 'status', icon: '📊' },
+        { cmd: '/hermes', desc: 'Activar/desactivar agente Hermes', action: 'hermes', icon: '🤖' },
+        { cmd: '/mode', desc: 'Alternar modo Auto / Supervisado', action: 'mode', icon: '⚙️' },
+        { cmd: '/summary', desc: 'Ver resumen de la sesión actual', action: 'summary', icon: '📋' },
+        { cmd: '/scan', desc: 'Escanear carpeta del proyecto', action: 'scan', icon: '📂' },
+        { cmd: '/git', desc: 'Estado del repositorio Git', action: 'git', icon: '🔀' },
+        { cmd: '/export', desc: 'Exportar conversación actual', action: 'export', icon: '💾' },
+        { cmd: '/file', desc: 'Abrir archivo en el editor', action: 'file', icon: '📝' },
+        { cmd: '/skills', desc: 'Abrir panel de skills del proyecto', action: 'skills', icon: '🧩' }
+    ];
+
+    function showSlashDropdown(filter = '') {
+        const filtered = filter
+            ? SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().includes(filter.toLowerCase()))
+            : SLASH_COMMANDS;
+
+        if (filtered.length === 0) {
+            slashDropdown.classList.add('hidden');
+            slashCommandsVisible = false;
+            return;
+        }
+
+        slashDropdown.innerHTML = filtered.map((c, i) => 
+            `<div class="slash-item${i === 0 ? ' selected' : ''}" data-index="${i}" data-action="${c.action}">
+                <span class="slash-icon">${c.icon}</span>
+                <span class="slash-cmd">${c.cmd}</span>
+                <span class="slash-desc">${c.desc}</span>
+            </div>`
+        ).join('');
+
+        slashDropdown.classList.remove('hidden');
+        slashCommandsVisible = true;
+        slashSelectedIndex = 0;
+    }
+
+    function hideSlashDropdown() {
+        slashDropdown.classList.add('hidden');
+        slashCommandsVisible = false;
+        slashSelectedIndex = -1;
+    }
+
+    function executeSlashCommand(action) {
+        const chat = getActiveChat();
+        const project = getActiveProject();
+
+        switch (action) {
+            case 'help':
+                chat.messages.push({ role: 'system', content: formatHelpMessage() });
+                renderMessages();
+                break;
+            case 'new':
+                createNewProject();
+                break;
+            case 'clear':
+                if (chat && confirm('¿Limpiar todos los mensajes de este chat?')) {
+                    chat.messages = [];
+                    chat.sessionChanges = [];
+                    renderMessages();
+                    saveData();
+                    showToast('Chat limpiado ✨', 'success');
+                }
+                break;
+            case 'status':
+                if (project && chat) {
+                    updateHermesUI(project.id, chat.id).then(() => {
+                        const dot = document.getElementById('hermes-status-dot');
+                        const statusText = dot ? (dot.classList.contains('running') ? '🧠 Pensando...' : 
+                            dot.classList.contains('online') ? '🟢 Online' : '⚫ Offline') : 'Desconocido';
+                        showToast(`Hermes: ${statusText}`, 'info', 3000);
+                    });
+                }
+                break;
+            case 'hermes':
+                if (project && chat) {
+                    checkAgentStatus(project.id, chat.id).then(status => {
+                        if (status.alive && status.hasBridge) {
+                            stopHermesForTab();
+                        } else {
+                            startHermesForTab();
+                        }
+                    });
+                }
+                break;
+            case 'mode':
+                if (chat) {
+                    chat.mode = chat.mode === 'auto' ? 'supervised' : 'auto';
+                    syncModeUI(chat.mode);
+                    saveData();
+                    showToast(`Modo: ${chat.mode === 'auto' ? '🤖 Auto' : '👁️ Supervisado'}`, 'info');
+                }
+                break;
+            case 'summary':
+                if (project && chat) {
+                    const container = document.getElementById('session-summary-container');
+                    if (container) {
+                        const isHidden = container.classList.contains('hidden');
+                        if (isHidden) {
+                            fetchSessionSummary(project, chat);
+                        } else {
+                            container.classList.add('hidden');
+                            container.innerHTML = '';
+                        }
+                    }
+                }
+                break;
+            case 'scan':
+                if (project && project.folder) {
+                    window.scanFolder(project.folder, project.id);
+                    showToast('Escaneando carpeta... 📂', 'info');
+                } else {
+                    safePickFolder();
+                }
+                break;
+            case 'git':
+                window.switchTab('git');
+                if (typeof window.refreshGitTab === 'function') {
+                    setTimeout(() => window.refreshGitTab(), 300);
+                }
+                showToast('Pestaña Git abierta 🔀', 'info');
+                break;
+            case 'export':
+                if (chat && chat.messages.length > 0) {
+                    let exportText = `# JP Agents Chat - ${project?.name || 'Sin proyecto'} / ${chat.name || 'Chat'}\n`;
+                    exportText += `# Exportado: ${new Date().toLocaleString()}\n\n`;
+                    for (const msg of chat.messages) {
+                        const role = msg.role === 'user' ? '👤 Usuario' : msg.role === 'agent' ? '🤖 Agente' : '📋 Sistema';
+                        exportText += `## ${role}\n${msg.content}\n\n---\n\n`;
+                    }
+                    const blob = new Blob([exportText], { type: 'text/markdown' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `jp-agents-chat-${Date.now()}.md`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast('Chat exportado como Markdown 💾', 'success');
+                } else {
+                    showToast('No hay mensajes para exportar', 'warning');
+                }
+                break;
+            case 'file':
+                if (project && project.currentFiles?.length > 0) {
+                    const fileName = chatInput.value.replace(/^\/file\s*/, '').trim();
+                    const file = fileName 
+                        ? project.currentFiles.find(f => f.name.toLowerCase().includes(fileName.toLowerCase()))
+                        : project.currentFiles[0];
+                    if (file) {
+                        window.loadFileToEditor(file.path || file.name);
+                        window.switchTab('editor');
+                        showToast(`Abriendo: ${file.name} 📝`, 'success');
+                    } else {
+                        showToast(`Archivo no encontrado: ${fileName}`, 'warning');
+                    }
+                } else {
+                    showToast('No hay archivos en el proyecto actual', 'warning');
+                }
+                break;
+            case 'skills':
+                const skillsBtn = document.getElementById('project-skills-trigger');
+                if (skillsBtn) {
+                    skillsBtn.click();
+                    showToast('Panel de skills abierto 🧩', 'info');
+                } else {
+                    showToast('Panel de skills no disponible', 'warning');
+                }
+                break;
+        }
+        
+        chatInput.value = '';
+        hideSlashDropdown();
+        chatInput.focus();
+    }
+
+    function formatHelpMessage() {
+        let help = '## 📋 Comandos Disponibles (tecla `/`)\n\n';
+        for (const c of SLASH_COMMANDS) {
+            help += `- **${c.cmd}** ${c.icon} — ${c.desc}\n`;
+        }
+        help += '\n> 💡 *Tip: Escribí `/` en el chat para ver esta lista en cualquier momento.*';
+        return help;
+    }
+
+    function updateSlashSelection(delta) {
+        const items = slashDropdown.querySelectorAll('.slash-item');
+        if (items.length === 0) return;
+        
+        items.forEach(item => item.classList.remove('selected'));
+        slashSelectedIndex = (slashSelectedIndex + delta + items.length) % items.length;
+        items[slashSelectedIndex].classList.add('selected');
+        items[slashSelectedIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    function getSelectedSlashAction() {
+        const items = slashDropdown.querySelectorAll('.slash-item');
+        if (items.length === 0 || slashSelectedIndex < 0) return null;
+        return items[slashSelectedIndex]?.dataset.action || null;
+    }
+
+    chatInput.onkeydown = (e) => {
+        // ── Slash command navigation ──
+        if (slashCommandsVisible) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                updateSlashSelection(1);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                updateSlashSelection(-1);
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                const action = getSelectedSlashAction();
+                if (action) {
+                    executeSlashCommand(action);
+                }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                hideSlashDropdown();
+                return;
+            }
+        }
+
+        // ── Detect "/" to open dropdown ──
+        if (e.key === '/' && !slashCommandsVisible) {
+            // Pequeño delay para que el carácter se inserte primero
+            setTimeout(() => {
+                const val = chatInput.value;
+                if (val.startsWith('/')) {
+                    showSlashDropdown(val);
+                }
+            }, 10);
+            return; // No prevenimos default para que la "/" se escriba
+        }
+
+        // ── Normal Enter to send ──
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    };
+
+    // ── Filter dropdown as user types ──
+    chatInput.oninput = (e) => {
+        if (slashCommandsVisible) {
+            const val = chatInput.value;
+            if (val.startsWith('/')) {
+                showSlashDropdown(val);
+            } else {
+                hideSlashDropdown();
+            }
+        } else if (chatInput.value.startsWith('/')) {
+            showSlashDropdown(chatInput.value);
+        }
+    };
+
+    // ── Click handler for dropdown items ──
+    slashDropdown.onclick = (e) => {
+        const item = e.target.closest('.slash-item');
+        if (!item) return;
+        const action = item.dataset.action;
+        if (action) executeSlashCommand(action);
+    };
+
+    // ── Close dropdown on outside click ──
+    document.addEventListener('click', (e) => {
+        if (slashCommandsVisible && !slashDropdown.contains(e.target) && e.target !== chatInput) {
+            hideSlashDropdown();
+        }
+    });
 
     // ─── HERMES TOGGLE + PLAY/STOP ───
     const hermesToggleBtn = document.getElementById('hermes-toggle-btn');
@@ -7222,6 +7605,9 @@ function setupEventListeners() {
     const improveImproverBtn = document.getElementById('improve-improver-prompt-btn');
     if (improveImproverBtn) improveImproverBtn.onclick = (e) => improvePrompt('improver-prompt', e);
 
+    const improveNamingBtn = document.getElementById('improve-naming-prompt-btn');
+    if (improveNamingBtn) improveNamingBtn.onclick = (e) => improvePrompt('naming-prompt', e);
+
     // Tab Switching Logic for Modal
     const modalSideTabs = document.querySelectorAll('.modal-side-tab');
     const modalSubTabs = document.querySelectorAll('.modal-sub-tab');
@@ -7256,6 +7642,8 @@ function setupEventListeners() {
 
     globalSettingsBtn.onclick = () => {
         if (userPromptTextarea) userPromptTextarea.value = state.userSystemPrompt || '';
+        const namingPromptTextarea = document.getElementById('naming-prompt');
+        if (namingPromptTextarea) namingPromptTextarea.value = state.namingPrompt || '';
         if (orchestratorPromptTextarea) orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         if (improverPromptTextarea) improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
@@ -7264,6 +7652,21 @@ function setupEventListeners() {
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
         if (autoValToggle) autoValToggle.checked = state.autoValidation;
+
+        // ─── Second Agent fields ───
+        const saToggle = document.getElementById('second-agent-toggle');
+        const saModel = document.getElementById('second-agent-model');
+        const saTemp = document.getElementById('second-agent-temperature');
+        const saMaxTokens = document.getElementById('second-agent-max-tokens');
+        if (saToggle) saToggle.checked = state.secondAgentConfig.enabled;
+        if (saTemp) saTemp.value = state.secondAgentConfig.temperature;
+        if (saMaxTokens) saMaxTokens.value = state.secondAgentConfig.maxTokens;
+        // Poblar selector de modelos Ollama
+        populateSecondAgentModelSelect();
+        if (saModel && state.secondAgentConfig.model) saModel.value = state.secondAgentConfig.model;
+
+        // ─── Verificar estado de Ollama ───
+        checkSecondAgentHealth();
 
         const dsKeyInput = document.getElementById('deepseek-api-key');
         const oaKeyInput = document.getElementById('openai-api-key');
@@ -7297,6 +7700,8 @@ function setupEventListeners() {
 
     saveGlobalBtn.onclick = () => {
         if (userPromptTextarea) state.userSystemPrompt = userPromptTextarea.value;
+        const namingPromptTextarea = document.getElementById('naming-prompt');
+        if (namingPromptTextarea) state.namingPrompt = namingPromptTextarea.value;
         if (orchestratorPromptTextarea) state.orchestratorPrompt = orchestratorPromptTextarea.value;
         if (improverPromptTextarea) state.improverPrompt = improverPromptTextarea.value;
 
@@ -7314,6 +7719,16 @@ function setupEventListeners() {
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
         if (autoValToggle) state.autoValidation = autoValToggle.checked;
+
+        // ─── Save Second Agent config ───
+        const saToggle = document.getElementById('second-agent-toggle');
+        const saModel = document.getElementById('second-agent-model');
+        const saTemp = document.getElementById('second-agent-temperature');
+        const saMaxTokens = document.getElementById('second-agent-max-tokens');
+        if (saToggle) state.secondAgentConfig.enabled = saToggle.checked;
+        if (saModel) state.secondAgentConfig.model = saModel.value;
+        if (saTemp) state.secondAgentConfig.temperature = parseFloat(saTemp.value) || 0.7;
+        if (saMaxTokens) state.secondAgentConfig.maxTokens = parseInt(saMaxTokens.value) || 50;
 
         const dsKeyInput = document.getElementById('deepseek-api-key');
         const oaKeyInput = document.getElementById('openai-api-key');
@@ -8056,20 +8471,22 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     let message = lastUserMsg.content;
     const images = lastUserMsg.images || [];
 
-    // ─── Auto-naming para agentes Hermes: nombrar desde el prompt ───
+    // ─── Auto-naming para agentes Hermes: nombrar desde el prompt (ASINCRÓNICO) ───
     if (/^Agente \d+$/.test(chat.name)) {
-        const generatedName = generateChatNameFromPrompt(message);
-        if (generatedName) {
-            console.log(`[HERMES-NAMING] Auto-nombrando agente Hermes desde prompt: "${generatedName}"`);
-            chat.name = generatedName;
-            const agentNameInput = document.getElementById('chat-agent-name-input');
-            if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
-                agentNameInput.value = generatedName;
+        // 🔥 No bloquea a Hermes, el nombre llega después
+        generateChatNameFromPrompt(message).then(generatedName => {
+            if (generatedName) {
+                console.log(`[HERMES-NAMING] Auto-nombrando agente Hermes desde prompt: "${generatedName}"`);
+                chat.name = generatedName;
+                const agentNameInput = document.getElementById('chat-agent-name-input');
+                if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                    agentNameInput.value = generatedName;
+                }
+                renderTabs();
+                renderAdminMonitor();
+                saveData();
             }
-            renderTabs();
-            renderAdminMonitor();
-            saveData();
-        }
+        });
     }
     // ─── Fin auto-naming Hermes ───
 
@@ -8981,12 +9398,116 @@ async function loadGitLog() {
     }
 }
 
+// ── Git Zoom + Pan Controls (wheel zoom, click-drag pan) ──
+window._gitZoomLevel = 1.0;
+window._gitPanX = 0;
+window._gitPanY = 0;
+window._gitDragging = false;
+window._gitDragStartX = 0;
+window._gitDragStartY = 0;
+window._gitDragPanStartX = 0;
+window._gitDragPanStartY = 0;
+window._gitZoomListenersSetup = false;
+
+window.applyGitZoom = () => {
+    const wrapper = document.getElementById('git-graph-wrapper');
+    const levelEl = document.getElementById('git-zoom-level');
+    if (!wrapper) return;
+    const scale = window._gitZoomLevel;
+    const tx = window._gitPanX || 0;
+    const ty = window._gitPanY || 0;
+    wrapper.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    if (levelEl) levelEl.textContent = Math.round(scale * 100) + '%';
+};
+
+window.setupGitZoomListeners = () => {
+    if (window._gitZoomListenersSetup) return;
+    window._gitZoomListenersSetup = true;
+
+    const wrapper = document.getElementById('git-graph-wrapper');
+    if (!wrapper) return;
+
+    // Wheel → Zoom
+    wrapper.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.08 : 0.08;
+        window._gitZoomLevel = Math.max(0.3, Math.min(3.0, window._gitZoomLevel + delta));
+        window.applyGitZoom();
+    }, { passive: false });
+
+    // Mousedown → Start pan (only on background, NOT on commit nodes)
+    wrapper.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.git-node-group')) return; // don't steal node clicks
+        window._gitDragging = true;
+        window._gitDragStartX = e.clientX;
+        window._gitDragStartY = e.clientY;
+        window._gitDragPanStartX = window._gitPanX || 0;
+        window._gitDragPanStartY = window._gitPanY || 0;
+        wrapper.style.cursor = 'grabbing';
+        e.preventDefault();
+    });
+
+    // Mousemove → Pan
+    window.addEventListener('mousemove', (e) => {
+        if (!window._gitDragging) return;
+        window._gitPanX = window._gitDragPanStartX + (e.clientX - window._gitDragStartX);
+        window._gitPanY = window._gitDragPanStartY + (e.clientY - window._gitDragStartY);
+        window.applyGitZoom();
+    });
+
+    // Mouseup → Stop pan
+    window.addEventListener('mouseup', () => {
+        if (window._gitDragging) {
+            window._gitDragging = false;
+            wrapper.style.cursor = 'grab';
+        }
+    });
+
+    // Mouseleave on wrapper → Stop pan
+    wrapper.addEventListener('mouseleave', () => {
+        if (window._gitDragging) {
+            window._gitDragging = false;
+            wrapper.style.cursor = 'grab';
+        }
+    });
+
+    // Set initial cursor
+    wrapper.style.cursor = 'grab';
+};
+
+// Button-based zoom controls (fallback, also linked to HTML buttons)
+window.gitZoomIn = () => {
+    window._gitZoomLevel = Math.min(3.0, window._gitZoomLevel + 0.2);
+    window.applyGitZoom();
+};
+
+window.gitZoomOut = () => {
+    window._gitZoomLevel = Math.max(0.3, window._gitZoomLevel - 0.2);
+    window.applyGitZoom();
+};
+
+window.gitZoomReset = () => {
+    window._gitZoomLevel = 1.0;
+    window._gitPanX = 0;
+    window._gitPanY = 0;
+    window.applyGitZoom();
+};
+
 // SVG Branch Graph Renderer — unified view (no separate commit list)
 function renderBranchGraph(commits) {
+    // ── Helper: build colored SVG tspans from stats string like "+123 -45 3 archivos" ──
+    const buildStatsSvg = (stats) => {
+        // Parse: +N, -N, and the rest (files count)
+        const match = stats.match(/^(\+[\d,]+)\s+(-[\d,]+)\s+(.*)/);
+        if (!match) return svgEscape(stats); // fallback
+        const [, additions, deletions, rest] = match;
+        // Green +N, red -N, gray rest
+        return `<tspan fill="#3fb950">${additions}</tspan> <tspan fill="#f85149">${deletions}</tspan> <tspan fill="#888">${rest}</tspan>`;
+    };
     if (!commits || commits.length < 2) return null;
 
     const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
-    const ROW_H = 32;       // taller rows for stats line
+    const ROW_H = 48;       // taller rows for stats + author, prevents text overlap
     const LANE_W = 28;
     const NODE_R = 5;
     const LX = 24;          // left margin
@@ -9171,7 +9692,7 @@ function renderBranchGraph(commits) {
         const shortHash = svgEscape(commit.hash || '');
         const escapedHash = svgEscape(commit.fullHash || commit.hash || '');
         const escapedSubject = svgEscape((commit.subject || '').substring(0, 72));
-        const escapedStats = svgEscape(commit.stats || '');
+        const statsStr = commit.stats || '';
         const escapedAuthor = svgEscape((commit.author || '').split('<')[0].trim());
         const escapedDate = svgEscape((commit.date || '').substring(0, 10));
 
@@ -9187,7 +9708,7 @@ function renderBranchGraph(commits) {
 
         // Hover tooltip
         let tooltip = `${shortHash} — ${svgEscape(commit.subject || '')}`;
-        if (escapedStats) tooltip += ` | ${escapedStats}`;
+        if (statsStr) tooltip += ` | ${svgEscape(statsStr)}`;
         if (refsLabel) tooltip += ` [${svgEscape(refsLabel)}]`;
         tooltip += ` | ${escapedAuthor} | Doble click: restaurar`;
 
@@ -9199,11 +9720,11 @@ function renderBranchGraph(commits) {
             <circle cx="${cx}" cy="${y}" r="${nodeR}" fill="${nodeColor}" stroke="#1e1e2e" stroke-width="${nodeStrokeWidth}"/>
             <title>${tooltip}</title>
             <!-- Row 1: hash + subject -->
-            <text x="${cx + nodeR + 6}" y="${y + 3}" font-family="'JetBrains Mono',monospace" font-size="10" fill="${nodeColor}" font-weight="${isHead ? 'bold' : 'normal'}">${shortHash}</text>
-            <text x="${cx + nodeR + 72}" y="${y + 3}" font-family="sans-serif" font-size="10" fill="#ccc">${escapedSubject}</text>
-            <!-- Row 2: stats + author (smaller, darker) -->
-            ${escapedStats ? `<text x="${cx + nodeR + 6}" y="${y + 16}" font-family="'JetBrains Mono',monospace" font-size="9" fill="#888">${escapedStats}</text>` : ''}
-            <text x="${cx + nodeR + 6}" y="${y + 28}" font-family="sans-serif" font-size="8.5" fill="#666">${escapedAuthor} · ${escapedDate}</text>
+            <text x="${cx + nodeR + 6}" y="${y + 6}" font-family="'JetBrains Mono',monospace" font-size="10" fill="${nodeColor}" font-weight="${isHead ? 'bold' : 'normal'}">${shortHash}</text>
+            <text x="${cx + nodeR + 72}" y="${y + 6}" font-family="sans-serif" font-size="10" fill="#ccc">${escapedSubject}</text>
+            <!-- Row 2: stats with colored +N / -N -->
+            ${statsStr ? `<text x="${cx + nodeR + 6}" y="${y + 22}" font-family="'JetBrains Mono',monospace" font-size="9">${buildStatsSvg(statsStr)}</text>` : ''}
+            <text x="${cx + nodeR + 6}" y="${y + 38}" font-family="sans-serif" font-size="8.5" fill="#666">${escapedAuthor} · ${escapedDate}</text>
         </g>`;
     });
 
@@ -9227,6 +9748,7 @@ function renderBranchGraph(commits) {
 function renderCommitTree(commits, currentBranch) {
     const graphContainer = document.getElementById('git-branch-graph');
     const legendContainer = document.getElementById('git-legend');
+    const zoomControls = document.getElementById('git-zoom-controls');
 
     // Store current branch for legend highlighting
     window._currentBranch = currentBranch;
@@ -9242,12 +9764,20 @@ function renderCommitTree(commits, currentBranch) {
             legendContainer.innerHTML = graphResult.legend;
             legendContainer.style.display = 'flex';
         }
+        // Show zoom controls and apply current zoom level
+        if (zoomControls) {
+            zoomControls.style.display = 'flex';
+        }
+        // Set up wheel zoom + click-drag pan (one-time)
+        window.setupGitZoomListeners();
+        window.applyGitZoom();
     } else {
         if (graphContainer) {
             graphContainer.innerHTML = '<div class="git-empty-state">No hay suficientes commits para mostrar el grafo</div>';
             graphContainer.style.display = 'block';
         }
         if (legendContainer) legendContainer.style.display = 'none';
+        if (zoomControls) zoomControls.style.display = 'none';
     }
 }
 
@@ -9308,6 +9838,16 @@ window.showCommitDetail = async (hash) => {
             });
             html += `</div></div>`;
         }
+
+        // ── Diff stats (colored additions/deletions) ──
+        if (diff) {
+            const { additions, deletions } = countDiffStats(diff);
+            html += `<div class="git-detail-row"><span class="git-detail-label">Cambios</span>`;
+            html += `<span class="git-stats-add">+${additions}</span> `;
+            html += `<span class="git-stats-del">-${deletions}</span>`;
+            html += `</div>`;
+        }
+
         html += `</div>`; // close git-detail-info
 
         // ── Restore button (moved up, BEFORE diff) ──
@@ -9427,6 +9967,22 @@ window.showCommitDetail = async (hash) => {
         content.innerHTML = '<div class="git-empty-state error">Error al cargar el detalle</div>';
     }
 };
+
+// Count additions/deletions from a diff string
+function countDiffStats(diff) {
+    let additions = 0;
+    let deletions = 0;
+    const normalized = diff.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+    for (const line of lines) {
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+            additions++;
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+            deletions++;
+        }
+    }
+    return { additions, deletions };
+}
 
 // Extract diff for a single file from a full git diff
 function extractFileDiff(fullDiff, fileName) {
