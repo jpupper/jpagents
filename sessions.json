@@ -295,6 +295,33 @@
       "folder": "D:\\Programacion\\jpagents\\proyects\\fuego_violeta",
       "model": "deepseek-v4-pro",
       "description": "🔥 Proyecto de fuego violeta con partículas interactivas p5.js"
+    },
+    {
+      "id": "proj-mpyqwyvgpc23g1",
+      "name": "Efecto Particulas Violetas",
+      "folder": "D:Programacionjpagentsproyects\u000biolet_particles",
+      "model": "deepseek-v4-pro",
+      "chats": [
+        {
+          "id": "chat-mpyqwyvgatljwj",
+          "name": "Violet Particle Dev",
+          "messages": [],
+          "isThinking": false,
+          "isRunning": false,
+          "isStopped": false,
+          "mode": "auto",
+          "lastProgress": 1780532226700,
+          "model": "deepseek-v4-pro",
+          "useHermes": true
+        }
+      ],
+      "openFiles": [],
+      "sessionChanges": [],
+      "activeTabId": "matrix",
+      "currentFiles": [],
+      "projectPrompt": "",
+      "isCorrupted": false,
+      "isInitialName": true
     }
   ],
   "userSystemPrompt": "REGLA DE ORO 1 (LECTURA): Antes de realizar cualquier acción de escritura (WRITE) o modificación (REPLACE), DEBES leer el contenido completo del archivo utilizando [READ:nombre_del_archivo]. \nEsto garantiza que el bloque SEARCH coincida exactamente y evita errores de \"Bloque no encontrado\". No intentes adivinar el código, léelo siempre primero.\n\nREGLA DE ORO 2 (ALEATORIEDAD): Si necesitas generar o decidir cualquier número aleatorio (ej: puertos, valores, IDs), es OBLIGATORIO utilizar la herramienta [CALL:RANDOM]. Queda prohibido inventar números aleatorios por tu cuenta. Una vez que llames a [CALL:RANDOM], el sistema te devolverá el número y podrás continuar con tu lógica.",

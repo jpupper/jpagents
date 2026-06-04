@@ -32,19 +32,27 @@ body {
 
 #app {
   display: grid;
-  grid-template-columns: 260px 1fr 300px;
+  grid-template-columns: var(--sidebar-width, 260px) 1fr var(--explorer-width, 300px);
+  grid-template-rows: 1fr;
   height: 100vh;
   width: 100vw;
+  overflow: hidden;
+  transition: grid-template-columns 0.3s ease;
+  position: relative;
 }
 
 /* Sidebar Styling */
 .sidebar {
+  grid-column: 1;
+  grid-row: 1;
   background-color: var(--sidebar-bg);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   padding: 1.5rem;
   height: 100%;
+  /* Force containment — prevents collapsed sidebar from influencing grid */
+  contain: layout style;
 }
 
 .sidebar-header h1 {
@@ -249,11 +257,193 @@ body {
 @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
 
 /* Main Content area */
+/* =============================================
+   PANEL RESIZE HANDLES & CLOSE BUTTONS
+   ============================================= */
+
+/* --- Close Button (top-right of panels) --- */
+.panel-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  z-index: 10;
+}
+.panel-close-btn:hover {
+  background: rgba(244, 67, 54, 0.15);
+  border-color: rgba(244, 67, 54, 0.4);
+  color: #f44336;
+}
+
+/* Sidebar needs relative positioning for close button */
+.sidebar {
+  position: relative;
+  overflow: hidden;
+  min-width: 180px;
+  transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, padding 0.3s ease, border 0.3s ease;
+}
+.file-explorer {
+  position: relative;
+  overflow: hidden;
+  min-width: 200px;
+  grid-column: 3;
+  grid-row: 1;
+  transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, padding 0.3s ease, border 0.3s ease;
+}
+
+/* --- Explorer Header (title + close button row) --- */
+.explorer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.explorer-header h3 {
+  margin-bottom: 0;
+}
+.explorer-header .panel-close-btn {
+  position: static;
+  flex-shrink: 0;
+}
+
+.sidebar .panel-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+/* --- Resize Handles --- */
+.panel-resize-handle {
+  position: absolute;
+  top: 0;
+  width: 5px;
+  height: 100vh;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.2s;
+  z-index: 20;
+}
+.panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -3px;
+  right: -3px;
+  bottom: 0;
+  /* invisible hit area for easier grabbing */
+}
+.panel-resize-handle:hover,
+.panel-resize-handle.active {
+  background: var(--accent-color);
+  box-shadow: 0 0 12px rgba(124, 77, 255, 0.4);
+}
+
+/* Left handle — sits at right edge of sidebar */
+#sidebar-resize-handle {
+  /* left is set dynamically by JS */
+}
+
+/* Right handle — sits at left edge of file explorer */
+#explorer-resize-handle {
+  /* right is set dynamically by JS */
+}
+
+/* --- Reopen Tabs (visible when panel is collapsed) --- */
+.panel-reopen-tab {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 60px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  transition: all 0.2s;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  opacity: 0;
+  pointer-events: none;
+}
+.panel-reopen-tab.collapsed {
+  opacity: 1;
+  pointer-events: auto;
+}
+.panel-reopen-tab:hover {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-color);
+}
+.panel-reopen-tab.left {
+  left: 0;
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+.panel-reopen-tab.right {
+  right: 0;
+  border-radius: 8px 0 0 8px;
+  border-right: none;
+}
+
+/* --- Collapsed States --- */
+/* IMPORTANT: Do NOT use display:none — it removes the element from CSS Grid flow,
+   causing the remaining grid children to reflow into wrong columns.
+   Instead, collapse width to 0 while keeping the element in the grid. */
+.sidebar.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  contain: none !important; /* override contain:layout to allow zero-width collapse */
+  transition: width 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+}
+.file-explorer.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: width 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+}
+
+/* Prevent text selection during resize */
+.resizing {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: col-resize;
+}
+
 .main-content {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   height: 100vh;
   min-width: 0;
+  overflow: hidden;
 }
 
 .top-nav {
@@ -444,73 +634,7 @@ optgroup {
   transform: translateY(1px);
 }
 
-.btn-git {
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  width: 44px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-}
 
-.btn-git:hover {
-  background: #24292e;
-  border-color: #fff;
-  color: #fff;
-}
-
-.git-input-group {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.git-commit-wrapper {
-    display: flex;
-    gap: 8px;
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    padding: 2px 8px 2px 2px;
-    border-radius: 12px;
-    animation: slideInRight 0.3s ease-out;
-}
-
-@keyframes slideInRight {
-    from { opacity: 0; transform: translateX(20px); }
-    to { opacity: 1; transform: translateX(0); }
-}
-
-.git-commit-wrapper input {
-    border: none;
-    background: transparent;
-    width: 200px;
-    font-size: 0.85rem;
-}
-
-.git-commit-wrapper input:focus {
-    box-shadow: none;
-}
-
-.btn-git-confirm {
-    background: #2ea44f;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 4px 12px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    cursor: pointer;
-    transition: filter 0.2s;
-}
-
-.btn-git-confirm:hover {
-    filter: brightness(1.1);
-}
 
 .toggle-group {
 
@@ -1314,6 +1438,36 @@ textarea {
     color: white;
 }
 
+/* ─── Mic Button Recording State ─── */
+.btn-icon-subtle#mic-btn {
+    transition: all 0.15s ease;
+}
+
+.btn-icon-subtle#mic-btn.mic-recording {
+    background: rgba(244, 67, 54, 0.2);
+    border-color: #f44336;
+    color: #f44336;
+    box-shadow: 0 0 16px rgba(244, 67, 54, 0.3);
+}
+
+.btn-icon-subtle#mic-btn.mic-recording:hover {
+    background: rgba(244, 67, 54, 0.35);
+    border-color: #ff5252;
+    transform: translateY(-2px);
+}
+
+@keyframes mic-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+}
+
+/* Input wrapper glow cuando está grabando */
+.input-wrapper.mic-active {
+    border-color: rgba(244, 67, 54, 0.4);
+    box-shadow: 0 0 20px rgba(244, 67, 54, 0.15), inset 0 0 20px rgba(244, 67, 54, 0.05);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
 .mode-selector-mini {
     display: none; /* Removed the old one */
 }
@@ -1526,6 +1680,7 @@ textarea {
 
 /* File Explorer */
 .file-explorer {
+  grid-column: 3;
   background-color: var(--sidebar-bg);
   border-left: 1px solid var(--border-color);
   padding: 1.5rem;
@@ -1549,6 +1704,66 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* --- Custom Scrollbars for File Explorer (JP Agents violet theme) --- */
+.file-explorer::-webkit-scrollbar,
+.file-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.file-explorer::-webkit-scrollbar-track,
+.file-list::-webkit-scrollbar-track {
+  background: rgba(124, 77, 255, 0.04);
+  border-radius: 4px;
+}
+.file-explorer::-webkit-scrollbar-thumb,
+.file-list::-webkit-scrollbar-thumb {
+  background: rgba(124, 77, 255, 0.25);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.25s ease;
+}
+.file-explorer::-webkit-scrollbar-thumb:hover,
+.file-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 77, 255, 0.5);
+  background-clip: padding-box;
+}
+.file-explorer::-webkit-scrollbar-thumb:active,
+.file-list::-webkit-scrollbar-thumb:active {
+  background: var(--accent-color);
+  box-shadow: 0 0 8px rgba(124, 77, 255, 0.35);
+  background-clip: padding-box;
+}
+.file-explorer::-webkit-scrollbar-corner,
+.file-list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Firefox scrollbar */
+.file-explorer,
+.file-list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 77, 255, 0.25) rgba(124, 77, 255, 0.04);
+}
+
+/* --- Global scrollbar style (catch-all for other scrollable areas) --- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(124, 77, 255, 0.03);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(124, 77, 255, 0.2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 77, 255, 0.45);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .file-item {
@@ -2848,6 +3063,7 @@ pre code.hljs {
 
 /* File Tree View */
 .file-explorer {
+    grid-column: 3;
     background: var(--sidebar-bg);
     border-left: 1px solid var(--border-color);
     padding: 1.5rem;
@@ -5825,6 +6041,88 @@ pre code.hljs {
   background: rgba(248, 81, 73, 0.22);
 }
 
+/* Push result overlay dismiss button */
+.git-push-result-dismiss {
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-primary);
+}
+
+.git-push-result-dismiss.success {
+  border-color: #3fb950;
+  background: rgba(63, 185, 80, 0.12);
+  color: #3fb950;
+}
+
+.git-push-result-dismiss.success:hover {
+  background: rgba(63, 185, 80, 0.22);
+}
+
+.git-push-result-dismiss.error {
+  border-color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+}
+
+.git-push-result-dismiss.error:hover {
+  background: rgba(248, 81, 73, 0.22);
+}
+
+.git-push-result-card {
+  max-width: 540px;
+}
+
+/* ── Push Confirmation (pre-push overlay) ── */
+
+.git-push-msg-line {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  border-left: 3px solid var(--primary-color);
+}
+
+.git-push-files-title {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.git-push-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.git-push-file-item {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-push-card {
+  max-width: 520px;
+}
+
 /* ═══════════════════════════════════════════════════
    GIT TAB — Legend
    ═══════════════════════════════════════════════════ */
@@ -5920,4 +6218,238 @@ pre code.hljs {
   50% {
     box-shadow: 0 0 0 6px rgba(63, 185, 80, 0);
   }
+}
+
+/* ═══════════════════════════════════════════════════
+   GIT TAB — Mini Process Terminal
+   ═══════════════════════════════════════════════════ */
+
+.git-process-terminal {
+  margin: 0 0 12px 0;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  overflow: hidden;
+  animation: terminalSlideIn 0.3s ease-out;
+  max-height: 500px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(63, 185, 80, 0.08);
+}
+
+.git-process-terminal.hidden {
+  display: none;
+}
+
+.git-process-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  font-size: 0.72rem;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.git-process-header:hover {
+  background: #1c2128;
+}
+
+.git-process-title {
+  color: #8b949e;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.git-process-status {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.git-process-status.running {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+  animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+.git-process-status.success {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.12);
+  animation: none;
+}
+
+.git-process-status.error {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+  animation: none;
+}
+
+/* ── Progress bar ── */
+.git-process-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.68rem;
+  overflow-x: auto;
+}
+
+.git-progress-step {
+  padding: 3px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+  transition: all 0.3s ease;
+}
+
+.git-progress-step.pending {
+  color: #484f58;
+  background: transparent;
+}
+
+.git-progress-step.done {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.1);
+  font-weight: 600;
+}
+
+.git-progress-arrow {
+  color: #30363d;
+  font-weight: 700;
+}
+
+/* ── Output area ── */
+.git-process-output {
+  padding: 10px 14px;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  color: #c9d1d9;
+  overflow-y: auto;
+  max-height: 350px;
+  flex: 1;
+}
+
+.git-process-line {
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.git-process-line.dim {
+  color: #484f58;
+}
+
+.git-process-line.commit-msg {
+  color: #f0f6fc;
+  font-size: 0.78rem;
+  padding: 4px 0 6px 0;
+}
+
+.git-process-line.files-header {
+  color: #8b949e;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding-top: 6px;
+}
+
+.git-process-line.file-item {
+  color: #58a6ff;
+  font-size: 0.7rem;
+  padding-left: 12px;
+}
+
+.git-process-line.command {
+  color: #58a6ff;
+  padding-left: 4px;
+}
+
+.git-process-line.command::before {
+  content: '';
+}
+
+.git-process-line.output {
+  color: #8b949e;
+  padding-left: 16px;
+}
+
+.git-process-line.output.stderr {
+  color: #f85149;
+}
+
+.git-process-line.success-marker {
+  color: #3fb950;
+  padding-left: 4px;
+}
+
+.git-process-line.error-marker {
+  color: #f85149;
+  padding-left: 4px;
+}
+
+.git-process-line.step-header {
+  color: #f0f6fc;
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding-top: 10px;
+  border-top: 1px solid #21262d;
+  margin-top: 8px;
+}
+
+/* ── Separator ── */
+.git-process-separator {
+  height: 1px;
+  background: #21262d;
+  margin: 8px 0;
+}
+
+/* ── Done / Error banners ── */
+.git-process-line.done-banner {
+  color: #3fb950;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 8px 0;
+  animation: bannerPulse 0.5s ease-out;
+}
+
+.git-process-line.error-banner {
+  color: #f85149;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* ── Animations ── */
+@keyframes terminalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.98);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    max-height: 500px;
+  }
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes bannerPulse {
+  0% { transform: scale(0.9); opacity: 0; }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); opacity: 1; }
 }

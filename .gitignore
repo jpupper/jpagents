@@ -18,6 +18,8 @@ dist-ssr
 .idea
 .DS_Store
 *.suo
+# Windows device file — conflicts with git indexing
+nul
 *.ntvs*
 *.njsproj
 *.sln

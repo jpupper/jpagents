@@ -118,7 +118,7 @@ async function callHermesAdmin(message, history = []) {
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
-    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
+    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '-Q', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
     const { stdout, stderr } = await execFileAsync(hermesPath, args, {
         cwd: process.cwd(), timeout: 600000,
         maxBuffer: 10 * 1024 * 1024,
@@ -184,7 +184,7 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
         }
     }
     const { spawn } = await import('child_process');
-    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
+    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '-Q', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
     
     return new Promise((resolve) => {
         const proc = spawn(hermesPath, args, {
@@ -275,6 +275,16 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
             clearTimeout(timeout);
             
             const cleanStdout = (stdout || '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
+            
+            // Con -Q (quiet mode): stdout es texto plano directamente.
+            // Sin -Q: stdout tiene panel TUI con ╭/╰.
+            // Intentar panel extraction primero, fallback a raw.
+            let response = cleanStdout.trim();
+            
+            // Limpiar session_id del stdout
+            response = response.replace(/^session_id:\s*\S+/m, '').trim();
+            
+            // Intentar extraer panel (para compatibilidad si sacamos -Q en futuro)
             const lines = cleanStdout.split('\n');
             let panelStart = -1, panelEnd = -1;
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -285,12 +295,12 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
                     break;
                 }
             }
-            let response = cleanStdout.trim();
             if (panelStart !== -1 && panelEnd !== -1 && panelStart < panelEnd) {
                 response = lines.slice(panelStart + 1, panelEnd)
                     .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
                     .join('\n').trim();
             }
+            
             resolve({ response, stderr, exitCode: code });
         });
 
@@ -324,6 +334,40 @@ function cleanHermesResponse(text) {
         // Multiple newlines → single
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+}
+
+/**
+ * Extrae SOLO el bloque de resumen estructurado (📋⚙️📝📊) de la respuesta de Hermes.
+ * Busca desde 📋 OBJETIVO hasta el final del contenido de 📊 ESTADO ACTUAL.
+ * Si no encuentra el bloque estructurado, usa cleanHermesResponse() como fallback.
+ */
+function extractTelegramSummary(text) {
+    if (!text || typeof text !== 'string') return '';
+
+    // Buscar inicio del bloque: 📋 OBJETIVO
+    const objetivoIdx = text.indexOf('📋');
+    if (objetivoIdx === -1) return cleanHermesResponse(text);
+
+    // Buscar 📊 ESTADO ACTUAL (cierre del bloque)
+    const estadoMatch = text.slice(objetivoIdx).match(/(📊\s*ESTADO\s*ACTUAL:[^\n]*)/);
+    if (!estadoMatch) return cleanHermesResponse(text);
+
+    const estadoEnd = objetivoIdx + estadoMatch.index + estadoMatch[1].length;
+
+    // El contenido después de ESTADO ACTUAL continúa hasta:
+    // - doble salto de línea (\n\n)
+    // - otro emoji de sección (📋⚙️📝📊 etc.)
+    // - fin del string
+    const rest = text.slice(estadoEnd);
+    const contentEnd = rest.search(/\n\n|\n(?=\s*[📋⚙️📝📊✅❌ℹ️⏭️]|[A-ZÁÉÍÓÚÑ]{3,}:)/);
+    const blockEnd = contentEnd > 0 ? estadoEnd + contentEnd : text.length;
+
+    let summary = text.slice(objetivoIdx, blockEnd).trim();
+
+    // Si el bloque está vacío después de limpiar, fallback
+    if (!summary || summary.length < 15) return cleanHermesResponse(text);
+
+    return summary;
 }
 
 /**
@@ -362,8 +406,7 @@ function initTelegramBot() {
         } else {
             telegramBotOwner = userId;
             saveOwner(userId, ctx.from?.first_name || 'Owner');
-            console.log(`[TELEGRAM] 👑 Dueño: ${ctx.from?.first_name} (${userId})`);
-            // Enviar mensaje de bienvenida si no se envió en startup
+            slog.log(`[TELEGRAM] 👑 Dueño: ${ctx.from?.first_name} (${userId})`);
             const bi = await bot.api.getMe().catch(() => null);
             if (bi) {
                 const hname = os.hostname();
@@ -381,45 +424,44 @@ function initTelegramBot() {
                     `✅ Todo listo — HERMES GOD escuchando.`,
                 ].join('\n');
                 await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' }).catch(() => {});
-                console.log(`[TELEGRAM] 📤 Bienvenida enviada al nuevo owner ${userId}`);
             }
         }
         await next();
     });
 
-    // Mensajes de texto → HERMES GOD BOTADMIN (con streaming de pensamiento)
+    // ─── Mensajes de texto → HERMES GOD BOTADMIN ───
     bot.on('message:text', async (ctx) => {
         let userMsg = ctx.message.text;
         const chatId = ctx.chat.id;
         const userName = ctx.from?.first_name || 'User';
 
-        // Inyectar respuesta de clarify pendiente si existe
+        // Inyectar respuesta de clarify pendiente
         if (global.clarifyAnswers && global.clarifyAnswers.has(chatId)) {
             const prev = global.clarifyAnswers.get(chatId);
             global.clarifyAnswers.delete(chatId);
             userMsg = `[Respuesta a tu pregunta anterior: "${prev.question}" → Elegí: "${prev.answer}"]\n\n${userMsg}`;
-            console.log(`[TELEGRAM] 📎 Inyectada respuesta de clarify: "${prev.answer}"`);
+            slog.log(`[TELEGRAM] 📎 Inyectada respuesta de clarify: "${prev.answer}"`);
         }
 
-        console.log(`[TELEGRAM] 📩 ${userName}: "${userMsg.slice(0, 80)}..."`);
-
+        slog.log(`[TELEGRAM] 📩 ${userName}: "${userMsg.slice(0, 80)}..."`);
         telegramBroadcast('telegram:incoming', { chatId, from: userName, text: userMsg, messageId: ctx.message.message_id });
 
-        const thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...').catch(() => null);
+        // Mensaje "pensando..."
+        let thinkingMsg = null;
+        try { thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...'); } catch {}
         telegramBroadcast('telegram:thinking', { chatId, messageId: thinkingMsg?.message_id });
 
         try {
-            let lastThinkingText = '';
             const { response, stderr: hermesStderr } = await callHermesAdminStreaming(userMsg, (thinkingText) => {
-                lastThinkingText = thinkingText;
                 if (thinkingMsg && thinkingText) {
                     const statusText = `👑 HERMES GOD está pensando...\n\n${thinkingText}`;
-                    bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
-                        .catch(() => {}); // ignorar errores de edición (rate limit, etc.)
+                    safeTelegramCall(() =>
+                        bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
+                    );
                 }
             });
 
-            // ─── Detectar clarify calls y enviar botones ───
+            // ─── Clarify detection ───
             if (hermesStderr && hermesStderr.includes('Tool call: clarify')) {
                 const clarifyMatch = hermesStderr.match(/Tool call: clarify with args:\s*(\{[^}]+\})/);
                 if (clarifyMatch) {
@@ -427,76 +469,68 @@ function initTelegramBot() {
                         const clarifyArgs = JSON.parse(clarifyMatch[1]);
                         const question = clarifyArgs.question || '';
                         const choices = clarifyArgs.choices || [];
-                        
                         if (choices.length > 0) {
-                            // Enviar botones inline de Telegram
                             const buttons = choices.map((choice, i) => [{
-                                text: choice.slice(0, 40), // Telegram limita a ~64 chars
+                                text: choice.slice(0, 40),
                                 callback_data: `clarify:${chatId}:${i}:${Date.now()}`
                             }]);
-                            // Guardar choices para referencia cuando el usuario responda
-                            pendingClarifies.set(`clarify:${chatId}`, {
-                                question, choices, timestamp: Date.now()
-                            });
-                            
-                            const clarifyMsg = await ctx.reply(
-                                `❓ ${question}\n\n(Elegí una opción — Hermes ya terminó, pero tu respuesta se usará en el próximo mensaje)`,
-                                { reply_markup: { inline_keyboard: buttons } }
-                            ).catch(() => {});
-                            console.log(`[TELEGRAM] 📋 Clarify detectado — botones enviados: "${question.slice(0, 60)}..."`);
+                            pendingClarifies.set(`clarify:${chatId}`, { question, choices, timestamp: Date.now() });
+                            safeTelegramCall(() =>
+                                ctx.reply(
+                                    `❓ ${question}\n\n(Elegí una opción — Hermes ya terminó, pero tu respuesta se usará en el próximo mensaje)`,
+                                    { reply_markup: { inline_keyboard: buttons } }
+                                )
+                            );
+                            slog.log(`[TELEGRAM] 📋 Clarify detectado — botones enviados: "${question.slice(0, 60)}..."`);
                         } else if (question) {
-                            // Pregunta abierta — sugerir que el usuario responda
-                            await ctx.reply(
-                                `❓ ${question}\n\n(Respondé a este mensaje y tu respuesta se usará como contexto adicional)`
-                            ).catch(() => {});
+                            safeTelegramCall(() =>
+                                ctx.reply(`❓ ${question}\n\n(Respondé a este mensaje y tu respuesta se usará como contexto adicional)`)
+                            );
                         }
                     } catch (parseErr) {
-                        console.error('[TELEGRAM] Error parseando clarify args:', parseErr.message);
+                        slog.error('[TELEGRAM] Error parseando clarify args:', parseErr.message);
                     }
                 }
             }
 
-            const MAX_LEN = 3500;
-            if (response.length <= MAX_LEN) {
-                if (thinkingMsg) {
-                    await bot.api.editMessageText(chatId, thinkingMsg.message_id, response, { parse_mode: '' })
-                        .catch(() => ctx.reply(response).catch(() => {}));
-                } else {
-                    await ctx.reply(response).catch(() => {});
-                }
-            } else {
-                // Split cuidando párrafos
-                const parts = [];
-                let remaining = response;
-                while (remaining.length > 0) {
-                    if (remaining.length <= MAX_LEN) { parts.push(remaining); break; }
-                    let cut = remaining.lastIndexOf('\n\n', MAX_LEN);
-                    if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('\n', MAX_LEN);
-                    if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('. ', MAX_LEN) + 1;
-                    if (cut < 100) cut = MAX_LEN;
-                    parts.push(remaining.slice(0, cut).trim());
-                    remaining = remaining.slice(cut).trim();
-                }
-                if (thinkingMsg) {
-                    await bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: '' }).catch(() => {});
-                } else {
-                    await ctx.reply(parts[0]).catch(() => {});
-                }
-                for (let i = 1; i < parts.length; i++) {
-                    await bot.api.sendMessage(chatId, parts[i], { parse_mode: '' }).catch(() => {});
-                }
+            // ─── Extraer resumen estructurado y ejecutar comandos ───
+            const cleanResponse = extractTelegramSummary(response) || '(sin respuesta)';
+            let executions = [];
+            try {
+                const execPromise = executeAdminCommands(response);
+                const execTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Timeout (5 min)')), 300000));
+                executions = await Promise.race([execPromise, execTimeout]);
+            } catch (execErr) {
+                slog.error(`[TELEGRAM] ⚠️ Error/Timeout en executeAdminCommands:`, execErr.message);
             }
-            console.log(`[TELEGRAM] ✅ Respondido (${response.length} chars)`);
+
+            // ─── Armar respuesta final ───
+            let finalResponse = cleanResponse;
+            if (executions.length > 0) {
+                const execLines = executions.map(ex => {
+                    if (ex.status === 'ok') {
+                        if (ex.response) return `  ✅ ${ex.command}: ${ex.target}\n     📝 ${ex.response.slice(0, 500)}`;
+                        return `  ✅ ${ex.command}: ${ex.target}`;
+                    }
+                    if (ex.status === 'error') return `  ❌ ${ex.command}: ${ex.target} — ${ex.error}`;
+                    if (ex.status === 'skipped') return `  ⏭️ ${ex.command}: ${ex.target} — ${ex.reason}`;
+                    if (ex.message) return `  ℹ️ ${ex.command}: ${ex.target} — ${ex.message}`;
+                    return `  ℹ️ ${ex.command}: ${ex.target}`;
+                });
+                finalResponse += '\n\n⚙️ Comandos ejecutados:\n' + execLines.join('\n');
+            }
+
+            // ─── Enviar respuesta a Telegram ───
+            const MAX_LEN = 3500;
+            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, finalResponse, MAX_LEN);
+            slog.log(`[TELEGRAM] ✅ Respondido (${finalResponse.length} chars), ${executions.length} comandos ejecutados`);
             telegramBroadcast('telegram:outgoing', {
-                chatId, text: response.slice(0, 500) + (response.length > 500 ? '...' : ''), responseLength: response.length
+                chatId, text: finalResponse.slice(0, 500) + (finalResponse.length > 500 ? '...' : ''),
+                responseLength: finalResponse.length
             });
         } catch (err) {
-            console.error(`[TELEGRAM] ❌ Error:`, err.message);
-            if (thinkingMsg) {
-                await bot.api.editMessageText(chatId, thinkingMsg.message_id, `❌ Error: ${err.message.slice(0, 500)}`).catch(() => {});
-            } else {
-                await ctx.reply(`❌ Error: ${err.message.slice(0, 500)}`).catch(() => {});
-            }
+            slog.error(`[TELEGRAM] ❌ Error:`, err.message);
+            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, `❌ Error: ${err.message.slice(0, 500)}`, 3500);
             telegramBroadcast('telegram:error', { chatId, error: err.message });
         }
     });
@@ -561,40 +595,75 @@ function initTelegramBot() {
         await ctx.reply('👑 *HERMES GOD*\nCualquier texto → Hermes BOTADMIN\n/status — Estado\n/help — Ayuda', { parse_mode: 'Markdown' });
     });
 
-    bot.catch((err) => console.error(`[TELEGRAM] ❌ Error del bot:`, err.message));
+    // ─── Error handler con reconexión automática ───
+    bot.catch((err) => {
+        try { console.error(`[TELEGRAM] ❌ Error del bot: ${err.message}`); } catch {}
+        // Si es 409 (conflict), forzar reconexión después de un delay
+        if (err.message && err.message.includes('409')) {
+            try { console.log('[TELEGRAM] 🔄 409 detectado, reconectando en 5s...'); } catch {}
+            setTimeout(() => {
+                try { bot.stop().catch(() => {}); } catch {}
+                setTimeout(() => {
+                    initTelegramBot();
+                }, 2000);
+            }, 5000);
+        }
+    });
 
-    bot.start({ onStart: async (bi) => {
-        telegramBot = bot;
-        const hname = os.hostname();
-        const totalMB = Math.round(os.totalmem() / 1024 / 1024);
-        const freeMB = Math.round(os.freemem() / 1024 / 1024);
-        console.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (inline)`);
-        telegramBroadcast('telegram:status', { connected: true, username: bi.username });
-
-        // Mensaje automático de confirmación de conexión al owner
-        const ownerId = savedOwner?.ownerChatId || TELEGRAM_AUTHORIZED[0];
-        if (ownerId) {
-            const startupMsg = [
-                `🟢 *JP Agents — Servidor Conectado*`,
-                ``,
-                `🤖 Bot: @${bi.username}`,
-                `💻 Host: ${hname}`,
-                `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
-                `🖥️ CPU: ${os.cpus().length} cores`,
-                `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
-                ``,
-                `✅ Todo listo — HERMES GOD escuchando.`,
-            ].join('\n');
+    // ─── Intentar conectar con retry en 409 ───
+    async function startBotWithRetry(retries = 3) {
+        for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                await bot.api.sendMessage(ownerId, startupMsg, { parse_mode: 'Markdown' });
-                console.log(`[TELEGRAM] 📤 Startup confirmado a chat ${ownerId}`);
-            } catch (e) {
-                console.warn(`[TELEGRAM] ⚠️ No se pudo enviar mensaje de startup: ${e.message}`);
+                await bot.start({
+                    drop_pending_updates: true,
+                    onStart: async (bi) => {
+                        telegramBot = bot;
+                        const hname = os.hostname();
+                        const totalMB = Math.round(os.totalmem() / 1024 / 1024);
+                        const freeMB = Math.round(os.freemem() / 1024 / 1024);
+                        try { console.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (inline)`); } catch {}
+                        telegramBroadcast('telegram:status', { connected: true, username: bi.username });
+
+                        const ownerId = savedOwner?.ownerChatId || TELEGRAM_AUTHORIZED[0];
+                        if (ownerId) {
+                            const startupMsg = [
+                                `🟢 *JP Agents — Servidor Conectado*`,
+                                ``,
+                                `🤖 Bot: @${bi.username}`,
+                                `💻 Host: ${hname}`,
+                                `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
+                                `🖥️ CPU: ${os.cpus().length} cores`,
+                                `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
+                                ``,
+                                `✅ Todo listo — HERMES GOD escuchando.`,
+                            ].join('\n');
+                            try {
+                                await bot.api.sendMessage(ownerId, startupMsg, { parse_mode: 'Markdown' });
+                                try { console.log(`[TELEGRAM] 📤 Startup confirmado a chat ${ownerId}`); } catch {}
+                            } catch (e) {
+                                try { console.warn(`[TELEGRAM] ⚠️ No se pudo enviar mensaje de startup: ${e.message}`); } catch {}
+                            }
+                        }
+                    }
+                }); // end bot.start
+                return true; // éxito
+            } catch (startErr) {
+                try { console.error(`[TELEGRAM] ⚠️ Intento ${attempt}/${retries} falló: ${startErr.message}`); } catch {}
+                if (attempt < retries) {
+                    const delay = 3000 * Math.pow(2, attempt - 1);
+                    try { console.log(`[TELEGRAM] ⏳ Reintentando en ${delay/1000}s...`); } catch {}
+                    await new Promise(r => setTimeout(r, delay));
+                } else {
+                    try { console.error(`[TELEGRAM] ❌ No se pudo iniciar bot después de ${retries} intentos`); } catch {}
+                }
             }
         }
-    }});
+        return false;
+    }
 
-    console.log(`[TELEGRAM] 🚀 Inicializando bot...`);
+    startBotWithRetry(5);
+
+    try { console.log(`[TELEGRAM] 🚀 Inicializando bot...`); } catch {}
 }
 
 function formatUptime(seconds) {
@@ -603,6 +672,76 @@ function formatUptime(seconds) {
     return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 let botStartTime = Date.now();
+
+// ─── Safe console (EPIPE protection) ───
+const slog = {
+    log: (...args) => { try { console.log(...args); } catch { /* EPIPE safe */ } },
+    error: (...args) => { try { console.error(...args); } catch { /* EPIPE safe */ } },
+    warn: (...args) => { try { console.warn(...args); } catch { /* EPIPE safe */ } }
+};
+
+// ─── Safe Telegram API call with retry ───
+async function safeTelegramCall(fn, fallbackMsg = null) {
+    try {
+        return await fn();
+    } catch (e) {
+        slog.error(`[TELEGRAM] ⚠️ API call failed: ${e.message?.slice(0, 100)}`);
+        if (fallbackMsg && e.message?.includes('message to edit')) {
+            // Message to edit not found - send as new
+            return null;
+        }
+        return null;
+    }
+}
+
+/**
+ * Envía una respuesta a Telegram con fallback múltiple.
+ * Estrategia: editMessageText → sendMessage (nuevo) → sendMessage (raw)
+ */
+async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, MAX_LEN = 3500) {
+    if (!text) text = '✅ Listo.';
+    
+    if (text.length <= MAX_LEN) {
+        // Corto: intentar editar el mensaje "pensando..." o enviar nuevo
+        if (thinkingMsg) {
+            const edited = await safeTelegramCall(() =>
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, text, { parse_mode: '' })
+            );
+            if (edited !== null) return; // edit exitoso
+            // edit falló → enviar como mensaje nuevo
+        }
+        await safeTelegramCall(() => ctx.reply(text, { parse_mode: '' }));
+    } else {
+        // Largo: split en párrafos
+        const parts = [];
+        let remaining = text;
+        while (remaining.length > 0) {
+            if (remaining.length <= MAX_LEN) { parts.push(remaining); break; }
+            let cut = remaining.lastIndexOf('\n\n', MAX_LEN);
+            if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('\n', MAX_LEN);
+            if (cut < MAX_LEN / 2) cut = remaining.lastIndexOf('. ', MAX_LEN) + 1;
+            if (cut < 100) cut = MAX_LEN;
+            parts.push(remaining.slice(0, cut).trim());
+            remaining = remaining.slice(cut).trim();
+        }
+        if (thinkingMsg) {
+            const edited = await safeTelegramCall(() =>
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: '' })
+            );
+            if (edited === null) {
+                // edit falló → enviar parte 1 como mensaje nuevo
+                await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: '' }));
+            }
+        } else {
+            await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: '' }));
+        }
+        for (let i = 1; i < parts.length; i++) {
+            await safeTelegramCall(() =>
+                bot.api.sendMessage(chatId, parts[i], { parse_mode: '' })
+            );
+        }
+    }
+}
 
 // ─── Pending Clarify Questions ───
 // Almacena preguntas de clarify pendientes por chatId para responder vía botones inline
@@ -773,6 +912,32 @@ async function loadSessions() {
 async function saveSessions(state) {
     try {
         const collection = getCollection('sessions');
+        
+        // ─── MERGE projects: preserva proyectos existentes en DB que este save no incluya ───
+        // Previene el race condition donde un load-save concurrente
+        // sobreescribe con datos stale y pierde proyectos nuevos (ej: Fuego Violeta)
+        // BUGFIX: Si el save incluye deletedProjectIds, esos proyectos NO se preservan del merge
+        // (resuelve el bug donde proyectos eliminados volvían a aparecer tras save concurrente)
+        const deletedIds = new Set(state.deletedProjectIds || []);
+        delete state.deletedProjectIds; // limpiar para no guardarlo en DB
+        
+        const existing = await collection.findOne({ _id: 'global_state' });
+        if (existing?.state?.projects && state?.projects) {
+            const merged = new Map();
+            // Proyectos del save actual son la fuente de verdad
+            for (const p of state.projects) {
+                merged.set(p.id || p.name, p);
+            }
+            // Agregar proyectos existentes de DB que NO estén en el save ni en deletedIds
+            for (const p of existing.state.projects) {
+                const key = p.id || p.name;
+                if (!merged.has(key) && !deletedIds.has(key) && !deletedIds.has(p.id)) {
+                    merged.set(key, p);
+                }
+            }
+            state.projects = Array.from(merged.values());
+        }
+        
         await collection.updateOne(
             { _id: 'global_state' },
             { $set: { state, updatedAt: new Date() } },
@@ -1712,6 +1877,9 @@ try {
 // --- TERMINAL PROCESS MANAGEMENT ---
 const activeProcesses = new Map(); // projectId -> ChildProcess
 
+// --- GIT COMMIT STREAMING ---
+const gitCommitJobs = new Map(); // jobId -> { status, steps[], res (SSE response), error }
+
 app.post('/api/execute/command', (req, res) => {
     const { command, cwd, projectId } = req.body;
     if (!command || !projectId) return res.status(400).json({ error: 'Missing command or projectId' });
@@ -1933,34 +2101,205 @@ app.post('/api/utils/git-commit', async (req, res) => {
 
     console.log(`[SERVER] Git Commit & Push en: ${folderPath} con mensaje: ${message}`);
 
-    try {
-        // 1. Add all
-        await execAsync('git add .', { cwd: folderPath });
+    const jobId = `git-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-        // 2. Commit
+    // Store job state
+    gitCommitJobs.set(jobId, {
+        status: 'running',
+        steps: [],
+        error: null,
+        folderPath,
+        message,
+        createdAt: Date.now()
+    });
+
+    // Return jobId immediately so frontend can connect to SSE
+    res.json({ jobId });
+
+    // Run git operations in background
+    runGitCommitJob(jobId);
+});
+
+// ── Background: execute git add → commit → push, streaming each step ──
+async function runGitCommitJob(jobId) {
+    const job = gitCommitJobs.get(jobId);
+    if (!job) return;
+
+    const { folderPath, message } = job;
+
+    try {
+        // ── Step 1: git add ──
         try {
-            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: folderPath });
+            const addResult = await execAsync('git add .', { cwd: folderPath });
+            const stagedResult = await execAsync('git diff --cached --name-only', { cwd: folderPath });
+            const stagedFiles = stagedResult.stdout.trim().split('\n').filter(Boolean);
+            const step = {
+                step: 'add',
+                command: 'git add .',
+                success: true,
+                stdout: stagedFiles.length > 0
+                    ? `Archivos staged (${stagedFiles.length}):\n${stagedFiles.map(f => '  ' + f).join('\n')}`
+                    : 'No hay cambios nuevos para staged',
+                stderr: ''
+            };
+            job.steps.push(step);
+            emitGitStep(jobId, step);
+        } catch (addError) {
+            const step = {
+                step: 'add',
+                command: 'git add .',
+                success: false,
+                stdout: addError.stdout || '',
+                stderr: addError.stderr || addError.message
+            };
+            job.steps.push(step);
+            emitGitStep(jobId, step);
+            throw addError;
+        }
+
+        // ── Step 2: git commit ──
+        try {
+            const commitResult = await execAsync(
+                `git commit -m "${message.replace(/"/g, '\\"')}"`,
+                { cwd: folderPath }
+            );
+            const lines = commitResult.stdout.trim().split('\n');
+            const summary = lines.filter(l => !l.startsWith('[') && l.trim()).join('\n');
+            const header = lines.find(l => l.startsWith('[')) || '';
+            const step = {
+                step: 'commit',
+                command: `git commit -m "${message}"`,
+                success: true,
+                stdout: header + (summary ? '\n' + summary : ''),
+                stderr: ''
+            };
+            job.steps.push(step);
+            emitGitStep(jobId, step);
         } catch (commitError) {
-            // If nothing to commit, we might want to still try to push or just return success
-            if (commitError.stdout.includes('nothing to commit') || commitError.stderr.includes('nothing to commit')) {
+            const combined = (commitError.stdout || '') + (commitError.stderr || '');
+            if (combined.includes('nothing to commit')) {
+                const step = {
+                    step: 'commit',
+                    command: `git commit -m "${message}"`,
+                    success: true,
+                    stdout: '(nada para commitear — working tree limpio)',
+                    stderr: ''
+                };
+                job.steps.push(step);
+                emitGitStep(jobId, step);
                 console.log('[SERVER] Nada para comitear, intentando push por las dudas...');
             } else {
+                const step = {
+                    step: 'commit',
+                    command: `git commit -m "${message}"`,
+                    success: false,
+                    stdout: commitError.stdout || '',
+                    stderr: commitError.stderr || commitError.message
+                };
+                job.steps.push(step);
+                emitGitStep(jobId, step);
                 throw commitError;
             }
         }
 
-        // 3. Push
-        const { stdout, stderr } = await execAsync('git push', { cwd: folderPath });
+        // ── Step 3: git push ──
+        try {
+            const pushResult = await execAsync('git push', { cwd: folderPath });
+            const step = {
+                step: 'push',
+                command: 'git push',
+                success: true,
+                stdout: pushResult.stdout.trim(),
+                stderr: pushResult.stderr || ''
+            };
+            job.steps.push(step);
+            emitGitStep(jobId, step);
+        } catch (pushError) {
+            const step = {
+                step: 'push',
+                command: 'git push',
+                success: false,
+                stdout: pushError.stdout || '',
+                stderr: pushError.stderr || pushError.message
+            };
+            job.steps.push(step);
+            emitGitStep(jobId, step);
+            throw pushError;
+        }
 
-        res.json({ success: true, stdout, stderr });
+        // ── Success ──
+        job.status = 'success';
+        emitGitDone(jobId, true);
+
     } catch (error) {
         console.error('[SERVER] Git Error:', error.message);
-        res.status(500).json({
-            error: error.message,
-            stdout: error.stdout,
-            stderr: error.stderr
-        });
+        job.status = 'error';
+        job.error = error.message;
+        emitGitDone(jobId, false, error.message);
     }
+}
+
+// ── SSE event emitters ──
+function emitGitStep(jobId, step) {
+    const job = gitCommitJobs.get(jobId);
+    if (!job) return;
+    // If there's an active SSE connection, write to it
+    emitToGitSSE(jobId, 'step', step);
+}
+
+function emitGitDone(jobId, success, errorMsg) {
+    emitToGitSSE(jobId, 'done', { success, error: errorMsg || null });
+}
+
+// ── Write SSE event to active connection ──
+function emitToGitSSE(jobId, eventType, data) {
+    const job = gitCommitJobs.get(jobId);
+    if (!job || !job._res) return; // No SSE client connected yet
+    try {
+        job._res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (e) {
+        // Client disconnected — clean up
+        job._res = null;
+    }
+}
+
+// ── SSE streaming endpoint ──
+app.get('/api/utils/git-commit-stream/:jobId', (req, res) => {
+    const { jobId } = req.params;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const job = gitCommitJobs.get(jobId);
+    if (!job) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: 'Job no encontrado' })}\n\n`);
+        return res.end();
+    }
+
+    // Store the response reference so background job can write to it
+    job._res = res;
+
+    // If job already finished, replay all steps + emit done
+    if (job.status !== 'running') {
+        job.steps.forEach(step => {
+            res.write(`event: step\ndata: ${JSON.stringify(step)}\n\n`);
+        });
+        res.write(`event: done\ndata: ${JSON.stringify({ success: job.status === 'success', error: job.error })}\n\n`);
+        res.end();
+        return;
+    }
+
+    // Replay any steps that already completed before SSE connection
+    job.steps.forEach(step => {
+        res.write(`event: step\ndata: ${JSON.stringify(step)}\n\n`);
+    });
+
+    // Keep connection alive — background job will write remaining steps
+    req.on('close', () => {
+        if (job._res === res) job._res = null;
+    });
 });
 
 app.post('/api/utils/git-reset', async (req, res) => {
@@ -1973,6 +2312,29 @@ app.post('/api/utils/git-reset', async (req, res) => {
         await execAsync('git fetch', { cwd: folderPath });
         const { stdout, stderr } = await execAsync(`git reset --hard ${target || 'HEAD'}`, { cwd: folderPath });
         res.json({ success: true, stdout, stderr });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/utils/git-status', async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
+
+    try {
+        const { stdout } = await execAsync('git status --porcelain', { cwd: folderPath });
+        const files = stdout.trim().split('\n').filter(Boolean).map(line => {
+            const statusCode = line.substring(0, 2).trim();
+            const file = line.substring(3).trim();
+            // Map porcelain codes to readable status
+            const statusMap = {
+                'M': 'M', 'A': 'A', 'D': 'D', 'R': 'R', 'C': 'C',
+                '??': '?', '!!': '!', 'AM': 'M', 'MM': 'M', 'MD': 'M'
+            };
+            const status = statusMap[statusCode] || statusCode || '?';
+            return { status, file };
+        });
+        res.json({ success: true, files });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -2255,14 +2617,32 @@ app.get('/api/admin/agents', async (req, res) => {
                         else if (lastMsg && (lastMsg.content || '').includes('❌')) status = 'error';
                         else if (lastMsg && /FAILED TO FETCH|failed to fetch/i.test(lastMsg.content || '')) status = 'error';
 
-                        // Si es un agente Hermes pero no hay bridge activo → APAGADO
-                        if (chat.useHermes === true && status === 'idle' && !chat.isThinking && !chat.isRunning) {
-                            // BUGFIX: inst.id = "projectId:chatId", project.id = "projectId"
-                            // Comparar contra inst.projectId, no inst.id
-                            const hasBridge = hermesInstances.some(inst => 
+                        // BUGFIX: Si es agente Hermes con bridge activo, usar el status REAL del bridge
+                        // (no solo verificar si existe, sino cuál es su estado actual)
+                        if (chat.useHermes === true) {
+                            const bridgeInst = hermesInstances.find(inst => 
                                 inst.projectId === project.id && inst.chatId === chat.id
                             );
-                            if (!hasBridge) status = 'off';
+                            if (bridgeInst) {
+                                // Bridge existe — su status real prevalece sobre isThinking/isRunning
+                                if (bridgeInst.status === 'running') {
+                                    status = 'running';
+                                } else if (bridgeInst.status === 'error') {
+                                    status = 'error';
+                                } else if (status === 'idle') {
+                                    status = 'idle';
+                                }
+                                // Si el bridge está 'running', forzar que el chat aparezca activo
+                                // aunque isThinking/isRunning no estén en la DB (multi-tab sync)
+                                if (bridgeInst.status === 'running' && status === 'idle') {
+                                    status = 'running';
+                                }
+                            } else {
+                                // No hay bridge activo → APAGADO
+                                if (status === 'idle' && !chat.isThinking && !chat.isRunning) {
+                                    status = 'off';
+                                }
+                            }
                         }
 
                         agents.push({
@@ -2299,15 +2679,21 @@ app.get('/api/admin/agents', async (req, res) => {
             }
         }
 
-        // También agregar instancias de Hermes Bridge
+        // También agregar instancias de Hermes Bridge que no tengan chat correspondiente
         for (const inst of hermesInstances) {
-            // Evitar duplicados
-            if (!agents.find(a => a.id === inst.id)) {
+            // Verificar si YA existe en agents (por el loop de chats, donde projectId = project.id y id = chat.id)
+            // inst.id = "projectId:chatId", inst.projectId = el projectId real, inst.chatId = el chatId real
+            // El chat ya se agregó con projectId=project.id e id=chat.id — matcheamos contra eso
+            const alreadyExists = agents.some(a =>
+                a.projectId === inst.projectId &&
+                (a.id === inst.chatId || a.id === inst.id)
+            );
+            if (!alreadyExists) {
                 agents.push({
                     id: inst.id,
-                    name: `⚡ Hermes: ${inst.id.slice(0, 8)}`,
-                    projectId: inst.id,
-                    projectName: inst.workdir ? inst.workdir.split('/').pop().split('\\').pop() : inst.id,
+                    name: inst.name || `⚡ Hermes: ${(inst.chatId || inst.id).slice(0, 8)}`,
+                    projectId: inst.projectId,  // FIX: usar el projectId REAL, no el compound key
+                    projectName: inst.workdir ? inst.workdir.split('/').pop().split('\\').pop() : (inst.projectId || 'Sistema'),
                     status: inst.status === 'running' ? 'idle' : inst.status,
                     model: inst.model || 'default',
                     lastMessage: inst.logs && inst.logs.length > 0
@@ -2331,22 +2717,63 @@ app.get('/api/admin/agents', async (req, res) => {
             }
             for (const p of externalProcesses) {
                 if (bridgePids.has(p.pid)) continue;
-                let projectName = 'Sistema';
+                let projectName = null; // null = will be resolved below
                 const cmd = p.commandLine || '';
+
+                // 1. Try --workdir flag
                 const cwdMatch = cmd.match(/--workdir\s+["']?([^"'\s]+)/i);
                 if (cwdMatch) {
                     const dirParts = cwdMatch[1].replace(/\\\\/g, '/').split('/').filter(Boolean);
-                    projectName = dirParts[dirParts.length - 1] || 'Sistema';
-                } else {
+                    projectName = dirParts[dirParts.length - 1] || null;
+                }
+
+                // 2. Try --source jpagents|projectId|chatId → look up project in sessions
+                let sourceProjectId = null;
+                if (!projectName) {
+                    const sourceMatch = cmd.match(/--source\s+["']?jpagents\|([^|]+)\|[^"'\s]+["']?/i);
+                    if (sourceMatch) {
+                        sourceProjectId = sourceMatch[1];
+                        const sourceProj = sessions.projects?.find(p => p.id === sourceProjectId);
+                        if (sourceProj) {
+                            projectName = sourceProj.name || sourceProj.folder?.split(/[\/\\]/).pop() || null;
+                        }
+                    }
+                }
+
+                // 3. Try WorkingDirectory from WMI
+                if (!projectName) {
                     const wd = p.workdir || '';
                     const dirParts = wd.replace(/\\\\/g, '/').split('/').filter(Boolean);
-                    projectName = dirParts[dirParts.length - 1] || `PID ${p.pid}`;
+                    projectName = dirParts[dirParts.length - 1] || null;
                 }
+
+                // 4. Fallback: group all unknown processes under a SINGLE shared pedestal
+                if (!projectName) {
+                    projectName = 'Hermes Externos';
+                }
+
+                // Buscar si ya existe un agente (chat/bridge) con el mismo projectName
+                // para que los procesos externos compartan el pedestal del proyecto real
+                const existingProj = agents.find(a =>
+                    a.projectName && a.projectName.toLowerCase() === projectName.toLowerCase() &&
+                    !a.isExternal  // preferir proyectos "reales" (no ghosts)
+                );
+                const sharedProjectId = existingProj ? existingProj.projectId : `external-hermes-${projectName}`;
+
+                // Also try matching by sourceProjectId if we extracted it
+                let finalProjectId = sharedProjectId;
+                let finalProjectName = projectName;
+                if (sourceProjectId && !existingProj) {
+                    // If we extracted a source projectId but it doesn't match any loaded project,
+                    // still use it so agents from the same JP Agents project share a pedestal
+                    finalProjectId = `external-hermes-${sourceProjectId}`;
+                }
+
                 agents.push({
                     id: `external-hermes-${p.pid}`,
-                    name: `👻 Hermes: ${projectName}`,
-                    projectId: `external-hermes-${projectName}`,
-                    projectName: projectName,
+                    name: `👻 Hermes: ${finalProjectName}`,
+                    projectId: finalProjectId,
+                    projectName: finalProjectName,
                     status: 'idle',
                     model: p.commandLine?.match(/--model\s+["']?([^"'\s]+)/i)?.[1] || 'desconocido',
                     lastMessage: { role: 'system', content: `🔮 Hermes externo (PID ${p.pid})`, timestamp: Date.now() },
@@ -2408,11 +2835,22 @@ app.get('/api/admin/agents', async (req, res) => {
                     } else {
                         // Status file exists but process wasn't found by PowerShell scan
                         // (rare — could be a very recent process). Add it anyway.
+                        // BUGFIX: Try to match with existing external agents to share pedestals.
+                        const extProjName = status.session_title || 'Hermes Externos';
+                        // Look for existing external agent with same projectName to share pedestal
+                        const existingExt = agents.find(a =>
+                            a.isExternal && a.projectName &&
+                            a.projectName.toLowerCase() === extProjName.toLowerCase()
+                        );
+                        const sharedProjId = existingExt
+                            ? existingExt.projectId
+                            : `external-hermes-${extProjName}`;
+
                         agents.push({
                             id: `external-hermes-${pid}`,
                             name: status.session_title ? `👻 ${status.session_title}` : `👻 Hermes (PID ${pid})`,
-                            projectId: `external-hermes-${pid}`,
-                            projectName: status.session_title || `PID ${pid}`,
+                            projectId: sharedProjId,
+                            projectName: extProjName,
                             status: status.status || 'idle',
                             model: status.model || 'desconocido',
                             lastMessage: {
@@ -2550,6 +2988,7 @@ app.post('/api/admin/communicate/agent', async (req, res) => {
         chat.pendingExternalInstruction = true;
 
         await saveSessions(data);
+        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin/communicate' });
         res.json({ success: true, message: 'Message queued for agent' });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2574,6 +3013,7 @@ app.post('/api/admin/communicate/admin', async (req, res) => {
         data.pendingAdminInstruction = true;
 
         await saveSessions(data);
+        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin/communicate/admin' });
         res.json({ success: true, message: 'Message queued for admin' });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -3087,7 +3527,11 @@ app.post('/api/hermes/message', async (req, res) => {
                 const imgPath = path.join(tempDir, `${projectId}_img_${i}.${ext}`);
                 await fs.writeFile(imgPath, Buffer.from(images[i], 'base64'));
                 imageRefs.push(imgPath);
-                imageUrls.push(`http://localhost:${port}/temp-images/${projectId}_img_${i}.${ext}`);
+                // Usar el host del request para que las URLs funcionen en LAN
+                const requestHost = req.headers.host || `localhost:${port}`;
+                const hostForUrl = requestHost.includes(':') ? requestHost.split(':')[0] : requestHost;
+                const hostPort = requestHost.includes(':') ? requestHost.split(':')[1] : port;
+                imageUrls.push(`http://${hostForUrl}:${hostPort}/temp-images/${projectId}_img_${i}.${ext}`);
             }
 
             const refsText = imageRefs.map((p, i) => `📷 Imagen adjunta ${i+1}: ${p}`).join('\n');
@@ -3150,19 +3594,63 @@ app.post('/api/hermes/message', async (req, res) => {
 
         res.json({ response: responseText, usage: tokenUsage, changes: gitChanges });
 
-        // ─── Notificar a HERMES GOD cuando un agente termina ───
+        // ─── Notificar a HERMES GOD + Admin Agent cuando un agente termina ───
         try {
             const instance = hermesBridge.instances.get(`${projectId}:${chatId}`);
             if (instance) {
                 const agentName = instance.name || chatId.slice(0, 8);
                 const preview = responseText.slice(0, 300);
-                notifyGod(
-                    `✅ *Agente completó tarea*\n` +
-                    `Agente: *${agentName}*\n` +
-                    `Proyecto: ${projectId.slice(0, 12)}\n` +
-                    (tokenUsage ? `Tokens: ${tokenUsage.total_tokens?.toLocaleString() || '?'} | Costo: $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
-                    `Respuesta: ${preview}${responseText.length > 300 ? '...' : ''}`
-                );
+                
+                // Obtener nombre del proyecto desde sessions
+                let projectName = projectId;
+                try {
+                    const sessions = await loadSessions();
+                    const proj = sessions.projects?.find(p => p.id === projectId);
+                    if (proj) projectName = proj.name || proj.folder?.split(/[/\\]/).pop() || projectId;
+                } catch {}
+
+                // Extraer objetivo: último mensaje del usuario de este agente
+                let objective = '(tarea asignada)';
+                try {
+                    const sessions = await loadSessions();
+                    const proj = sessions.projects?.find(p => p.id === projectId);
+                    if (proj) {
+                        const chat = proj.chats?.find(c => c.id === chatId);
+                        if (chat) {
+                            const lastUser = chat.messages?.filter(m => m.role === 'user').pop();
+                            if (lastUser) objective = lastUser.content?.slice(0, 100) || objective;
+                        }
+                    }
+                } catch {}
+
+                const telegramMsg =
+                    `✅ *${agentName}* completó su tarea\n` +
+                    `📁 Proyecto: *${projectName}*\n` +
+                    `🎯 Objetivo: ${objective}\n` +
+                    (tokenUsage ? `🔢 ${tokenUsage.total_tokens?.toLocaleString() || '?'} tokens · $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
+                    `📋 ${preview}${responseText.length > 300 ? '...' : ''}`;
+                
+                notifyGod(telegramMsg);
+
+                // ─── Notificar al Admin Agent (orquestador) ───
+                try {
+                    const sessions = await loadSessions();
+                    const adminMsg = `✅ AGENTE "${agentName}" DEL PROYECTO "${projectName}" terminó el objetivo: ${objective}`;
+                    // Agregar como mensaje system en el admin chat (se sincroniza vía WS)
+                    const syncBody = {
+                        role: 'system',
+                        content: `📡 ${adminMsg}`,
+                        source: 'agent-completion'
+                    };
+                    await fetch(`http://localhost:${port}/api/admin/sync-message`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(syncBody),
+                        signal: AbortSignal.timeout(2000)
+                    }).catch(() => {});
+                } catch (adminNotifErr) {
+                    console.warn('[TELEGRAM] Error notificando al Admin Agent:', adminNotifErr.message);
+                }
             }
         } catch (notifyErr) {
             // Non-critical — no interrumpir la respuesta HTTP
@@ -3958,6 +4446,7 @@ async function executeAdminCommands(responseText) {
                 data.projects = data.projects || [];
                 data.projects.push(newProject);
                 await saveSessions(data);
+                hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin-exec/CREATE_PROJECT' });
                 executions.push({ command: 'CREATE_PROJECT', target: name, status: 'ok', projectId: newProject.id });
                 console.log(`[ADMIN-EXEC] 📁 Proyecto creado: "${name}" (${newProject.id})`);
             }
@@ -3989,6 +4478,7 @@ async function executeAdminCommands(responseText) {
             project.chats = project.chats || [];
             project.chats.push(newChat);
             await saveSessions(data);
+            hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin-exec/CREATE_AGENT' });
             executions.push({ command: 'CREATE_AGENT', target: `${pId}:${aName}`, status: 'ok', agentId: newChat.id });
             console.log(`[ADMIN-EXEC] 🤖 Agente creado: "${aName}" en "${project.name}" (${newChat.id})`);
         } catch (e) {
@@ -4021,6 +4511,7 @@ async function executeAdminCommands(responseText) {
             try { await hermesBridge.stopInstance(project.id, project.chats[chatIndex].id); } catch {}
             project.chats.splice(chatIndex, 1);
             await saveSessions(data);
+            hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin-exec/DELETE_AGENT' });
             executions.push({ command: 'DELETE_AGENT', target: `${pId}:${agentName}`, status: 'ok' });
             console.log(`[ADMIN-EXEC] 🗑️ Agente eliminado: "${agentName}"`);
         } catch (e) {
@@ -4085,8 +4576,112 @@ async function executeAdminCommands(responseText) {
         }
     }
 
+    // ─── @AgentName delegation (enviar tarea a un agente específico) ───
+    // Pattern: [@NombreAgente: "Instrucción para el agente"]
+    const agentDelegateRe = /\[@([^:]+?):\s*"([^"]+)"\s*\]/gi;
+    while ((m = agentDelegateRe.exec(responseText)) !== null) {
+        const agentName = cleanStr(m[1]);
+        const taskMsg = m[2].trim();
+        try {
+            const data = await loadSessions();
+            // Buscar el agente por nombre en TODOS los proyectos
+            let foundAgent = null;
+            let foundProject = null;
+            for (const proj of (data.projects || [])) {
+                const chat = (proj.chats || []).find(c =>
+                    (c.name || '').toLowerCase() === agentName.toLowerCase()
+                );
+                if (chat) {
+                    foundAgent = chat;
+                    foundProject = proj;
+                    break;
+                }
+            }
+            if (!foundAgent || !foundProject) {
+                executions.push({ command: '@AGENT', target: agentName, status: 'error', error: `Agente "${agentName}" no encontrado en ningún proyecto` });
+                continue;
+            }
+            // Asegurar que la instancia bridge existe
+            const instanceKey = `${foundProject.id}:${foundAgent.id}`;
+            if (!hermesBridge.instances.has(instanceKey)) {
+                try {
+                    await hermesBridge.startInstance(
+                        foundProject.id, foundAgent.id,
+                        foundProject.folder || 'D:/Programacion/jpagents',
+                        foundAgent.model || foundProject.model || 'deepseek-v4-pro',
+                        foundAgent.name
+                    );
+                    executions.push({ command: '@AGENT', target: agentName, status: 'info', message: 'Instancia bridge iniciada' });
+                } catch (startErr) {
+                    executions.push({ command: '@AGENT', target: agentName, status: 'info', message: `Bridge: ${startErr.message}` });
+                }
+            }
+            // Enviar mensaje y obtener respuesta
+            try {
+                const r = await hermesBridge.sendMessage(foundProject.id, foundAgent.id, `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${taskMsg}`);
+                const responseText = typeof r === 'string' ? r : (r?.text || '(sin respuesta)');
+                executions.push({
+                    command: '@AGENT', target: agentName, status: 'ok',
+                    task: taskMsg.slice(0, 200),
+                    response: responseText.slice(0, 1500),
+                    agentId: foundAgent.id, projectId: foundProject.id
+                });
+                console.log(`[ADMIN-EXEC] 🤖 @${agentName}: tarea ejecutada, respuesta (${responseText.length} chars)`);
+            } catch (sendErr) {
+                executions.push({ command: '@AGENT', target: agentName, status: 'error', error: sendErr.message });
+            }
+        } catch (e) {
+            executions.push({ command: '@AGENT', target: agentName, status: 'error', error: e.message });
+        }
+    }
+
+    // ─── CHECK_AGENTS — Consultar estado de todos los agentes ───
+    // El orquestador usa esto para saber qué agentes están trabajando y su progreso
+    if (/\[CHECK_AGENTS\]/i.test(responseText)) {
+        try {
+            const data = await loadSessions();
+            const hermesInstances = hermesBridge.listInstances();
+            const agentLines = [];
+            for (const project of (data.projects || [])) {
+                for (const chat of (project.chats || [])) {
+                    let status = 'idle';
+                    if (chat.isThinking) status = 'thinking';
+                    else if (chat.isRunning) status = 'running';
+                    if (chat.useHermes) {
+                        const bi = hermesInstances.find(i => i.projectId === project.id && i.chatId === chat.id);
+                        if (bi && bi.status === 'running') status = 'running';
+                    }
+                    const lastMsg = chat.messages?.[chat.messages.length - 1]?.content?.slice(0, 100) || '';
+                    agentLines.push(`🤖 "${chat.name}" en "${project.name}" → ${status.toUpperCase()} | ${lastMsg}`);
+                }
+            }
+            const summary = agentLines.length > 0
+                ? `📊 ${agentLines.length} agente(s):\n${agentLines.join('\n')}`
+                : '📊 No hay agentes.';
+            executions.push({ command: 'CHECK_AGENTS', status: 'ok', summary });
+        } catch (e) {
+            executions.push({ command: 'CHECK_AGENTS', status: 'error', error: e.message });
+        }
+    }
+
     return executions;
 }
+
+/**
+ * POST /api/admin/execute-commands — Ejecutar comandos de admin desde texto
+ * Body: { text: string }
+ * Retorna: { executions: [...] }
+ */
+app.post('/api/admin/execute-commands', async (req, res) => {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Se requiere text' });
+    try {
+        const executions = await executeAdminCommands(text);
+        res.json({ success: true, count: executions.length, executions });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 /**
  * POST /api/admin/shutdown — Apagar el servidor gracefulmente
@@ -4163,6 +4758,7 @@ app.delete('/api/admin/agents/:projectId/:chatId', async (req, res) => {
 
         project.chats.splice(chatIndex, 1);
         await saveSessions(data);
+        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin/delete-agent' });
         console.log(`[ADMIN] 🗑️ Agente eliminado: "${agentName}" de proyecto "${project.name}"`);
         res.json({ success: true, agentName, projectName: project.name });
     } catch (e) {
@@ -4197,6 +4793,7 @@ app.post('/api/admin/agents/:projectId/:chatId/stop', async (req, res) => {
         chat.isRunning = false;
         chat.isStopped = true;
         await saveSessions(data);
+        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin/stop-agent' });
 
         console.log(`[ADMIN] 🛑 Agente detenido: "${chat.name}" (bridge=${bridgeStopped})`);
         res.json({ success: true, agentName: chat.name, bridgeStopped });
@@ -4499,6 +5096,9 @@ function startHermesProcessSyncMonitor() {
 
                                         await saveSessions(data);
                                         console.log(`[HERMES-SYNC] Respuesta de Hermes guardada en chat ${tracker.chatId}`);
+                                        
+                                        // ─── Broadcast: state changed (new messages) ───
+                                        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'hermes/completion' });
                                         
                                         // ─── Notificar a HERMES GOD ───
                                         try {
@@ -4935,6 +5535,23 @@ async function startServer() {
                 console.log(`[STATE] Resetearon ${resetCount} estados de agentes colgados (pensando/trabajando) al iniciar.`);
             }
 
+            // ─── FUEGO VIOLETA: auto-registro si falta ───
+            const hasFuego = sessions.projects?.some(p =>
+                (p.name || '').toLowerCase() === 'fuego violeta'
+            );
+            if (!hasFuego) {
+                sessions.projects = sessions.projects || [];
+                sessions.projects.push({
+                    id: 'proj-fuego-violeta-' + Date.now().toString(36),
+                    name: 'Fuego Violeta',
+                    folder: 'D:/Programacion/jpagents/proyects/fuego_violeta',
+                    model: 'deepseek-v4-flash',
+                    chats: []
+                });
+                await saveSessions(sessions);
+                console.log('[STATE] 🔥 Fuego Violeta auto-registrado durante startup.');
+            }
+
             // ─── RECOVER HERMES INSTANCES: reconstruir bridge instances ───
             try {
                 await recoverHermesInstances();
@@ -5049,7 +5666,26 @@ async function startServer() {
                                         throw new Error('Faltan projectId, chatId o msg');
                                     }
                                     const instanceKey = `${projectId}:${chatId}`;
-                                    const instance = hermesBridge.instances.get(instanceKey);
+                                    let instance = hermesBridge.instances.get(instanceKey);
+                                    // Iniciar bridge instance si no existe
+                                    if (!instance) {
+                                        try {
+                                            const sessions = await loadSessions();
+                                            const project = sessions.projects?.find(p => p.id === projectId);
+                                            const chat = project?.chats?.find(c => c.id === chatId);
+                                            if (project && chat) {
+                                                await hermesBridge.startInstance(
+                                                    projectId, chatId,
+                                                    project.folder || 'D:/Programacion/jpagents',
+                                                    chat.model || project.model || 'deepseek-v4-pro',
+                                                    chat.name
+                                                );
+                                                instance = hermesBridge.instances.get(instanceKey);
+                                            }
+                                        } catch (startErr) {
+                                            console.log(`[GOD] ⚠️ No se pudo iniciar bridge para agent-message: ${startErr.message}`);
+                                        }
+                                    }
                                     if (instance) {
                                         const r = await hermesBridge.sendMessage(projectId, chatId, `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${msg}`);
                                         result = { success: true, response: typeof r === 'string' ? r : (r?.text || 'ok') };
@@ -5183,8 +5819,20 @@ async function startServer() {
         });
     });
 
-    serverInstance = httpServer.listen(port, () => {
+    serverInstance = httpServer.listen(port, '0.0.0.0', () => {
+        const ifaces = os.networkInterfaces();
+        let localIP = 'localhost';
+        for (const name of Object.keys(ifaces)) {
+            for (const iface of ifaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    localIP = iface.address;
+                    break;
+                }
+            }
+            if (localIP !== 'localhost') break;
+        }
         console.log(`Server running at http://localhost:${port}`);
+        console.log(`🌐 Red local: http://${localIP}:${port}`);
         console.log(`[HERMES] WebSocket en ws://localhost:${port}/ws/hermes`);
         console.log(`[GOD] 🕊️ WebSocket ADMIN en ws://localhost:${port}/ws/admin`);
         console.log(`[HERMES] API endpoints en http://localhost:${port}/api/hermes/*`);

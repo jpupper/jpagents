@@ -920,8 +920,84 @@ async function processMessage(payload) {
         console.log(`[WORKER] ⚠️ result.text vacío, exitCode=${result.exitCode}, stdout=${result.stderr?.slice(0, 200)}`);
     }
 
-    // ─── Validar formato obligatorio de 4 puntos ───
+    // ─── Ejecutar comandos de administración (CREATE_PROJECT, @AGENT, etc.) ───
+    let executions = [];
+    let hasAdminCommands = false;
+    if (response && response.length > 10) {
+        // Detectar si la respuesta contiene comandos
+        const cmdPatterns = [
+            /\[CREATE_PROJECT:/i, /\[CREATE_AGENT:/i, /\[DELETE_AGENT:/i,
+            /\[DELETE_PROJECT:/i, /\[STOP_AGENT:/i, /\[@[^:]+:\s*"/i
+        ];
+        hasAdminCommands = cmdPatterns.some(p => p.test(response));
+    }
+
+    if (hasAdminCommands) {
+        try {
+            // Usar timeout más largo para comandos que involucran agentes (pueden tardar minutos)
+            const url = `${JPAGENTS_API}/admin/execute-commands`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
+            const res = await fetch(url, {
+                method: 'POST',
+                body: JSON.stringify({ text: response }),
+                signal: controller.signal,
+                headers: { 'Content-Type': 'application/json' }
+            });
+            clearTimeout(timeoutId);
+            if (res.ok) {
+                const execResult = await res.json();
+                if (execResult.executions && execResult.executions.length > 0) {
+                    executions = execResult.executions;
+                    console.log(`[WORKER] ⚙️ ${executions.length} comandos ejecutados de la respuesta`);
+                }
+            }
+        } catch (e) {
+            console.log(`[WORKER] ⚠️ Error ejecutando comandos admin: ${e.message}`);
+        }
+    }
+
+    // ─── Si hay ejecuciones, agregar resultados a la respuesta ───
     let finalResponse = response;
+    if (executions.length > 0) {
+        // Filtramos los comandos originales del texto (para no mostrarlos duplicados)
+        let cleanResponse = response;
+        // Remover [CREATE_PROJECT: ...] del texto
+        cleanResponse = cleanResponse.replace(/\[CREATE_PROJECT:\s*([^\]]+?)\s*\]/gi, '').trim();
+        cleanResponse = cleanResponse.replace(/\[CREATE_AGENT:\s*([^\]]+?)\s*\]/gi, '').trim();
+        cleanResponse = cleanResponse.replace(/\[DELETE_AGENT:\s*([^\]]+?)\s*\]/gi, '').trim();
+        cleanResponse = cleanResponse.replace(/\[DELETE_PROJECT:\s*([^\]]+?)\s*\]/gi, '').trim();
+        cleanResponse = cleanResponse.replace(/\[STOP_AGENT:\s*([^\]]+?)\s*\]/gi, '').trim();
+        cleanResponse = cleanResponse.replace(/\[@[^:]+?:\s*"[^"]*"\s*\]/gi, '').trim();
+
+        // Construir resumen de ejecuciones
+        let execSummary = '\n\n━━━ ⚙️ EJECUCIÓN DE COMANDOS ━━━\n';
+        for (const ex of executions) {
+            const emoji = ex.status === 'ok' ? '✅' : ex.status === 'skipped' ? '⏭️' : ex.status === 'error' ? '❌' : 'ℹ️';
+            execSummary += `${emoji} ${ex.command}: ${ex.target}\n`;
+            if (ex.response) {
+                // Incluir parte de la respuesta del agente
+                const respPreview = ex.response.length > 500
+                    ? ex.response.slice(0, 500) + '...'
+                    : ex.response;
+                execSummary += `   📤 Respuesta: ${respPreview}\n`;
+            }
+            if (ex.error) execSummary += `   ⚠️ ${ex.error}\n`;
+            if (ex.reason) execSummary += `   ℹ️ ${ex.reason}\n`;
+        }
+
+        // Si la respuesta limpia es muy corta o solo tenía comandos,
+        // usar el resumen como respuesta principal
+        if (cleanResponse.length < 50) {
+            finalResponse = execSummary.trim();
+        } else {
+            finalResponse = cleanResponse + execSummary;
+        }
+    } else {
+        finalResponse = response;
+    }
+
+    // ─── Validar formato obligatorio de 4 puntos ───
     if (finalResponse !== '(sin respuesta)' && !hasRequiredFormat(finalResponse)) {
         console.log('[WORKER] ⚠️ Respuesta sin formato 4-puntos. Envolviendo con fallback...');
         const originalText = finalResponse.length > 3000

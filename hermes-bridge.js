@@ -298,6 +298,23 @@ class HermesBridge extends EventEmitter {
 
         const augmentedQuery = identityBlock ? identityBlock + query : query;
 
+        // ─── TRUNCAR para evitar ENAMETOOLONG en Windows (límite ~32K CLI args) ───
+        // FIX: Si el mensaje combinado es muy largo, spawn() tira ENAMETOOLONG.
+        //      callHermesAdmin() en server.js ya tiene este fix; acá faltaba.
+        if (Buffer.byteLength(augmentedQuery, 'utf-8') > 20000) {
+            console.warn(`[HERMES-BRIDGE] ⚠️ augmentedQuery muy grande (${Buffer.byteLength(augmentedQuery, 'utf-8')} bytes), truncando para evitar ENAMETOOLONG...`);
+            const identityLen = identityBlock ? Buffer.byteLength(identityBlock, 'utf-8') : 0;
+            const maxQueryLen = 18000 - identityLen;
+            if (maxQueryLen > 500) {
+                const truncated = query.slice(0, maxQueryLen - 50) + '\n\n...[TRUNCADO: mensaje muy largo para CLI de Windows]';
+                query = truncated;
+            } else {
+                // Identity block ya es enorme — truncar el conjunto entero
+                query = query.slice(0, 19000 - identityLen) + '...[TRUNCADO]';
+            }
+            augmentedQuery = identityBlock ? identityBlock + query : query;
+        }
+
         // ─── Guardar task en identity file ───
         try {
             const fsp = await import('fs/promises');
@@ -330,13 +347,23 @@ class HermesBridge extends EventEmitter {
         fs.writeSync(outFd, taskMarker);
 
         // ─── SPAWN: detached + file descriptors = sobrevive al restart ───
-        const proc = spawn(hermesPath, args, {
-            cwd: workdir,
-            detached: true,
-            stdio: ['ignore', outFd, errFd],
-            windowsHide: true,
-            env: { ...process.env, HERMES_WORKDIR: workdir, HERMES_JPAGENTS: '1' }
-        });
+        // stdin en pipe para poder responder preguntas de Hermes (clarify)
+        let proc;
+        try {
+            proc = spawn(hermesPath, args, {
+                cwd: workdir,
+                detached: true,
+                stdio: ['pipe', outFd, errFd],
+                windowsHide: true,
+                env: { ...process.env, HERMES_WORKDIR: workdir, HERMES_JPAGENTS: '1' }
+            });
+        } catch (spawnErr) {
+            console.error(`[HERMES-BRIDGE] ❌ spawn falló para ${instanceKey}:`, spawnErr.message);
+            // Cerrar file descriptors para no acumular
+            try { fs.closeSync(outFd); } catch {}
+            try { fs.closeSync(errFd); } catch {}
+            return { stdout: '', stderr: `Error al iniciar Hermes: ${spawnErr.message}`, exitCode: -1 };
+        }
         proc.unref();
 
         // ─── PID MAP: archivo compartido que sobrevive al restart ───
@@ -359,7 +386,9 @@ class HermesBridge extends EventEmitter {
         // ─── FILE POLLING: live streaming desde los archivos ───
         let outPos = fs.statSync(outFilePath).size;
         let errPos = fs.statSync(errFilePath).size;
+        let finalized = false;
         const pollInterval = setInterval(() => {
+            if (finalized) return;
             try {
                 const cos = fs.statSync(outFilePath).size;
                 if (cos > outPos) {
@@ -380,36 +409,60 @@ class HermesBridge extends EventEmitter {
                     errPos = ces;
                     const lines = buf.toString('utf-8').split('\n');
                     for (const line of lines) {
-                        if (line.trim()) this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
+                        if (line.trim() && !finalized) {
+                            const trimmed = line.trim();
+                            this._broadcastLog(instanceKey, projectId, 'progress', trimmed + '\n');
+
+                            // ─── AUTO-RESPONDER preguntas de Hermes (clarify) ───
+                            if (
+                                trimmed.includes('❓') ||
+                                trimmed.includes('Question:') ||
+                                trimmed.includes('Pregunta:') ||
+                                /\[CLARIFY\]|\[clarify\]/.test(trimmed) ||
+                                /Do\s+you\s+(want|need|agree)/i.test(trimmed)
+                            ) {
+                                try {
+                                    proc.stdin.write('yes\n');
+                                    console.log(`[HERMES-BRIDGE] 📝 Auto-respuesta a clarify: "yes"`);
+                                } catch (stdinErr) {
+                                    // stdin puede estar cerrado si Hermes no esperaba input
+                                }
+                            }
+                        }
                     }
                 }
             } catch {}
         }, 500);
 
         // ─── ESPERAR a que Hermes termine ───
+        // BUGFIX CRÍTICO: Antes se usaba tasklist /FI "PID eq X" para detectar fin,
+        // pero en Windows tasklist devuelve exit code 0 incluso para PIDs inexistentes
+        // (solo dice "INFO: No tasks are running"). El check `if (err)` nunca se cumplía
+        // y la promesa quedaba colgada hasta el timeout de 10 minutos.
+        // Ahora usamos el evento 'exit' del child process, que es confiable.
         return new Promise((resolve) => {
-            const checkDone = setInterval(() => {
-                try {
-                    execFile('tasklist', ['/FI', `PID eq ${proc.pid}`, '/NH', '/FO', 'CSV'],
-                        { timeout: 3000 },
-                        (err) => {
-                            if (err) {
-                                // PID no encontrado → proceso terminó
-                                clearInterval(checkDone);
-                                clearInterval(pollInterval);
-                                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
-                            }
-                        }
-                    );
-                } catch {
-                    // execFile throw (timeout, etc.) — ignorar, reintentar en próximo ciclo
-                }
-            }, 5000);
-
-            setTimeout(() => {
-                clearInterval(checkDone);
+            proc.on('exit', (code, signal) => {
+                if (finalized) return;
+                finalized = true;
                 clearInterval(pollInterval);
-                console.warn(`[HERMES-BRIDGE] ⏱️ Timeout ${instanceKey}`);
+                console.log(`[HERMES-BRIDGE] ✅ Proceso ${instanceKey} terminó (code=${code}, signal=${signal})`);
+                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
+            });
+
+            proc.on('error', (err) => {
+                if (finalized) return;
+                finalized = true;
+                clearInterval(pollInterval);
+                console.error(`[HERMES-BRIDGE] ❌ Error en proceso ${instanceKey}:`, err.message);
+                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
+            });
+
+            // Timeout de seguridad: 10 minutos
+            setTimeout(() => {
+                if (finalized) return;
+                finalized = true;
+                clearInterval(pollInterval);
+                console.warn(`[HERMES-BRIDGE] ⏱️ Timeout ${instanceKey} (10min)`);
                 try { process.kill(proc.pid); } catch {}
                 this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
             }, 600000);
@@ -463,7 +516,29 @@ class HermesBridge extends EventEmitter {
                         errPos = ces;
                         const lines = buf.toString('utf-8').split('\n');
                         for (const line of lines) {
-                            if (line.trim()) this._broadcastLog(instanceKey, projectId, 'progress', line.trim() + '\n');
+                            if (line.trim()) {
+                                const trimmed = line.trim();
+                                this._broadcastLog(instanceKey, projectId, 'progress', trimmed + '\n');
+
+                                // ─── AUTO-RESPONDER preguntas de Hermes (clarify) ───
+                                // Hermes usa clarify_tool que sin callback retorna error al modelo
+                                // Pero si stdin está pipe y Hermes queda esperando input,
+                                // detectamos el patrón y respondemos automáticamente
+                                if (
+                                    trimmed.includes('❓') ||
+                                    trimmed.includes('Question:') ||
+                                    trimmed.includes('Pregunta:') ||
+                                    /\[CLARIFY\]|\[clarify\]/.test(trimmed) ||
+                                    /Do\s+you\s+(want|need|agree)/i.test(trimmed)
+                                ) {
+                                    try {
+                                        proc.stdin.write('yes\n');
+                                        console.log(`[HERMES-BRIDGE] 📝 Auto-respuesta a clarify: "yes"`);
+                                    } catch (stdinErr) {
+                                        // stdin puede estar cerrado si Hermes no esperaba input
+                                    }
+                                }
+                            }
                         }
                     }
                 } catch {}
@@ -627,79 +702,86 @@ class HermesBridge extends EventEmitter {
         instance.status = 'running';
         this._broadcastStatus(instanceKey, 'running');
 
-        const result = await this._runHermesQuery(instanceKey, projectId, instance.workdir, message, instance.model);
-
-        // Volver a idle después de la consulta
-        instance.status = 'idle';
-        this._broadcastStatus(instanceKey, 'idle');
-
-        // Loggear
-        instance.logs.push({ type: 'query', text: message, timestamp: Date.now() });
-        if (result.stdout) {
-            instance.logs.push({ type: 'response', text: result.stdout.slice(0, 200), timestamp: Date.now() });
-        }
-        if (instance.logs.length > 100) {
-            instance.logs = instance.logs.slice(-100);
-        }
-
-        // ─── Extraer session ID y token usage ───
-        const sessionId = this._extractSessionId(result.stderr, result.stdout);
-        let tokenUsage = null;
-
-        if (sessionId) {
-            console.log('[HERMES-BRIDGE] Session ID encontrado:', sessionId);
-            try {
-                tokenUsage = await getSessionTokenUsage(sessionId);
-                if (tokenUsage) {
-                    console.log(`[HERMES-BRIDGE] 🔢 Tokens: ${tokenUsage.total_tokens} total (${tokenUsage.input_tokens} in + ${tokenUsage.output_tokens} out)`);
-                    // ─── Acumular tokens en la instancia para el panel AGENTS room ───
-                    instance.cumulativeTokens = (instance.cumulativeTokens || 0) + (tokenUsage.total_tokens || 0);
-                    instance.cumulativeInputTokens = (instance.cumulativeInputTokens || 0) + (tokenUsage.input_tokens || 0);
-                    instance.cumulativeOutputTokens = (instance.cumulativeOutputTokens || 0) + (tokenUsage.output_tokens || 0);
-                    instance.cumulativeCost = (instance.cumulativeCost || 0) + (tokenUsage.estimated_cost_usd || 0);
-                    instance.cumulativeApiCalls = (instance.cumulativeApiCalls || 0) + (tokenUsage.api_call_count || 0);
-                }
-            } catch (dbErr) {
-                console.warn('[HERMES-BRIDGE] No se pudo leer token usage:', dbErr.message);
-            }
-        } else {
-            console.log('[HERMES-BRIDGE] No se pudo extraer session ID de stdout/stderr');
-        }
-
-        // ─── Si hay error, devolver objeto de error ───
-        if (result.exitCode !== 0) {
-            return {
-                text: `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`,
-                usage: tokenUsage,
-                sessionId
-            };
-        }
-
-        // ─── Path 1: Intentar extraer de state.db ───
-        if (sessionId) {
-            try {
-                const cleanContent = await getLastAssistantMessage(sessionId);
-                if (cleanContent) {
-                    console.log('[HERMES-BRIDGE] ✅ Respuesta obtenida de state.db (' + cleanContent.length + ' chars)');
-                    return { text: cleanContent, usage: tokenUsage, sessionId };
-                }
-                console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
-            } catch (dbErr) {
-                console.warn('[HERMES-BRIDGE] Error leyendo state.db, fallback a stdout:', dbErr.message);
-            }
-        }
-
-        // ─── Path 2: Extraer de stdout ───
         try {
-            const parsed = extractCleanResponseFromStdout(result.stdout || '');
-            if (parsed) {
-                console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
-                return { text: parsed, usage: tokenUsage, sessionId };
+            const result = await this._runHermesQuery(instanceKey, projectId, instance.workdir, message, instance.model);
+
+            // BUGFIX: Si el usuario detuvo la instancia mientras se ejecutaba,
+            // NO sobrescribir status a 'idle' ni broadcastear nada — ya se emitió 'stopped'
+            if (instance._stopped) {
+                console.log(`[HERMES-BRIDGE] sendMessage ${instanceKey}: instancia detenida, ignorando resultado.`);
+                return { text: '(Proceso detenido por el usuario)', usage: null, sessionId: null };
             }
-            console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, usando stdout raw');
-        } catch (parseErr) {
-            console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
-        }
+
+            // Volver a idle después de la consulta
+            instance.status = 'idle';
+            this._broadcastStatus(instanceKey, 'idle');
+
+            // Loggear
+            instance.logs.push({ type: 'query', text: message, timestamp: Date.now() });
+            if (result.stdout) {
+                instance.logs.push({ type: 'response', text: result.stdout.slice(0, 200), timestamp: Date.now() });
+            }
+            if (instance.logs.length > 100) {
+                instance.logs = instance.logs.slice(-100);
+            }
+
+            // ─── Extraer session ID y token usage ───
+            const sessionId = this._extractSessionId(result.stderr, result.stdout);
+            let tokenUsage = null;
+
+            if (sessionId) {
+                console.log('[HERMES-BRIDGE] Session ID encontrado:', sessionId);
+                try {
+                    tokenUsage = await getSessionTokenUsage(sessionId);
+                    if (tokenUsage) {
+                        console.log(`[HERMES-BRIDGE] 🔢 Tokens: ${tokenUsage.total_tokens} total (${tokenUsage.input_tokens} in + ${tokenUsage.output_tokens} out)`);
+                        instance.cumulativeTokens = (instance.cumulativeTokens || 0) + (tokenUsage.total_tokens || 0);
+                        instance.cumulativeInputTokens = (instance.cumulativeInputTokens || 0) + (tokenUsage.input_tokens || 0);
+                        instance.cumulativeOutputTokens = (instance.cumulativeOutputTokens || 0) + (tokenUsage.output_tokens || 0);
+                        instance.cumulativeCost = (instance.cumulativeCost || 0) + (tokenUsage.estimated_cost_usd || 0);
+                        instance.cumulativeApiCalls = (instance.cumulativeApiCalls || 0) + (tokenUsage.api_call_count || 0);
+                    }
+                } catch (dbErr) {
+                    console.warn('[HERMES-BRIDGE] No se pudo leer token usage:', dbErr.message);
+                }
+            } else {
+                console.log('[HERMES-BRIDGE] No se pudo extraer session ID de stdout/stderr');
+            }
+
+            // ─── Si hay error, devolver objeto de error ───
+            if (result.exitCode !== 0) {
+                return {
+                    text: `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`,
+                    usage: tokenUsage,
+                    sessionId
+                };
+            }
+
+            // ─── Path 1: Intentar extraer de state.db ───
+            if (sessionId) {
+                try {
+                    const cleanContent = await getLastAssistantMessage(sessionId);
+                    if (cleanContent) {
+                        console.log('[HERMES-BRIDGE] ✅ Respuesta obtenida de state.db (' + cleanContent.length + ' chars)');
+                        return { text: cleanContent, usage: tokenUsage, sessionId };
+                    }
+                    console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
+                } catch (dbErr) {
+                    console.warn('[HERMES-BRIDGE] Error leyendo state.db, fallback a stdout:', dbErr.message);
+                }
+            }
+
+            // ─── Path 2: Extraer de stdout ───
+            try {
+                const parsed = extractCleanResponseFromStdout(result.stdout || '');
+                if (parsed) {
+                    console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
+                    return { text: parsed, usage: tokenUsage, sessionId };
+                }
+                console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, usando stdout raw');
+            } catch (parseErr) {
+                console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
+            }
 
         // ─── Path 3: Raw stdout como último recurso ───
         const raw = result.stdout || '';
@@ -715,6 +797,18 @@ class HermesBridge extends EventEmitter {
             usage: tokenUsage,
             sessionId
         };
+        } catch (runErr) {
+            // BUGFIX: Si _runHermesQuery lanza error, NO dejar status colgado en 'running'
+            // Pero si la instancia fue detenida explícitamente, no sobrescribir 'stopped'
+            if (instance._stopped) {
+                console.log(`[HERMES-BRIDGE] sendMessage ${instanceKey}: error post-stop ignorado:`, runErr.message);
+            } else {
+                console.error(`[HERMES-BRIDGE] ❌ sendMessage error para ${instanceKey}:`, runErr.message);
+                instance.status = 'error';
+                this._broadcastStatus(instanceKey, 'error');
+            }
+            throw runErr;
+        }
     }
 
     /**
@@ -757,13 +851,38 @@ class HermesBridge extends EventEmitter {
             throw new Error(`No hay instancia para: ${instanceKey}`);
         }
 
-        if (instance.proc) {
+        // Marcar la instancia como detenida ANTES de matar, para que sendMessage
+        // sepa que fue detención explícita y no sobrescriba el estado.
+        instance._stopped = true;
+
+        if (instance.proc && instance.proc.pid) {
+            const pid = instance.proc.pid;
             try {
+                // Método 1: kill directo (Node.js → TerminateProcess en Windows)
                 instance.proc.kill('SIGKILL');
-                console.log(`[HERMES-BRIDGE] Kill process PID ${instance.proc.pid} for instance ${instanceKey}`);
+                console.log(`[HERMES-BRIDGE] Kill directo PID ${pid} para ${instanceKey}`);
             } catch (procErr) {
-                console.warn(`[HERMES-BRIDGE] Error killing process for ${instanceKey}:`, procErr.message);
+                console.warn(`[HERMES-BRIDGE] Kill directo falló para ${instanceKey}:`, procErr.message);
             }
+
+            // Método 2: taskkill /T /F para Windows (mata árbol de procesos, incluyendo detached)
+            try {
+                await new Promise((resolve) => {
+                    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 5000 }, (err) => {
+                        if (err) {
+                            // taskkill falla si el proceso ya murió — es normal
+                            console.log(`[HERMES-BRIDGE] taskkill para PID ${pid}: ${err.message}`);
+                        } else {
+                            console.log(`[HERMES-BRIDGE] ✅ taskkill /T /F eliminó PID ${pid} (árbol completo)`);
+                        }
+                        resolve();
+                    });
+                });
+            } catch (tkErr) {
+                console.warn(`[HERMES-BRIDGE] taskkill excepción para ${instanceKey}:`, tkErr.message);
+            }
+        } else {
+            console.log(`[HERMES-BRIDGE] stopInstance ${instanceKey}: sin proc activo (ya finalizó)`);
         }
 
         this.instances.delete(instanceKey);

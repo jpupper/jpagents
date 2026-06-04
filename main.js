@@ -6,7 +6,10 @@ let activeMatrix = null;
 
 // --- Console Log Interceptor ---
 (function () {
-    const API_BASE = 'http://localhost:3001/api';
+    const API_BASE = (() => {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+        return `http://${host}:3001/api`;
+    })();
     const originalConsole = {
         log: console.log,
         error: console.error,
@@ -194,9 +197,13 @@ function ansiToHtml(text) {
 }
 window.ansiToHtml = ansiToHtml;
 
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = (() => {
+    const host = window.location.hostname;
+    const port = 3001; // Backend siempre en 3001
+    return `http://${host}:${port}/api`;
+})();
 window.API_BASE = API_BASE;
-const OLLAMA_BASE = 'http://localhost:11434/api';
+const OLLAMA_BASE = 'http://localhost:11434/api'; // Ollama solo corre localmente
 
 // PROMPTS MANAGEMENT
 let promptsCache = {
@@ -713,6 +720,10 @@ let state = {
         currentStep: 0
     },
     skillsMetadata: {} // Maps skill name to metadata object { isDefault: boolean }
+    , sidebarWidth: 260,
+    sidebarVisible: true,
+    fileExplorerWidth: 300,
+    fileExplorerVisible: true
 };
 
 let pendingDeletes = new Set();
@@ -778,6 +789,8 @@ async function generateChatNameFromPrompt(prompt) {
     }
 
     // ─── FALLBACK: método antiguo (primeras palabras) ───
+    // FIX: Sanitizar caracteres HTML-breaking y validar calidad del nombre
+    //      Nombres con <, >, ', " rompían el template literal de renderTabs() y tildeaban la UI.
     let text = prompt.trim()
         .replace(/^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|saludos)[,\s!.]*/i, '')
         .replace(/^(necesito|quiero|puedes|podrias|necesitamos|tenemos que|hay que|me gustaria|quisiera|hace falta)[,\s]*/i, '')
@@ -787,12 +800,27 @@ async function generateChatNameFromPrompt(prompt) {
 
     if (!text) text = prompt.trim();
 
-    const words = text.split(/\s+/).filter(w => w.length > 0);
+    // ─── Sanitizar: remover caracteres que rompen HTML y URLs/código ───
+    // Solo permitir: letras, números, espacios, guiones, tildes, ñ
+    const cleanText = text.replace(/[<>"'&|{}[\]()=+*%$#@!\\\/]/g, ' ').replace(/\s+/g, ' ').trim();
+    const words = cleanText.split(/\s+/).filter(w => {
+        // Filtrar palabras de una sola letra, puros números, o muy largas (>40 chars como URLs)
+        return w.length > 1 && w.length <= 40 && !/^\d+$/.test(w);
+    });
+
     const nameWords = words.slice(0, 3);
 
-    const name = nameWords
+    let name = nameWords
         .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())
         .join(' ');
+
+    // ─── Validación final: nombre vacío o demasiado corto → fallback con timestamp ───
+    if (!name || name.length < 3) {
+        const now = new Date();
+        const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        name = `Tarea ${ts}`;
+        console.log(`[NAMING] 📛 Fallback naming produjo nombre vacío, usando timestamp: "${name}"`);
+    }
 
     if (name.length > 28) {
         return name.slice(0, 25).trim() + '...';
@@ -845,15 +873,141 @@ const stopAdminBtn = document.getElementById('stop-admin-btn');
 const attachImgBtn = document.getElementById('attach-img');
 const imageInput = document.getElementById('image-input');
 const imagePreviewContainer = document.getElementById('image-preview-container');
-const projectRunContainer = document.getElementById('project-run-container');
-const runProjectBtn = document.getElementById('run-project-btn');
+const micBtn = document.getElementById('mic-btn');
 
-// Git Controls
-const gitControlsContainer = document.getElementById('git-controls-container');
-const gitBtn = document.getElementById('git-btn');
-const gitCommitContainer = document.getElementById('git-commit-container');
-const gitCommitMessageInput = document.getElementById('git-commit-message');
-const gitConfirmBtn = document.getElementById('git-confirm-btn');
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  🎤 STANDALONE MICROPHONE INIT (corre aunque init() falle)
+//  IIFE independiente de setupEventListeners() para
+//  garantizar que el micrófono funcione siempre.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+(function initStandaloneMic() {
+    if (!micBtn || micBtn.__micStandaloneReady) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return; // Navegador no soporta — botón queda inerte
+
+    let recognition = null;
+    let isRecording = false;
+    let finalTranscript = '';
+    let restartTimeout = null;
+
+    function initRecognition() {
+        const rec = new SpeechRecognition();
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.lang = 'es-AR';
+        return rec;
+    }
+
+    function wireRecognition(rec) {
+        rec.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interim += transcript;
+                }
+            }
+            chatInput.value = (finalTranscript + interim).trim();
+            chatInput.dispatchEvent(new Event('input'));
+        };
+
+        rec.onerror = (event) => {
+            console.warn('[SPEECH-STANDALONE] Error:', event.error, event.message);
+            if (event.error === 'not-allowed') {
+                showToast('\uD83C\uDFA4 Permiso de micrófono denegado. Permití el acceso en la configuración del navegador.', 'error');
+                stopRecording(false);
+            } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                showToast(`\uD83C\uDFA4 Error de voz: ${event.error}`, 'error');
+            }
+        };
+
+        rec.onspeechstart = () => { micBtn.style.animation = 'mic-pulse 0.8s ease-in-out infinite'; };
+        rec.onspeechend = () => { micBtn.style.animation = ''; };
+
+        rec.onend = () => {
+            if (!isRecording) return;
+            recognition = null;
+            clearTimeout(restartTimeout);
+            restartTimeout = setTimeout(() => {
+                if (!isRecording) return;
+                try {
+                    const newRec = initRecognition();
+                    if (!newRec) return;
+                    recognition = newRec;
+                    wireRecognition(newRec);
+                    newRec.start();
+                } catch (e) {
+                    console.warn('[SPEECH-STANDALONE] Reinicio fallido, reintentando:', e.message);
+                    restartTimeout = setTimeout(() => {
+                        if (!isRecording) return;
+                        try {
+                            const retryRec = initRecognition();
+                            if (!retryRec) return;
+                            recognition = retryRec;
+                            wireRecognition(retryRec);
+                            retryRec.start();
+                        } catch (e2) {
+                            console.error('[SPEECH-STANDALONE] Reintento final fallido:', e2.message);
+                            stopRecording(true);
+                        }
+                    }, 500);
+                }
+            }, 250);
+        };
+    }
+
+    function startRecording() {
+        try {
+            if (recognition) { try { recognition.abort(); } catch(e) {} recognition = null; }
+            clearTimeout(restartTimeout);
+
+            recognition = initRecognition();
+            if (!recognition) return;
+
+            isRecording = true;
+            finalTranscript = '';
+            micBtn.classList.add('mic-recording');
+            chatInput.closest('.input-wrapper')?.classList.add('mic-active');
+            micBtn.innerHTML = '\uD83D\uDD34';
+            micBtn.title = 'Grabando... click para detener';
+            chatInput.placeholder = '\uD83C\uDFA4 Te escucho... hablá ahora...';
+            chatInput.value = '';
+
+            wireRecognition(recognition);
+            recognition.start();
+            showToast('\uD83C\uDFA4 Escuchando... hablá claro. Click en \uD83D\uDD34 para detener.', 'info', 2000);
+        } catch (e) {
+            console.error('[SPEECH-STANDALONE] Start error:', e);
+            showToast('\uD83C\uDFA4 Error al iniciar el micrófono.', 'error');
+            stopRecording(false);
+        }
+    }
+
+    function stopRecording(showFeedback = true) {
+        isRecording = false;
+        clearTimeout(restartTimeout);
+        restartTimeout = null;
+        if (recognition) { try { recognition.abort(); } catch (e) {} recognition = null; }
+        micBtn.classList.remove('mic-recording');
+        chatInput.closest('.input-wrapper')?.classList.remove('mic-active');
+        micBtn.innerHTML = '\uD83C\uDFA4';
+        micBtn.title = 'Grabar mensaje de voz (Web Speech)';
+        micBtn.style.animation = '';
+        chatInput.placeholder = 'Escribe una instrucción para el agente...';
+        if (showFeedback && chatInput.value.trim()) {
+            showToast('\u2705 Texto transcrito. Editá si hace falta y enviá.', 'success', 3000);
+        }
+    }
+
+    micBtn.onclick = () => {
+        if (isRecording) { stopRecording(true); } else { startRecording(); }
+    };
+
+    micBtn.__micStandaloneReady = true;
+    console.log('[SPEECH-STANDALONE] Micrófono inicializado correctamente.');
+})();
 
 // Git Controls (GIT Tab)
 const gitPushBtn = document.getElementById('git-push-btn');
@@ -868,7 +1022,6 @@ const terminalInput = document.getElementById('terminal-input');
 const clearTerminalBtn = document.getElementById('clear-terminal-btn');
 const terminalRunBtn = document.getElementById('terminal-run-btn');
 const terminalStopBtn = document.getElementById('terminal-stop-btn');
-const openWebBtn = document.getElementById('open-web-btn');
 const matrixTabContent = document.getElementById('matrix-tab-content');
 
 let currentAttachedImages = [];
@@ -896,28 +1049,137 @@ const newSkillBtn = document.getElementById('new-skill-btn');
 const agentSkillSelect = document.getElementById('agent-skill-select');
 const skillsSearchInput = document.getElementById('skills-search-input');
 
+// =============================================
+// PANEL RESIZE & TOGGLE LOGIC
+// =============================================
+
+function applyPanelState() {
+    const app = document.getElementById('app');
+    if (!app) return;
+
+    // Sidebar
+    const sidebar = document.querySelector('.sidebar');
+    const sidebarReopen = document.getElementById('sidebar-reopen-tab');
+    const sidebarHandle = document.getElementById('sidebar-resize-handle');
+    if (state.sidebarVisible) {
+        sidebar.classList.remove('collapsed');
+        sidebarReopen.classList.remove('collapsed');
+        if (sidebarHandle) { sidebarHandle.style.display = ''; sidebarHandle.style.left = state.sidebarWidth + 'px'; }
+        app.style.setProperty('--sidebar-width', state.sidebarWidth + 'px');
+    } else {
+        sidebar.classList.add('collapsed');
+        sidebarReopen.classList.add('collapsed');
+        if (sidebarHandle) { sidebarHandle.style.display = 'none'; }
+        app.style.setProperty('--sidebar-width', '0px');
+    }
+
+    // File Explorer
+    const explorer = document.querySelector('.file-explorer');
+    const explorerReopen = document.getElementById('explorer-reopen-tab');
+    const explorerHandle = document.getElementById('explorer-resize-handle');
+    if (state.fileExplorerVisible) {
+        explorer.classList.remove('collapsed');
+        explorerReopen.classList.remove('collapsed');
+        if (explorerHandle) { explorerHandle.style.display = ''; explorerHandle.style.right = state.fileExplorerWidth + 'px'; }
+        app.style.setProperty('--explorer-width', state.fileExplorerWidth + 'px');
+    } else {
+        explorer.classList.add('collapsed');
+        explorerReopen.classList.add('collapsed');
+        if (explorerHandle) { explorerHandle.style.display = 'none'; }
+        app.style.setProperty('--explorer-width', '0px');
+    }
+}
+
+window.toggleSidebar = function() {
+    state.sidebarVisible = !state.sidebarVisible;
+    applyPanelState();
+    saveData();
+};
+
+window.toggleFileExplorer = function() {
+    state.fileExplorerVisible = !state.fileExplorerVisible;
+    applyPanelState();
+    saveData();
+};
+
+function initPanelResize() {
+    const sidebarHandle = document.getElementById('sidebar-resize-handle');
+    const explorerHandle = document.getElementById('explorer-resize-handle');
+    const app = document.getElementById('app');
+
+    if (!app) return;
+
+    function startResize(handle, isLeft) {
+        let startX, startWidth;
+
+        function onMouseDown(e) {
+            e.preventDefault();
+            startX = e.clientX;
+            startWidth = isLeft ? state.sidebarWidth : state.fileExplorerWidth;
+            handle.classList.add('active');
+            document.body.classList.add('resizing');
+            app.style.transition = 'none'; // disable transition during drag
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        }
+
+        function onMouseMove(e) {
+            const delta = isLeft ? (e.clientX - startX) : (startX - e.clientX);
+            let newWidth = Math.max(isLeft ? 180 : 200, Math.min(isLeft ? 500 : 600, startWidth + delta));
+            if (isLeft) {
+                state.sidebarWidth = newWidth;
+                app.style.setProperty('--sidebar-width', newWidth + 'px');
+                handle.style.left = newWidth + 'px';
+            } else {
+                state.fileExplorerWidth = newWidth;
+                app.style.setProperty('--explorer-width', newWidth + 'px');
+                handle.style.right = newWidth + 'px';
+            }
+        }
+
+        function onMouseUp() {
+            handle.classList.remove('active');
+            document.body.classList.remove('resizing');
+            app.style.transition = ''; // restore CSS transition
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            saveData();
+        }
+
+        handle.addEventListener('mousedown', onMouseDown);
+    }
+
+    if (sidebarHandle) startResize(sidebarHandle, true);
+    if (explorerHandle) startResize(explorerHandle, false);
+
+    // Apply initial state
+    applyPanelState();
+}
+
 // Initialize
 async function init() {
-    await loadPrompts();
-    await checkSystemHealth();
-    await fetchModels();
-    await loadData();
-    await loadSkills();
+    // Cada await tiene su propio catch para que un fallo no detenga toda la inicialización
+    try { await loadPrompts(); } catch (e) { console.warn('[INIT] loadPrompts falló:', e.message || e); }
+    try { await checkSystemHealth(); } catch (e) { console.warn('[INIT] checkSystemHealth falló:', e.message || e); }
+    try { await fetchModels(); } catch (e) { console.warn('[INIT] fetchModels falló:', e.message || e); }
+    try { await loadData(); applyPanelState(); } catch (e) { console.warn('[INIT] loadData falló:', e.message || e); }
+    try { await loadSkills(); } catch (e) { console.warn('[INIT] loadSkills falló:', e.message || e); }
     
-
 
     setupEventListeners();
     setupSkillsEventListeners();
     setupTerminalEvents();
-    setupOpenWebEvent();
+    initPanelResize();
     
-    // ─── Auto-transformación: Sistema de reinicio y consola ───
+    // ─── Auto-transformación
     // (Eliminado: refreshConsoleUI cada 10s — ahora se actualiza vía WS events)
     
     // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
     function connectGlobalWS() {
+        const wsHost = window.location.hostname;
+        const wsPort = 3001;
         try {
-            const sysWs = new WebSocket(`ws://localhost:3001/ws/hermes`);
+            const sysWs = new WebSocket(`ws://${wsHost}:${wsPort}/ws/hermes`);
             syncWs = sysWs;
             
             sysWs.onmessage = async (event) => {
@@ -935,6 +1197,10 @@ async function init() {
                         syncUI();
                         checkSystemHealth();
                         fetchModels();
+                        // ─── Cargar instancias Hermes iniciales ───
+                        if (window.refreshHermesInstances) {
+                            window.refreshHermesInstances();
+                        }
                     } else if (data.event === 'sync:masterClaimed') {
                         const wasMaster = amIMaster;
                         amIMaster = (data.socketId === mySocketId);
@@ -944,23 +1210,28 @@ async function init() {
                         }
                     } else if (data.event === 'sync:stateUpdated') {
                         console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
-                        if (!amIMaster) {
-                            if (isTabBusy()) {
-                                console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
-                                return;
-                            }
+                        if (isTabBusy()) {
+                            console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
+                        } else {
                             console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
                             await loadData(false);
                             syncUI();
                         }
-                        // Siempre refrescar badge y consola cuando cambia el estado
+                        // Siempre refrescar badge, consola e instancias Hermes cuando cambia el estado
                         updateAgentBadge();
                         refreshConsoleUI();
+                        if (window.refreshHermesInstances) {
+                            window.refreshHermesInstances();
+                        }
                     } else if (data.event === 'hermes:status' || data.event === 'hermes:agent:started' || data.event === 'hermes:agent:completed' || data.event === 'hermes:agent:stopped') {
                         // ─── Evento WS: estado de agente Hermes cambió ───
                         console.log(`[WS-HERMES] Evento ${data.event}: ${data.instanceKey} → ${data.status || 'N/A'}`);
                         updateAgentBadge();
                         refreshConsoleUI();
+                        // Refrescar panel Hermes si está abierto
+                        if (window.refreshHermesInstances) {
+                            window.refreshHermesInstances();
+                        }
                         // Si hay un chat activo, actualizar su UI Hermes
                         const activeChat = getActiveChat();
                         const activeProject = getActiveProject();
@@ -1046,6 +1317,43 @@ async function init() {
     }
     connectGlobalWS();
     
+    // ─── Auto-sync al recuperar foco de pestaña ───
+    // Cuando el usuario vuelve a esta pestaña, recarga estado completo
+    // para sincronizar cambios hechos en otras pestañas/dispositivos
+    document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden) {
+            console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
+            await loadData(false);
+            syncUI();
+            checkSystemHealth();
+            updateAgentBadge();
+            refreshConsoleUI();
+            if (window.refreshHermesInstances) {
+                window.refreshHermesInstances();
+            }
+        }
+    });
+
+    // ─── BroadcastChannel: sincronización inmediata entre pestañas ───
+    // Más rápido que el roundtrip WS (server → broadcast → client)
+    try {
+        const syncChannel = new BroadcastChannel('jp-agents-sync');
+        syncChannel.onmessage = async (event) => {
+            if (event.data.type === 'thinking-changed') {
+                console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
+                await loadData(false);
+                syncUI();
+                updateAgentBadge();
+                refreshConsoleUI();
+                if (window.refreshHermesInstances) {
+                    window.refreshHermesInstances();
+                }
+            }
+        };
+    } catch(e) {
+        // BroadcastChannel no disponible en este navegador
+    }
+    
     // Primer refresh de consola
     setTimeout(() => refreshConsoleUI(), 2000);
     setupOpenFolderExplorer();
@@ -1085,6 +1393,10 @@ async function loadData(shouldScan = true) {
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
             state.skillsMetadata = data.skillsMetadata || {};
+            state.sidebarWidth = data.sidebarWidth || 260;
+            state.sidebarVisible = data.sidebarVisible !== undefined ? data.sidebarVisible : true;
+            state.fileExplorerWidth = data.fileExplorerWidth || 300;
+            state.fileExplorerVisible = data.fileExplorerVisible !== undefined ? data.fileExplorerVisible : true;
             state.deepseekApiKey = data.deepseekApiKey || '';
             state.openaiApiKey = data.openaiApiKey || '';
             state.openrouterApiKey = data.openrouterApiKey || '';
@@ -1406,33 +1718,10 @@ function setupOpenFolderExplorer() {
                     '• Intentá de nuevo — suele funcionar al segundo intento.');
             }
         };
-    }
-}
 
-function setupOpenWebEvent() {
-    openWebBtn.addEventListener('click', async () => {
-        const project = getActiveProject();
-        if (!project || !project.folder) return;
+    }   // if (btn)
 
-        try {
-            const res = await fetch(`${API_BASE}/files/read`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filePath: `${project.folder}/run.bat` })
-            });
-            const data = await res.json();
-            if (data.content) {
-                const match = data.content.match(/set PORT=(\d+)/);
-                if (match) {
-                    window.open(`http://localhost:${match[1]}`, '_blank');
-                    return;
-                }
-            }
-        } catch (e) { }
-
-        alert("No se detectó un puerto activo. Ejecuta 'RUN' primero.");
-    });
-}
+}   // function setupOpenFolderExplorer()
 
 
 
@@ -1501,7 +1790,12 @@ async function saveData() {
             deepseekThinking: state.deepseekThinking,
             selectedModel: state.selectedModel,
             selectedAdminModel: state.selectedAdminModel,
-            skillsMetadata: state.skillsMetadata
+            skillsMetadata: state.skillsMetadata,
+            sidebarWidth: state.sidebarWidth,
+            sidebarVisible: state.sidebarVisible,
+            fileExplorerWidth: state.fileExplorerWidth,
+            fileExplorerVisible: state.fileExplorerVisible,
+            deletedProjectIds: state.deletedProjectIds
         };
         
         console.log(`[STATE] Guardando estado... (${state.projects.length} proyectos)`);
@@ -2477,7 +2771,7 @@ function renderTabs() {
                  ondragleave="window.onTabDragLeave(event)"
                  ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
                  onclick="window.switchTab('${chat.id}')">
-                <span>🤖 ${chat.name}</span>
+                <span>🤖 ${escapeHtml(chat.name)}</span>
                 <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
             </div>
@@ -2673,12 +2967,15 @@ window.stopAgent = (projectId, chatId) => {
         chat.isThinking = false;
         chat.isStreaming = false;
 
-        // Abort fetch controller
+        // Admin log
+        adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
+
+        // Abort fetch controller (para el agente local de LangGraph)
         if (chat.abortController) {
             try { chat.abortController.abort(); } catch (e) { }
         }
 
-        // Call backend API to stop the subprocess
+        // Call backend API to stop the Hermes subprocess
         fetch(`${API_BASE}/hermes/stop`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3212,6 +3509,10 @@ window.switchTab = (id) => {
         renderTabs();
         renderMessages(); // To refresh chat if switching to a chat tab
         saveData();
+
+        // Reset git commit message context when switching agents
+        if (gitCommitMsgInput) gitCommitMsgInput.value = '';
+        p._lastTabId = id;
     }
 };
 
@@ -3304,6 +3605,9 @@ window.switchProject = (id, event = null) => {
     // Crucial: Update the input immediately to the project's folder
     folderPathInput.value = project.folder || '';
 
+    // Clear git commit input when switching projects
+    if (gitCommitMsgInput) gitCommitMsgInput.value = '';
+
     renderProjectList();
     renderTabs();
 
@@ -3314,8 +3618,6 @@ window.switchProject = (id, event = null) => {
     } else {
         console.log("📂 Project has no folder.");
         renderFileList();
-        projectRunContainer.classList.add('hidden');
-        gitControlsContainer.classList.add('hidden');
     }
     saveData();
 };
@@ -3403,7 +3705,22 @@ window.deleteProject = async (id) => {
             await fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
             
             // 3. Save the new global state (without this project)
+            // BUGFIX: Incluir deletedProjectIds para que el merge de saveSessions
+            // NO restaure este proyecto desde la DB (evita que proyectos borrados vuelvan)
+            state.deletedProjectIds = [id];
+            // Si también hay agentes (chats) con identity files, limpiarlos
+            if (project.chats) {
+                for (const chat of project.chats) {
+                    try {
+                        await fetch(`${API_BASE}/hermes/purge-identities`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }
+                        }).catch(() => {});
+                    } catch {}
+                }
+            }
             await saveData();
+            delete state.deletedProjectIds;
             adminLog(`✅ Proyecto <strong>${project.name}</strong> eliminado correctamente.`);
         } catch (serverError) {
             console.error("[DELETE] Error en la sincronización con el servidor:", serverError);
@@ -3712,6 +4029,7 @@ const _debounceThinkingLayout = () => {
 
 function updateThinking(chat, isThinking, status = "", subtext = "") {
     if (!chat) return;
+    const prevThinking = chat.isThinking;
     chat.isThinking = isThinking;
     chat.thinkingStatus = status;
     chat.thinkingSubtext = subtext;
@@ -3750,6 +4068,17 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
     renderMessages(false);
     // Layout updates (sidebar dots, tabs, admin monitor) are debounced to avoid cascade
     _debounceThinkingLayout();
+
+    // ─── MULTI-TAB SYNC: Persistir y notificar cuando cambia el estado de thinking ───
+    if (prevThinking !== isThinking) {
+        saveData();
+        // Notificar vía BroadcastChannel para sincronización inmediata entre pestañas
+        try {
+            const bc = new BroadcastChannel('jp-agents-sync');
+            bc.postMessage({ type: 'thinking-changed', chatId: chat.id, isThinking, timestamp: Date.now() });
+            bc.close();
+        } catch(e) {}
+    }
 }
 
 function formatMarkdown(text) {
@@ -4718,13 +5047,6 @@ window.scanFolder = async function (pathInput = null, projectId = null) {
         if (state.activeProjectId === targetProjectId) {
             folderPathInput.value = data.currentPath;
 
-            // Auto-detect run.bat
-            const hasRunBat = targetProject.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
-            projectRunContainer.classList.toggle('hidden', !hasRunBat);
-
-            // Show Git controls if folder is selected
-            gitControlsContainer.classList.toggle('hidden', !targetProject.folder);
-
             // Auto-detect skill.md
             const skillFile = targetProject.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
             const skillIndicator = document.getElementById('skill-source-indicator');
@@ -4958,21 +5280,9 @@ Eres un asistente de programación experto con acceso a herramientas nativas.
 `;
 }
 
-window.stopAgent = (projectId, chatId) => {
-    const project = state.projects.find(p => p.id === projectId);
-    if (!project) return;
-    const chat = project.chats.find(c => c.id === chatId);
-    if (!chat) return;
-
-    chat.isStopped = true;
-    chat.isThinking = false;
-    adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
-
-    if (state.activeProjectId === projectId && project.activeTabId === chatId) {
-        renderMessages();
-    }
-    if (project.activeTabId === 'admin') renderAdminMonitor();
-};
+// stopAgent is defined globally above — keep only one definition.
+// The canonical stopAgent handles: abort fetch, call /api/hermes/stop backend,
+// mark progress, hide thinking indicators, admin log, save data.
 
 function adminLog(msg) {
     if (!adminChatMessages) return;
@@ -5105,7 +5415,9 @@ INSTRUCCIONES ADICIONALES:
 - Si un agente está "OCIOSO", evalúa su último mensaje. Si ha terminado exitosamente, revisa si el objetivo general del usuario se ha cumplido.
 - NO des por finalizada la tarea global hasta que TODOS los subagentes asignados hayan completado sus partes exitosamente. Si alguno falló o está atascado, envíale instrucciones correctivas con [@Agente: "Tu instrucción..."].
 - Si el usuario pide algo complejo, puedes encadenar comandos: [CREATE_PROJECT] [CREATE_AGENT] [@Agente: "Instrucción"] todo en una sola respuesta.
-- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro y sigue checkeando iterativamente hasta que todos confirmen el éxito completo.` ;
+- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro.
+- **ARRIBA TENÉS LA TABLA COMPLETA DE AGENTES con su estado actualizado.** No necesitas pedir el status porque ya lo tenés acá en cada llamada.
+- Cuando un agente termine una tarea, el sistema te notificará automáticamente con un mensaje como: ✅ AGENTE "Nombre" DEL PROYECTO "Proyecto" terminó el objetivo: ... Si el objetivo general del usuario se cumplió, informalo. Si no, podés enviar nuevas instrucciones.` ;
     return prompt;
 }
 
@@ -5430,31 +5742,14 @@ async function triggerAdminAgentLogic(retryCount = 0) {
             }
         }
 
-        if (anyFailed && retryCount < 5) {
+        if (anyFailed) {
             const agentList = state.projects.flatMap(p => p.chats.map(c => `- ${c.name} (Proyecto: ${p.name}) [ID: ${c.id}]`)).join('\n');
             const projectList = state.projects.map(p => `- ${p.name} [ID: ${p.id}]`).join('\n');
-            const retryFeedback = `⚠️ Error de Orquestación: Algunas acciones fallaron o destinatarios no se encontraron: [${failedTargets.join(', ')}]. 
-            
-POR FAVOR CORRIGE TUS COMANDOS Y REINTENTA:
-1. Asegúrate de que el PROYECTO exista antes de crear un agente en él.
-2. Usa el formato [CREATE_AGENT: Nombre_Proyecto : Nombre_Agente].
-3. Revisa los IDs y nombres de esta lista oficial actualizada:
+            const feedback = `⚠️ Algunas acciones del Orquestador fallaron: [${failedTargets.join(', ')}]. \n\nPROYECTOS:\n${projectList}\n\nAGENTES:\n${agentList}\n\nCorregí manualmente o pedile al Orquestador que lo intente de nuevo con los datos correctos.`;
 
-PROYECTOS:
-${projectList}
-
-AGENTES:
-${agentList}
-
-REINTENTO AUTOMÁTICO ${retryCount + 1}/5...`;
-
-            state.adminMessages.push({ role: 'system', content: retryFeedback });
-            state.adminIsThinking = false;
-
-            // Re-trigger con feedback para que corrija
-            console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/5) por error en comandos/destinatarios.`);
-            setTimeout(() => triggerAdminAgentLogic(retryCount + 1), 1500);
-            return;
+            state.adminMessages.push({ role: 'system', content: feedback });
+            renderAdminMessages();
+            saveData();
         }
 
         renderAdminMessages();
@@ -5462,8 +5757,16 @@ REINTENTO AUTOMÁTICO ${retryCount + 1}/5...`;
         if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
 
         // If an agent finished while we were thinking, trigger again to process the latest news
+        // BUGFIX: Limit re-trigger depth to prevent infinite loops
         if (state.adminNeedsRecheck) {
-            triggerAdminAgentLogic();
+            if (retryCount < 2) {
+                triggerAdminAgentLogic(retryCount + 1);
+            } else {
+                console.warn('[ADMIN] ⚠️ adminNeedsRecheck limit reached (2). Deteniendo cascada.');
+                state.adminNeedsRecheck = false;
+                renderAdminMessages();
+                saveData();
+            }
         } else {
             renderAdminMessages();
             saveData();
@@ -5520,7 +5823,7 @@ function updateAgentBadge() {
     const badge = document.getElementById('agent-badge');
     if (!badge) return;
     // Intentar obtener la lista real de agentes desde el servidor
-    fetch('/api/admin/agents')
+    fetch(`${API_BASE}/admin/agents`)
         .then(r => r.json())
         .then(data => {
             const agents = data.agents || [];
@@ -6726,11 +7029,12 @@ window.saveActiveFile = async () => {
     }
 };
 
-window.openFile = async (path) => {
+window.openFile = async (path, options = {}) => {
+    const { setActive = true } = options;
     const p = getActiveProject();
     const san = path.replace(/\\/g, '/');
     const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
-    if (existing) { p.activeTabId = san; renderTabs(); return; }
+    if (existing) { if (setActive) { p.activeTabId = san; renderTabs(); } return; }
     try {
         const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
         if (!res.ok) {
@@ -6739,7 +7043,7 @@ window.openFile = async (path) => {
         }
         const data = await res.json();
         p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
-        p.activeTabId = san;
+        if (setActive) p.activeTabId = san;
         renderTabs();
         saveData();
     } catch (e) {
@@ -7165,6 +7469,166 @@ function setupEventListeners() {
         }
     };
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  🎤 SPEECH-TO-TEXT — Web Speech API (robusto)
+    //  Usa continuous:false + reinicio manual para
+    //  evitar el bug de Chrome con silencio > 5s.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let isRecording = false;
+    let finalTranscript = '';
+    let restartTimeout = null;
+
+    function initSpeechRecognition() {
+        if (!SpeechRecognition) return null;
+        const rec = new SpeechRecognition();
+        rec.continuous = false;     // ← más confiable en Chrome
+        rec.interimResults = true;
+        rec.lang = 'es-AR';
+        return rec;
+    }
+
+    // Vincula los eventos a una instancia de recognition (reutilizable en reinicios)
+    function wireRecognition(rec) {
+        rec.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interim += transcript;
+                }
+            }
+            chatInput.value = (finalTranscript + interim).trim();
+            chatInput.dispatchEvent(new Event('input'));
+        };
+
+        rec.onerror = (event) => {
+            console.warn('[SPEECH] Error:', event.error, event.message);
+            if (event.error === 'not-allowed') {
+                showToast('\uD83C\uDFA4 Permiso de micr\u00F3fono denegado. Permit\u00ED el acceso en la configuraci\u00F3n del navegador.', 'error');
+                stopRecording(false); // solo frenar en error fatal
+            } else if (event.error === 'no-speech') {
+                // Silencio detectado — normal, el reinicio lo maneja
+            } else if (event.error !== 'aborted') {
+                showToast(`\uD83C\uDFA4 Error de voz: ${event.error}`, 'error');
+                // No frenar — dejar que onend reintente
+            }
+        };
+
+        rec.onspeechstart = () => {
+            micBtn.style.animation = 'mic-pulse 0.8s ease-in-out infinite';
+        };
+
+        rec.onspeechend = () => {
+            micBtn.style.animation = '';
+        };
+
+        rec.onend = () => {
+            if (!isRecording) return; // el usuario detuvo manualmente
+
+            // Chrome detuvo automáticamente → reiniciar con nueva instancia
+            recognition = null;
+            clearTimeout(restartTimeout);
+            restartTimeout = setTimeout(() => {
+                if (!isRecording) return;
+                try {
+                    const newRec = initSpeechRecognition();
+                    if (!newRec) return;
+                    recognition = newRec;
+                    wireRecognition(newRec);
+                    newRec.start();
+                } catch (e) {
+                    console.warn('[SPEECH] Reinicio fallido, reintentando:', e.message);
+                    // Un reintento más con más delay
+                    restartTimeout = setTimeout(() => {
+                        if (!isRecording) return;
+                        try {
+                            const retryRec = initSpeechRecognition();
+                            if (!retryRec) return;
+                            recognition = retryRec;
+                            wireRecognition(retryRec);
+                            retryRec.start();
+                        } catch (e2) {
+                            console.error('[SPEECH] Reintento final fallido:', e2.message);
+                            stopRecording(true);
+                        }
+                    }, 500);
+                }
+            }, 250);
+        };
+    }
+
+    function startRecording() {
+        if (!SpeechRecognition) {
+            showToast('\uD83C\uDFA4 Tu navegador no soporta reconocimiento de voz. Us\u00E1 Chrome o Edge.', 'warning');
+            return;
+        }
+        try {
+            // Limpiar cualquier instancia previa
+            if (recognition) {
+                try { recognition.abort(); } catch(e) {}
+                recognition = null;
+            }
+            clearTimeout(restartTimeout);
+
+            recognition = initSpeechRecognition();
+            if (!recognition) return;
+
+            isRecording = true;
+            // Preservar texto existente — no borrar lo que ya se dictó/escribió antes
+            const existingText = chatInput.value.trim();
+            finalTranscript = existingText ? existingText + ' ' : '';
+            micBtn.classList.add('mic-recording');
+            chatInput.closest('.input-wrapper')?.classList.add('mic-active');
+            micBtn.innerHTML = '\uD83D\uDD34';
+            micBtn.title = 'Grabando... click para detener';
+            chatInput.placeholder = '\uD83C\uDFA4 Te escucho... habl\u00E1 ahora...';
+            // NO limpiar chatInput.value — mantener el texto visible mientras se graba
+
+            wireRecognition(recognition);
+            recognition.start();
+
+            showToast('\uD83C\uDFA4 Escuchando... habl\u00E1 claro. Click en \uD83D\uDD34 para detener.', 'info', 2000);
+        } catch (e) {
+            console.error('[SPEECH] Start error:', e);
+            showToast('\uD83C\uDFA4 Error al iniciar el micr\u00F3fono.', 'error');
+            stopRecording(false);
+        }
+    }
+
+    function stopRecording(showFeedback = true) {
+        isRecording = false;
+        clearTimeout(restartTimeout);
+        restartTimeout = null;
+
+        if (recognition) {
+            try { recognition.abort(); } catch (e) {}
+            recognition = null;
+        }
+
+        micBtn.classList.remove('mic-recording');
+        chatInput.closest('.input-wrapper')?.classList.remove('mic-active');
+        micBtn.innerHTML = '\uD83C\uDFA4';
+        micBtn.title = 'Grabar mensaje de voz (Web Speech)';
+        micBtn.style.animation = '';
+        chatInput.placeholder = 'Escribe una instrucci\u00F3n para el agente...';
+
+        if (showFeedback && chatInput.value.trim()) {
+            showToast('\u2705 Texto transcrito. Edit\u00E1 si hace falta y envi\u00E1.', 'success', 3000);
+        }
+    }
+
+    micBtn.onclick = () => {
+        if (isRecording) {
+            stopRecording(true);
+        } else {
+            startRecording();
+        }
+    };
+
     // ── Click handler for dropdown items ──
     slashDropdown.onclick = (e) => {
         const item = e.target.closest('.slash-item');
@@ -7523,47 +7987,6 @@ function setupEventListeners() {
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
 
-    // Run Project Button
-    runProjectBtn.onclick = async () => {
-        const p = getActiveProject();
-        if (!p || !p.folder) return;
-
-        const runBat = p.currentFiles.find(f => f.name.toLowerCase() === 'run.bat');
-        if (!runBat) return;
-
-        try {
-            const res = await fetchWithLog(`${API_BASE}/utils/run-script`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    scriptPath: runBat.path,
-                    cwd: p.folder
-                })
-            });
-            const data = await res.json();
-            if (!data.success) {
-                console.error("Error al iniciar servidor:", data.error);
-            }
-        } catch (e) {
-            console.error("Error de conexión:", e.message);
-        }
-    };
-
-    // Git Controls
-    gitBtn.onclick = () => {
-        gitCommitContainer.classList.toggle('hidden');
-        if (!gitCommitContainer.classList.contains('hidden')) {
-            gitCommitMessageInput.focus();
-        }
-    };
-
-    gitConfirmBtn.onclick = window.handleGitPush;
-    gitCommitMessageInput.onkeydown = (e) => {
-        if (e.key === 'Enter') {
-            window.handleGitPush();
-        }
-    };
-
     // Git Tab Controls
     if (gitPushBtn) {
         gitPushBtn.onclick = window.handleGitPush;
@@ -7847,18 +8270,14 @@ function formatLogs(logs) {
 
 window.handleGitPush = async () => {
     const p = getActiveProject();
-    const chat = getActiveChat();
-
-    // Determine which UI is active: git tab or old header
-    const isGitTab = p && p.activeTabId === 'git';
-    const msgInput = isGitTab ? gitCommitMsgInput : gitCommitMessageInput;
-    const btnEl = isGitTab ? gitPushBtn : gitConfirmBtn;
+    const msgInput = gitCommitMsgInput;
+    const btnEl = gitPushBtn;
 
     if (!msgInput) return;
     const message = (msgInput.value || '').trim();
 
     if (!message) {
-        if (isGitTab && typeof showGitFeedback === 'function') {
+        if (typeof showGitFeedback === 'function') {
             showGitFeedback('Escribi un mensaje de commit', 'error');
         }
         return;
@@ -7866,51 +8285,244 @@ window.handleGitPush = async () => {
 
     if (!p || !p.folder) return;
 
-    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...PUSHEANDO...'; }
-
-    if (isGitTab && typeof showGitFeedback === 'function') {
-        showGitFeedback('Commiteando y pusheando...', 'info');
-    }
-    if (!isGitTab) updateThinking(chat, true, 'GIT COMMIT & PUSH', 'Commiteando y pusheando...');
-
+    // ── Build files preview (async) ──
+    let filesPreview = '';
     try {
-        const res = await fetchWithLog(`${API_BASE}/utils/git-commit`, {
+        const statusRes = await fetch(`${API_BASE}/utils/git-status`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                folderPath: p.folder,
-                message: message
-            })
+            body: JSON.stringify({ folderPath: p.folder })
         });
-        const data = await res.json();
-
-        if (data.success) {
-            if (isGitTab) {
-                if (typeof showGitFeedback === 'function') showGitFeedback('Push exitoso!', 'success');
-                msgInput.value = '';
-                if (typeof loadGitLog === 'function') await loadGitLog();
-            } else {
-                chat.messages.push({ role: 'agent', content: `🚀 **Git Push Exitoso**\n${data.stdout || ''}` });
-                gitCommitContainer.classList.add('hidden');
-                msgInput.value = '';
-            }
-        } else {
-            if (isGitTab) {
-                if (typeof showGitFeedback === 'function') showGitFeedback('Error en Git: ' + (data.error || 'Desconocido'), 'error');
-            } else {
-                chat.messages.push({ role: 'agent', content: `❌ **Error en Git**: ${data.error}\n${data.stderr || ''}` });
-            }
+        const statusData = await statusRes.json();
+        if (statusData.files && statusData.files.length > 0) {
+            filesPreview = statusData.files.map(f => {
+                const icon = f.status === 'A' ? '+' : f.status === 'D' ? '-' : f.status === 'M' ? '~' : '?';
+                return `${icon} ${f.file}`;
+            }).join('\n');
         }
     } catch (e) {
-        if (isGitTab) {
-            if (typeof showGitFeedback === 'function') showGitFeedback('Error de conexion: ' + e.message, 'error');
-        } else {
-            chat.messages.push({ role: 'agent', content: `❌ **Error de conexion**: ${e.message}` });
+        // non-blocking — continue without preview
+    }
+
+    // ── Execute directly — no confirmation overlay ──
+    _doGitPush(message, p, msgInput, btnEl, filesPreview);
+};
+
+async function _doGitPush(message, p, msgInput, btnEl, filesPreview) {
+    // ── Show mini terminal ──
+    const terminal = document.getElementById('git-process-terminal');
+    const outputEl = document.getElementById('git-process-output');
+    const statusEl = document.getElementById('git-process-status');
+
+    if (!terminal || !outputEl) return;
+
+    // Show terminal
+    terminal.classList.remove('hidden');
+    // Auto-scroll terminal into view with smooth animation
+    setTimeout(() => terminal.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+
+    // ── Progress indicator ──
+    const progressEl = document.getElementById('git-process-progress');
+    const steps = ['add', 'commit', 'push'];
+    const stepIcons = { add: '📦', commit: '💾', push: '🚀' };
+    const stepLabels = { add: 'add', commit: 'commit', push: 'push' };
+    function updateProgress(completedStep) {
+        if (!progressEl) return;
+        let html = '';
+        steps.forEach((s, i) => {
+            const done = steps.indexOf(completedStep) >= i;
+            const cls = done ? 'done' : 'pending';
+            const mark = done ? '✓' : '○';
+            html += `<span class="git-progress-step ${cls}">${stepIcons[s]} ${stepLabels[s]} ${mark}</span>`;
+            if (i < steps.length - 1) html += '<span class="git-progress-arrow">→</span>';
+        });
+        progressEl.innerHTML = html;
+    }
+    if (progressEl) {
+        progressEl.innerHTML = '<span class="git-progress-step pending">📦 add ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">💾 commit ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">🚀 push ○</span>';
+    }
+
+    // ── Header: message + files preview ──
+    if (statusEl) { statusEl.textContent = 'Conectando...'; statusEl.className = 'git-process-status running'; }
+    let initialHtml = `<div class="git-process-line commit-msg">💬 <strong>${escapeHtml(message)}</strong></div>`;
+    if (filesPreview) {
+        initialHtml += `<div class="git-process-line files-header">📁 Archivos:</div>`;
+        filesPreview.split('\n').forEach(line => {
+            if (line.trim()) initialHtml += `<div class="git-process-line file-item">  ${escapeHtml(line.trim())}</div>`;
+        });
+    } else {
+        initialHtml += `<div class="git-process-line dim">(escaneando archivos...)</div>`;
+    }
+    initialHtml += `<div class="git-process-separator"></div>`;
+    outputEl.innerHTML = initialHtml;
+
+    // Disable button
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...PUSHEANDO...'; }
+
+    try {
+        // ── POST to start the job ──
+        const startRes = await fetch(`${API_BASE}/utils/git-commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: p.folder, message })
+        });
+        const { jobId } = await startRes.json();
+
+        if (!jobId) throw new Error('No se recibio jobId del servidor');
+
+        if (statusEl) { statusEl.textContent = 'Ejecutando...'; statusEl.className = 'git-process-status running'; }
+
+        // ── Connect to SSE stream for real-time step updates ──
+        const eventSource = new EventSource(`${API_BASE}/utils/git-commit-stream/${jobId}`);
+
+        await new Promise((resolve, reject) => {
+            eventSource.addEventListener('step', (e) => {
+                try {
+                    const step = JSON.parse(e.data);
+
+                    // Update progress indicator
+                    updateProgress(step.step);
+
+                    if (outputEl) {
+                        const icons = { add: '📦', commit: '💾', push: '🚀' };
+                        const icon = icons[step.step] || '•';
+                        const stepLabel = step.step === 'add' ? 'Stage' : step.step === 'commit' ? 'Commit' : 'Push';
+                        let html = `<div class="git-process-line step-header">${icon} <strong>${stepLabel}</strong></div>`;
+                        html += `<div class="git-process-line command">$ ${escapeHtml(step.command)}</div>`;
+                        if (step.stdout) {
+                            const lines = step.stdout.trim().split('\n');
+                            lines.forEach(line => {
+                                html += `<div class="git-process-line output">${escapeHtml(line)}</div>`;
+                            });
+                        }
+                        if (step.success) {
+                            html += `<div class="git-process-line success-marker">✓ OK</div>`;
+                        } else {
+                            html += `<div class="git-process-line error-marker">✗ ERROR</div>`;
+                            if (step.stderr) {
+                                const errLines = step.stderr.trim().split('\n');
+                                errLines.forEach(line => {
+                                    html += `<div class="git-process-line output stderr">${escapeHtml(line)}</div>`;
+                                });
+                            }
+                        }
+                        outputEl.insertAdjacentHTML('beforeend', html);
+                        outputEl.scrollTop = outputEl.scrollHeight;
+                    }
+                } catch (parseErr) {
+                    // Ignore parse errors on individual steps
+                }
+            });
+
+            eventSource.addEventListener('done', (e) => {
+                eventSource.close();
+                try {
+                    const result = JSON.parse(e.data);
+                    if (result.success) {
+                        if (statusEl) { statusEl.textContent = '✅ Commit & Push EXITOSO'; statusEl.className = 'git-process-status success'; }
+                        if (outputEl) {
+                            outputEl.insertAdjacentHTML('beforeend',
+                                '<div class="git-process-separator"></div>' +
+                                '<div class="git-process-line done-banner">✅ COMMIT & PUSH COMPLETADO</div>');
+                            outputEl.scrollTop = outputEl.scrollHeight;
+                        }
+                        msgInput.value = '';
+                        resolve(true);
+                    } else {
+                        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
+                        if (outputEl) {
+                            outputEl.insertAdjacentHTML('beforeend',
+                                '<div class="git-process-separator"></div>' +
+                                `<div class="git-process-line error-banner">❌ ERROR: ${escapeHtml(result.error || 'Desconocido')}</div>`);
+                            outputEl.scrollTop = outputEl.scrollHeight;
+                        }
+                        resolve(false);
+                    }
+                } catch (parseErr) {
+                    resolve(false);
+                }
+            });
+
+            eventSource.addEventListener('error', (e) => {
+                if (eventSource.readyState === EventSource.CLOSED) return;
+                eventSource.close();
+                if (statusEl) { statusEl.textContent = '❌ Error de conexión'; statusEl.className = 'git-process-status error'; }
+                if (outputEl) {
+                    outputEl.insertAdjacentHTML('beforeend',
+                        '<div class="git-process-line error-banner">❌ Error de conexion con el servidor</div>');
+                    outputEl.scrollTop = outputEl.scrollHeight;
+                }
+                resolve(false);
+            });
+        });
+
+        // Refresh git log on success
+        const isSuccess = statusEl && statusEl.classList.contains('success');
+        if (isSuccess && typeof loadGitLog === 'function') await loadGitLog();
+
+    } catch (e) {
+        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
+        if (outputEl) {
+            outputEl.insertAdjacentHTML('beforeend',
+                `<div class="git-process-line error-banner">❌ ${escapeHtml(e.message)}</div>`);
+            outputEl.scrollTop = outputEl.scrollHeight;
         }
     } finally {
-        if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = isGitTab ? `<svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg> COMMIT & PUSH` : 'PUSH'; }
-        if (!isGitTab) { updateThinking(chat, false); renderMessages(); }
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = `<svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg> COMMIT & PUSH`;
+        }
+
+        // ── Sticky terminal — NO auto-hide ──
+        // Only add click-to-dismiss on the header
+        const header = terminal ? terminal.querySelector('.git-process-header') : null;
+        if (header) {
+            header.style.cursor = 'pointer';
+            header.title = 'Click para cerrar';
+            header.onclick = () => {
+                terminal.classList.add('hidden');
+            };
+        }
     }
+}
+
+// ── Git Push Result Overlay (success / error) ──
+
+window.showGitPushResult = (ok, details, commitMsg) => {
+    const overlay = document.getElementById('git-push-result-overlay');
+    const icon = document.getElementById('git-push-result-icon');
+    const title = document.getElementById('git-push-result-title');
+    const msg = document.getElementById('git-push-result-msg');
+    const detailsEl = document.getElementById('git-push-result-details');
+    const dismissBtn = document.getElementById('git-push-result-dismiss');
+
+    if (!overlay) return;
+
+    if (ok) {
+        icon.textContent = '✅';
+        title.textContent = 'Commit & Push exitoso';
+        msg.textContent = `"${commitMsg}"`;
+        detailsEl.textContent = details;
+        detailsEl.style.color = 'var(--text-secondary)';
+        dismissBtn.className = 'git-push-result-dismiss success';
+    } else {
+        icon.textContent = '❌';
+        title.textContent = 'Error en Git';
+        msg.textContent = `"${commitMsg}"`;
+        detailsEl.textContent = details;
+        detailsEl.style.color = '#f85149';
+        dismissBtn.className = 'git-push-result-dismiss error';
+    }
+
+    overlay.classList.remove('hidden');
+    // Auto-dismiss after 5 seconds on success, 10 on error
+    clearTimeout(window._gitPushTimeout);
+    window._gitPushTimeout = setTimeout(() => overlay.classList.add('hidden'), ok ? 5000 : 10000);
+
+    dismissBtn.onclick = () => {
+        overlay.classList.add('hidden');
+        clearTimeout(window._gitPushTimeout);
+    };
 };
 
 window.addModelToSelect = (modelName) => {
@@ -7946,8 +8558,9 @@ init();
 
     function connectWS() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
+        const wsHost = window.location.hostname;
         try {
-            ws = new WebSocket(`ws://localhost:3001/ws/hermes`);
+            ws = new WebSocket(`ws://${wsHost}:3001/ws/hermes`);
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
@@ -8131,11 +8744,13 @@ init();
             instancesContainer.innerHTML = `
                 <p class="empty-state" style="text-align: center; padding: 20px; color: #ef4444;">
                     ❌ Error de conexión<br>
-                    <span style="font-size: 0.8rem;">Backend en localhost:3001</span>
+                    <span style="font-size: 0.8rem;">Backend en ${window.location.hostname}:3001</span>
                 </p>
             `;
         }
     }
+    // Exponer globalmente para sincronización multi-pestaña
+    window.refreshHermesInstances = refreshInstances;
 
     function renderInstances(instances) {
         if (!instances || instances.length === 0) {
@@ -8388,11 +9003,14 @@ init();
     async function stopHermesForTab() {
         if (!currentProjectId) return;
         stopPolling();
+        // Obtener el chatId asociado a este proyecto en el tab Hermes
+        const project = getActiveProject();
+        const chatId = project?._hermesChatId || ('hermes-' + currentProjectId);
         try {
             await fetch(`${API}/hermes/stop`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId: currentProjectId })
+                body: JSON.stringify({ projectId: currentProjectId, chatId })
             });
         } catch {}
         isRunning = false;
@@ -8509,7 +9127,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     // Conectar WebSocket para recibir progreso en vivo
     let progressWs = null;
     try {
-        progressWs = new WebSocket(`ws://localhost:3001/ws/hermes`);
+        progressWs = new WebSocket(`ws://${window.location.hostname}:3001/ws/hermes`);
         // Throttle para evitar re-renders excesivos durante progreso rápido
         let progressRenderTimer = null;
         progressWs.onmessage = (event) => {
@@ -8559,16 +9177,12 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
 
                                         if (isThinkingLine) {
                                             formatted = '🤔 ' + thinkContent.slice(0, 150);
-                                            // Update thinking-subtext with real Hermes thinking (the yellow message)
+                                            // Update thinking-subtext DATA on the chat object (always)
                                             chat.thinkingSubtext = thinkContent.slice(0, 150);
-                                            const thinkingSubEl = chatMessages.querySelector('.thinking-subtext');
-                                            if (thinkingSubEl) thinkingSubEl.textContent = thinkContent.slice(0, 150);
                                         } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
                                             formatted = '🤔 ' + clean.slice(0, 150);
-                                            // Update thinking-subtext with real Hermes thinking (the yellow message)
+                                            // Update thinking-subtext DATA on the chat object (always)
                                             chat.thinkingSubtext = clean.slice(0, 150);
-                                            const thinkingSubEl = chatMessages.querySelector('.thinking-subtext');
-                                            if (thinkingSubEl) thinkingSubEl.textContent = clean.slice(0, 150);
                                         }
                                         // Error-like lines
                                         else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
@@ -8667,7 +9281,13 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                     }
                                 }
 
-                                // Actualizar el indicador de thinking también (rápido, textContent)
+                                // ─── UPDATE thinking-subtext DOM (only for active chat) ───
+                                const activeThinkingSub = chatMessages.querySelector('.thinking-subtext');
+                                if (activeThinkingSub && chat.thinkingSubtext) {
+                                    activeThinkingSub.textContent = chat.thinkingSubtext;
+                                }
+
+                                // ─── UPDATE thinking indicator in header (only for active chat) ───
                                 const statusEl = document.getElementById('chat-thinking-status');
                                 if (statusEl) {
                                     const lastClean = lines.filter(l => l.trim()).pop() || '';
@@ -8896,33 +9516,37 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         updateThinking(chat, false);
         saveData();
 
-        // ─── Procesar cambios y abrir archivos modificados ───
+        // ─── Procesar cambios y actualizar UI solo si este proyecto está activo ───
         if (backendChanges.length > 0) {
-            // Guardar cambios en el chat
+            // Guardar cambios en el chat (siempre — no es DOM)
             chat.sessionChanges = backendChanges.map(c => ({
                 fileName: c.fileName,
                 added: c.added,
                 removed: c.removed,
                 diff: c.diff || null
             }));
-            renderSessionSummary(chat.sessionChanges, project);
 
-            // Auto-abrir archivos modificados en tabs del proyecto
-            for (const change of backendChanges) {
-                if (!change.fileName) continue;
-                const fullPath = pathJoin(project.folder, change.fileName).replace(/\\/g, '/');
-                // Solo abrir si no está ya abierto
-                const alreadyOpen = project.openFiles.some(f => f.path.replace(/\\/g, '/') === fullPath);
-                if (!alreadyOpen) {
-                    try {
-                        await window.openFile(fullPath);
-                    } catch (e) {
-                        console.error('Error auto-opening file:', fullPath, e);
+            // Actualizaciones DOM solo si este es el proyecto activo
+            const activeProj = getActiveProject();
+            if (activeProj && activeProj.id === project.id) {
+                renderSessionSummary(chat.sessionChanges, project);
+
+                // Auto-abrir archivos modificados en tabs del proyecto (sin robar foco)
+                for (const change of backendChanges) {
+                    if (!change.fileName) continue;
+                    const fullPath = pathJoin(project.folder, change.fileName).replace(/\\/g, '/');
+                    const alreadyOpen = project.openFiles.some(f => f.path.replace(/\\/g, '/') === fullPath);
+                    if (!alreadyOpen) {
+                        try {
+                            await window.openFile(fullPath, { setActive: false });
+                        } catch (e) {
+                            console.error('Error auto-opening file:', fullPath, e);
+                        }
                     }
                 }
+                // Re-escanear carpeta para actualizar file list
+                if (project.folder) window.scanFolder(project.folder, project.id);
             }
-            // Re-escanear carpeta para actualizar file list
-            if (project.folder) window.scanFolder(project.folder, project.id);
         }
 
         if (progressWs) { try { progressWs.close(); } catch(e) {}
@@ -8977,6 +9601,16 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         } catch(e) {}
 
     } catch (e) {
+        // ─── Si el usuario ya solicitó STOP (isStopped true), no duplicar mensajes ───
+        if (chat.isStopped) {
+            // stopAgent ya se encargó de todo: marcó progress como finished,
+            // pusheó "🛑 Solicitud de detención", llamó renderMessages() y saveData()
+            // Solo asegurarse de cerrar el WS si sigue abierto
+            if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            chat.isStreaming = false;
+            saveData();
+            return;
+        }
         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
         if (progressChatMsg) {
             const errTime = new Date().toLocaleTimeString();
@@ -8989,7 +9623,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         // Mark chat as errored so Agents Room shows the cross
         chat._errored = true;
         chat._errorMessage = e.message || 'Error desconocido';
-        if (e.name === 'AbortError') {
+        if (e.name === 'AbortError' && !chat.isStopped) {
             chat.messages.push({
                 role: 'system',
                 content: '⏹️ Consulta cancelada (timeout de 120s).',
@@ -10117,8 +10751,55 @@ window.handleGitResetOrigin = async () => {
     const project = getActiveProject();
     if (!project || !project.folder) return;
 
-    if (!confirm('⚠️ ¿Estás seguro? Esto hará un reset --hard al origen (origin/master o origin/main). Todos los cambios locales no commiteados se perderán.')) return;
+    // Use checkout confirm overlay for consistency (reuse the existing overlay)
+    const overlay = document.getElementById('git-checkout-confirm');
+    const msgEl = document.getElementById('git-confirm-msg');
+    const cancelBtn = document.getElementById('git-confirm-cancel');
+    const checkoutBtn = document.getElementById('git-confirm-checkout');
 
+    if (!overlay) {
+        // Fallback: browser confirm
+        if (!confirm('⚠️ ¿Estás seguro? Esto hará un reset --hard al origen (origin/master o origin/main). Todos los cambios locales no commiteados se perderán.')) return;
+        return doGitResetOrigin(project);
+    }
+
+    // Configure overlay for reset
+    const icon = overlay.querySelector('.git-confirm-icon');
+    const title = overlay.querySelector('h3');
+    if (icon) icon.textContent = '⚠️';
+    if (title) title.textContent = '¿Resetear al origen?';
+    msgEl.innerHTML = 'Esto hará un <code>git reset --hard origin</code>. <strong style="color:#f85149">Todos los cambios locales sin commitear se perderán permanentemente.</strong>';
+    checkoutBtn.textContent = 'Sí, resetear';
+    checkoutBtn.className = 'git-confirm-checkout-btn danger';
+    overlay.classList.remove('hidden');
+
+    const doReset = async () => {
+        overlay.classList.add('hidden');
+        cleanup();
+        await doGitResetOrigin(project);
+    };
+
+    const cancel = () => {
+        overlay.classList.add('hidden');
+        cleanup();
+    };
+
+    const cleanup = () => {
+        checkoutBtn.removeEventListener('click', doReset);
+        cancelBtn.removeEventListener('click', cancel);
+        // Restore original overlay state
+        if (icon) icon.textContent = '⚠️';
+        if (title) title.textContent = '¿Restaurar a este commit?';
+        msgEl.innerHTML = 'Esto hará un <code>git checkout</code> al commit seleccionado. Los cambios sin commitear se guardarán en el stash.';
+        checkoutBtn.textContent = 'Sí, restaurar';
+        checkoutBtn.className = 'git-confirm-checkout-btn';
+    };
+
+    checkoutBtn.addEventListener('click', doReset);
+    cancelBtn.addEventListener('click', cancel);
+};
+
+async function doGitResetOrigin(project) {
     showGitFeedback('Reseteando al origen...', 'info');
 
     try {
@@ -10131,7 +10812,6 @@ window.handleGitResetOrigin = async () => {
 
         if (data.success) {
             showGitFeedback('Reset al origen exitoso', 'success');
-            // Refresh git log
             setTimeout(() => loadGitLog(), 500);
         } else {
             showGitFeedback(`Error: ${data.error || 'Error al resetear'}`, 'error');
@@ -10140,7 +10820,7 @@ window.handleGitResetOrigin = async () => {
         console.error('[GIT] Reset error:', e);
         showGitFeedback('Error de conexión o remoto no disponible', 'error');
     }
-};
+}
 
 // Initialize search input when DOM is ready
 (function initSearchBar() {

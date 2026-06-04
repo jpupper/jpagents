@@ -2,9 +2,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   server: {
-    port: 43412, // Vite port must be between 1 and 65535
+    port: 43412,
     strictPort: true,
-    hmr: false, // Disable Hot Module Replacement to prevent auto-refresh when editing files
+    host: '0.0.0.0',  // Accesible desde cualquier dispositivo en la red local
+    hmr: false,
     watch: {
       ignored: [
         '**/node_modules/**',

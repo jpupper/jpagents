@@ -24,11 +24,11 @@
     #data-panel {
       position: fixed; bottom: 20px; left: 20px; z-index: 20;
       background: rgba(8,8,15,0.85); border: 1px solid rgba(124,77,255,0.15);
-      border-radius: 12px; padding: 10px 14px;
-      max-height: 220px; overflow-y: auto;
-      font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.6rem;
+      border-radius: 12px; padding: 14px 18px;
+      max-height: 280px; overflow-y: auto;
+      font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.75rem;
       color: rgba(255,255,255,0.4); backdrop-filter: blur(12px);
-      min-width: 200px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      min-width: 230px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
       transition: opacity 0.3s;
     }
     #data-panel.focus-hidden { opacity: 0; pointer-events: none; }
@@ -41,8 +41,8 @@
     .agent-row .dot.error { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
     .agent-row .dot.off { background: #555; box-shadow: none; }
     .agent-row .a-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .agent-row .a-model { color: rgba(255,255,255,0.2); font-size: 0.5rem; }
-    .agent-row .a-tag { font-size: 0.45rem; padding: 1px 4px; border-radius: 3px; background: rgba(124,77,255,0.15); color: rgba(124,77,255,0.6); }
+    .agent-row .a-model { color: rgba(255,255,255,0.2); font-size: 0.65rem; }
+    .agent-row .a-tag { font-size: 0.6rem; padding: 1px 4px; border-radius: 3px; background: rgba(124,77,255,0.15); color: rgba(124,77,255,0.6); }
     .agent-row .a-tag.ghost { background: rgba(0,229,255,0.1); color: rgba(0,229,255,0.5); }
 
     /* ─── Toolbar ─── */
@@ -53,7 +53,7 @@
     #toolbar button {
       background: rgba(124,77,255,0.1); border: 1px solid rgba(124,77,255,0.2);
       color: rgba(255,255,255,0.5); padding: 6px 14px; border-radius: 8px;
-      cursor: pointer; font-family: 'SF Mono', monospace; font-size: 0.65rem;
+      cursor: pointer; font-family: 'SF Mono', monospace; font-size: 0.8rem;
       transition: all 0.2s; letter-spacing: 1px;
     }
     #toolbar button:hover { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.4); color: rgba(255,255,255,0.7); }
@@ -69,15 +69,15 @@
     }
     #calib-panel.open { left: 0; }
     #calib-panel h3 {
-      color: rgba(124,77,255,0.8); font-size: 0.7rem; letter-spacing: 3px;
+      color: rgba(124,77,255,0.8); font-size: 0.85rem; letter-spacing: 3px;
       text-transform: uppercase; margin-bottom: 18px; font-weight: 600;
     }
     .calib-group { margin-bottom: 18px; }
     .calib-label {
       display: flex; justify-content: space-between; align-items: center;
-      font-size: 0.6rem; color: rgba(255,255,255,0.5); margin-bottom: 6px;
+      font-size: 0.75rem; color: rgba(255,255,255,0.5); margin-bottom: 6px;
     }
-    .calib-label .calib-val { color: rgba(124,77,255,0.7); font-size: 0.7rem; }
+    .calib-label .calib-val { color: rgba(124,77,255,0.7); font-size: 0.8rem; }
     .calib-slider {
       -webkit-appearance: none; width: 100%; height: 4px; border-radius: 2px;
       background: rgba(124,77,255,0.15); outline: none; cursor: pointer;
@@ -90,7 +90,7 @@
       width: 14px; height: 14px; border-radius: 50%;
       background: #7c4dff; cursor: pointer; border: none;
     }
-    .calib-desc { font-size: 0.5rem; color: rgba(255,255,255,0.2); letter-spacing: 0.5px; margin-top: 3px; }
+    .calib-desc { font-size: 0.65rem; color: rgba(255,255,255,0.2); letter-spacing: 0.5px; margin-top: 3px; }
     .calib-toggle-group {
       display: flex; justify-content: space-between; align-items: center;
       margin-bottom: 18px; padding: 10px 0;
@@ -98,11 +98,11 @@
       border-bottom: 1px solid rgba(124,77,255,0.08);
     }
     .calib-toggle-label {
-      font-size: 0.6rem; color: rgba(255,255,255,0.5);
+      font-size: 0.75rem; color: rgba(255,255,255,0.5);
       display: flex; flex-direction: column; gap: 2px;
     }
     .calib-toggle-label .calib-toggle-desc {
-      font-size: 0.5rem; color: rgba(255,255,255,0.2);
+      font-size: 0.65rem; color: rgba(255,255,255,0.2);
     }
     .calib-toggle-switch {
       position: relative; width: 44px; height: 24px; flex-shrink: 0;
@@ -133,7 +133,7 @@
       display: block; margin-top: 20px; width: 100%; padding: 8px;
       background: rgba(124,77,255,0.08); border: 1px solid rgba(124,77,255,0.15);
       color: rgba(255,255,255,0.4); border-radius: 6px; cursor: pointer;
-      font-family: 'SF Mono', monospace; font-size: 0.55rem; letter-spacing: 2px;
+      font-family: 'SF Mono', monospace; font-size: 0.7rem; letter-spacing: 2px;
       transition: all 0.2s; text-transform: uppercase;
     }
     .calib-reset:hover { background: rgba(124,77,255,0.15); border-color: rgba(124,77,255,0.3); color: rgba(255,255,255,0.6); }
@@ -144,7 +144,7 @@
     }
     #focus-backdrop.open { opacity: 1; pointer-events: auto; }
     #focus-info-panel {
-      position: fixed; right: -340px; top: 0; bottom: 0; width: 320px; z-index: 26;
+      position: fixed; right: -400px; top: 0; bottom: 0; width: 380px; z-index: 26;
       background: rgba(8,8,15,0.93); border-left: 1px solid rgba(124,77,255,0.2);
       backdrop-filter: blur(16px); transition: right 0.4s cubic-bezier(0.4,0,0.2,1);
       padding: 24px 20px; font-family: 'SF Mono', 'Consolas', monospace;
@@ -153,13 +153,13 @@
     }
     #focus-info-panel.open { right: 0; }
     .fi-header { display: flex; align-items: center; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid rgba(124,77,255,0.12); margin-bottom: 16px; }
-    .fi-name { font-size: 1.0rem; font-weight: 700; color: rgba(255,255,255,0.9); }
-    .fi-label { font-size: 0.55rem; color: rgba(124,77,255,0.6); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
-    .fi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.65rem; font-family: inherit; transition: all 0.2s; }
+    .fi-name { font-size: 1.15rem; font-weight: 700; color: rgba(255,255,255,0.9); }
+    .fi-label { font-size: 0.7rem; color: rgba(124,77,255,0.6); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .fi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.75rem; font-family: inherit; transition: all 0.2s; }
     .fi-close:hover { border-color: rgba(124,77,255,0.4); color: rgba(255,255,255,0.7); }
     .fi-section { margin-bottom: 14px; }
-    .fi-section-title { font-size: 0.5rem; letter-spacing: 2px; color: rgba(124,77,255,0.5); text-transform: uppercase; margin-bottom: 6px; }
-    .fi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(124,77,255,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.6rem; }
+    .fi-section-title { font-size: 0.65rem; letter-spacing: 2px; color: rgba(124,77,255,0.5); text-transform: uppercase; margin-bottom: 6px; }
+    .fi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(124,77,255,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.75rem; }
     .fi-row-label { color: rgba(255,255,255,0.35); }
     .fi-row-value { color: rgba(255,255,255,0.7); }
     .fi-status-indicator { display: flex; align-items: center; gap: 6px; }
@@ -169,19 +169,19 @@
     .fi-status-indicator .s-dot.running { background: #a855f7; box-shadow: 0 0 8px #a855f7; }
     .fi-status-indicator .s-dot.error { background: #ff4444; box-shadow: 0 0 8px #ff4444; }
     .fi-status-indicator .s-dot.off { background: #555; box-shadow: none; }
-    .fi-last-msg { font-size: 0.55rem; color: rgba(255,255,255,0.4); line-height: 1.6; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; }
-    .fi-tag { display: inline-block; font-size: 0.5rem; padding: 2px 8px; border-radius: 4px; background: rgba(124,77,255,0.12); color: rgba(124,77,255,0.6); margin-right: 4px; margin-bottom: 4px; }
+    .fi-last-msg { font-size: 0.7rem; color: rgba(255,255,255,0.4); line-height: 1.6; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; }
+    .fi-tag { display: inline-block; font-size: 0.65rem; padding: 2px 8px; border-radius: 4px; background: rgba(124,77,255,0.12); color: rgba(124,77,255,0.6); margin-right: 4px; margin-bottom: 4px; }
     .fi-tag.ghost { background: rgba(0,229,255,0.08); color: rgba(0,229,255,0.5); }
     #unfocus-hint {
       position: fixed; bottom: 50%; left: 50%; transform: translate(-50%, 50%);
-      color: rgba(255,255,255,0.15); font-size: 0.7rem; letter-spacing: 4px;
+      color: rgba(255,255,255,0.15); font-size: 0.85rem; letter-spacing: 4px;
       pointer-events: none; z-index: 20; opacity: 0; transition: opacity 0.4s;
       font-family: 'SF Mono', monospace;
     }
     #unfocus-hint.open { opacity: 1; }
     /* ─── PROJECT INFO PANEL ─── */
     #project-info-panel {
-      position: fixed; left: -360px; top: 0; bottom: 0; width: 340px; z-index: 21;
+      position: fixed; left: -420px; top: 0; bottom: 0; width: 400px; z-index: 21;
       background: rgba(8,8,15,0.94); border-right: 1px solid rgba(255,149,0,0.2);
       backdrop-filter: blur(16px); transition: left 0.4s cubic-bezier(0.4,0,0.2,1);
       padding: 24px 20px; font-family: 'SF Mono', 'Consolas', monospace;
@@ -191,26 +191,26 @@
     #project-info-panel.open { left: 0; }
     .pi-header { display: flex; align-items: center; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,149,0,0.12); margin-bottom: 16px; }
     .pi-icon { font-size: 1.8rem; line-height: 1; }
-    .pi-name { font-size: 1.0rem; font-weight: 700; color: rgba(255,255,255,0.9); }
-    .pi-subtitle { font-size: 0.5rem; color: rgba(255,149,0,0.5); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
-    .pi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.65rem; font-family: inherit; transition: all 0.2s; }
+    .pi-name { font-size: 1.15rem; font-weight: 700; color: rgba(255,255,255,0.9); }
+    .pi-subtitle { font-size: 0.65rem; color: rgba(255,149,0,0.5); letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .pi-close { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.4); cursor: pointer; border-radius: 6px; padding: 4px 10px; font-size: 0.75rem; font-family: inherit; transition: all 0.2s; }
     .pi-close:hover { border-color: rgba(255,149,0,0.4); color: rgba(255,255,255,0.7); }
     .pi-section { margin-bottom: 14px; }
-    .pi-section-title { font-size: 0.5rem; letter-spacing: 2px; color: rgba(255,149,0,0.5); text-transform: uppercase; margin-bottom: 6px; }
-    .pi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(255,149,0,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.6rem; }
+    .pi-section-title { font-size: 0.65rem; letter-spacing: 2px; color: rgba(255,149,0,0.5); text-transform: uppercase; margin-bottom: 6px; }
+    .pi-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: rgba(255,149,0,0.04); border-radius: 6px; margin-bottom: 4px; font-size: 0.75rem; }
     .pi-row-label { color: rgba(255,255,255,0.35); }
     .pi-row-value { color: rgba(255,255,255,0.7); word-break: break-all; max-width: 200px; text-align: right; }
     .pi-row-value a { color: rgba(124,77,255,0.7); text-decoration: none; }
     .pi-row-value a:hover { color: rgba(124,77,255,1); }
-    .pi-btn { display: inline-block; margin-top: 6px; padding: 5px 12px; background: rgba(255,149,0,0.1); border: 1px solid rgba(255,149,0,0.25); color: rgba(255,149,0,0.7); border-radius: 6px; cursor: pointer; font-size: 0.55rem; font-family: inherit; transition: all 0.2s; text-decoration: none; }
+    .pi-btn { display: inline-block; margin-top: 6px; padding: 5px 12px; background: rgba(255,149,0,0.1); border: 1px solid rgba(255,149,0,0.25); color: rgba(255,149,0,0.7); border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-family: inherit; transition: all 0.2s; text-decoration: none; }
     .pi-btn:hover { background: rgba(255,149,0,0.18); border-color: rgba(255,149,0,0.5); color: rgba(255,149,0,0.9); }
-    .pi-change-item { font-size: 0.5rem; color: rgba(255,255,255,0.35); padding: 3px 6px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 2px; border-left: 2px solid rgba(255,149,0,0.15); line-height: 1.5; }
-    .pi-flame-indicator { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; color: rgba(255,149,0,0.6); }
+    .pi-change-item { font-size: 0.65rem; color: rgba(255,255,255,0.35); padding: 3px 6px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 2px; border-left: 2px solid rgba(255,149,0,0.15); line-height: 1.5; }
+    .pi-flame-indicator { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: rgba(255,149,0,0.6); }
     .pi-flame-dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,149,0,0.5); box-shadow: 0 0 12px rgba(255,149,0,0.4); }
     .pi-flame-dot.active { background: #ff9500; box-shadow: 0 0 16px #ff9500; animation: piFlamePulse 1.2s ease-in-out infinite; }
     .pi-flame-dot.off { background: #333; box-shadow: none; }
     @keyframes piFlamePulse { 0%, 100% { box-shadow: 0 0 12px #ff9500; } 50% { box-shadow: 0 0 24px #ffaa33; } }
-    .pi-empty { font-size: 0.5rem; color: rgba(255,255,255,0.2); text-align: center; padding: 12px; }
+    .pi-empty { font-size: 0.65rem; color: rgba(255,255,255,0.2); text-align: center; padding: 12px; }
     @media (max-width: 768px) {
       #calib-panel { width: 220px; }
     }
@@ -389,7 +389,7 @@
       <div class="pi-section-title">📂 Directorio</div>
       <div class="pi-row">
         <span class="pi-row-label">Ruta</span>
-        <span class="pi-row-value" id="pi-folder" style="font-size:0.5rem;">—</span>
+        <span class="pi-row-value" id="pi-folder" style="font-size:0.65rem;">—</span>
       </div>
       <button class="pi-btn" id="pi-open-folder-btn" style="display:none;">📂 Abrir carpeta</button>
     </div>
@@ -402,7 +402,7 @@
     </div>
     <div class="pi-section">
       <div class="pi-section-title">📝 Descripción</div>
-      <div class="pi-last-msg" id="pi-description" style="font-size:0.55rem;color:rgba(255,255,255,0.4);line-height:1.6;background:rgba(255,255,255,0.02);padding:8px;border-radius:6px;">Sin descripción</div>
+      <div class="pi-last-msg" id="pi-description" style="font-size:0.7rem;color:rgba(255,255,255,0.4);line-height:1.6;background:rgba(255,255,255,0.02);padding:8px;border-radius:6px;">Sin descripción</div>
     </div>
     <div class="pi-section">
       <div class="pi-section-title">🕐 Últimos Cambios</div>
@@ -431,7 +431,8 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/exampl
 import { CSS2DRenderer, CSS2DObject } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/renderers/CSS2DRenderer.js';
 
 // ─── CONFIG ───
-const API = 'http://localhost:3001/api';
+const API_HOST = window.location.hostname;
+const API = `http://${API_HOST}:3001/api`;
 let agents = [];
 let allAgentsWithData = [];
 let mageGroup = new THREE.Group();
@@ -1337,14 +1338,14 @@ function buildLabel(agent, index) {
   const nameColor = isGhost ? 'rgba(0,229,255,0.6)' : 'rgba(255,255,255,0.8)';
 
   const nameEl = document.createElement('div');
-  nameEl.style.cssText = `color: ${nameColor}; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 20px rgba(124,77,255,0.3);`;
+  nameEl.style.cssText = `color: ${nameColor}; font-size: 13px; font-weight: 600; letter-spacing: 1px; text-shadow: 0 0 20px rgba(124,77,255,0.3);`;
   const displayName = agent.sessionTitle || agent.name || agent.agentName || agent.id.slice(0, 10);
   nameEl.textContent = displayName;
   div.appendChild(nameEl);
 
   if (agent.toolName && agent.status === 'thinking') {
     const toolEl = document.createElement('div');
-    toolEl.style.cssText = `color: rgba(0,229,255,0.5); font-size: 8px; letter-spacing: 0.5px; margin-top: 1px;`;
+    toolEl.style.cssText = `color: rgba(0,229,255,0.5); font-size: 10px; letter-spacing: 0.5px; margin-top: 1px;`;
     toolEl.textContent = `⚡ ${agent.toolName}`;
     div.appendChild(toolEl);
   }
@@ -1362,25 +1363,25 @@ function buildLabel(agent, index) {
      agent.status === 'error' ? `✕ ${ghostSuffix}error` : `◉ ${ghostSuffix}idle`)
     : (isOff ? '⏻ apagado' :
     agent.status === 'thinking' ? '⟳ pensando' : agent.status === 'running' ? '⚡ trabajando' : agent.status === 'error' ? '✕ error' : '◉ idle');
-  statusEl.style.cssText = `color: ${statusColor}; font-size: 7.5px; letter-spacing: 0.5px; opacity: 0.8; margin-top: 2px;`;
+  statusEl.style.cssText = `color: ${statusColor}; font-size: 9.5px; letter-spacing: 0.5px; opacity: 0.8; margin-top: 2px;`;
   statusEl.textContent = statusText;
   div.appendChild(statusEl);
 
   if (agent.isExternal && agent.lastMessage && agent.lastMessage.content && !agent.lastMessage.content.includes('Hermes externo')) {
     const previewEl = document.createElement('div');
-    previewEl.style.cssText = `font-size: 6.5px; color: rgba(255,255,255,0.25); letter-spacing: 0.3px; margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
+    previewEl.style.cssText = `font-size: 8px; color: rgba(255,255,255,0.25); letter-spacing: 0.3px; margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
     previewEl.textContent = agent.lastMessage.content.slice(0, 80) + (agent.lastMessage.content.length > 80 ? '…' : '');
     div.appendChild(previewEl);
   }
 
   const projectEl = document.createElement('div');
-  projectEl.style.cssText = `font-size: 7px; color: rgba(255,255,255,0.2); letter-spacing: 1px; margin-top: 1px;`;
+  projectEl.style.cssText = `font-size: 9px; color: rgba(255,255,255,0.2); letter-spacing: 1px; margin-top: 1px;`;
   projectEl.textContent = agent.projectName || '';
   div.appendChild(projectEl);
 
   const tagEl = document.createElement('div');
   const tagColor = isGhost ? 'rgba(0,229,255,0.4)' : (isOff ? 'rgba(100,100,100,0.4)' : 'rgba(124,77,255,0.5)');
-  tagEl.style.cssText = `font-size: 7px; color: ${tagColor}; letter-spacing: 2px; margin-top: 1px;`;
+  tagEl.style.cssText = `font-size: 9px; color: ${tagColor}; letter-spacing: 2px; margin-top: 1px;`;
   tagEl.textContent = isGhost ? '👻 HERMES GHOST' : (isOff ? '⏻ HERMES OFF' : (agent.isHermes ? '⚡ HERMES' : '✦ AGENT'));
   div.appendChild(tagEl);
 
@@ -1415,6 +1416,109 @@ function getAgentOrbitPosition(projKey, agentIdx, agentsInGroup) {
 // En lugar de destruir y recrear todo, compara los agentes y solo
 // agrega/elimina lo que cambió. Las animaciones de entrada/salida
 // ocurren en el loop principal.
+
+// ── Sync project nodes with current agent data ──
+// Creates nodes for new projects, removes orphaned nodes for removed projects.
+function syncProjectNodes(newAgents) {
+  // Build project groups from new agents
+  const projectGroups = {};
+  for (const agent of newAgents) {
+    const projKey = agent.projectId || '__default__';
+    if (!projectGroups[projKey]) {
+      projectGroups[projKey] = { name: agent.projectName || 'Default', agents: [] };
+    }
+    projectGroups[projKey].agents.push(agent);
+  }
+  const newProjKeys = new Set(Object.keys(projectGroups));
+
+  // Find existing project nodes in floorGroup
+  const existingNodes = new Map(); // projKey → group
+  const toRemove = [];
+  for (const child of floorGroup.children) {
+    if (child.userData && child.userData._projKey) {
+      const key = child.userData._projKey;
+      if (newProjKeys.has(key)) {
+        existingNodes.set(key, child);
+      } else {
+        toRemove.push(child);
+      }
+    }
+  }
+
+  // Remove orphaned nodes
+  for (const node of toRemove) {
+    floorGroup.remove(node);
+    if (node.traverse) {
+      node.traverse(c => {
+        if (c.material) {
+          if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+          else c.material.dispose();
+        }
+      });
+    }
+  }
+
+  // Also remove orphaned project labels
+  const labelsToRemove = [];
+  scene.children.forEach(c => {
+    if (c.isCSS2DObject && c.userData && c.userData._isProjLabel) {
+      if (!newProjKeys.has(c.userData._projKey)) {
+        labelsToRemove.push(c);
+      }
+    }
+  });
+  labelsToRemove.forEach(c => scene.remove(c));
+
+  // Create nodes for new projects
+  const polarRadius = calibState.polarRadius;
+  let needsReposition = toRemove.length > 0;
+
+  for (const projKey of newProjKeys) {
+    if (existingNodes.has(projKey)) continue;
+
+    const group = projectGroups[projKey];
+    if (!projectColors[projKey]) {
+      // Use a stable hash instead of index-based hue (index is unreliable during incremental updates)
+      let hash = 0;
+      for (let i = 0; i < projKey.length; i++) hash = ((hash << 5) - hash) + projKey.charCodeAt(i);
+      projectColors[projKey] = Math.abs(hash % 360);
+    }
+    const hue = projectColors[projKey];
+
+    const node = createProjectNode(group.name, projKey, hue);
+    node.position.set(0, 0, 0); // will be repositioned below
+    node.userData._projKey = projKey;
+    floorGroup.add(node);
+
+    // Create project name label
+    const projNameDiv = document.createElement('div');
+    projNameDiv.style.cssText = `
+      color: rgba(255,255,255,0.35);
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      text-shadow: 0 0 20px rgba(124,77,255,0.15);
+      background: rgba(0,0,0,0.3);
+      padding: 4px 12px;
+      border-radius: 4px;
+      backdrop-filter: blur(4px);
+      transition: none;
+    `;
+    projNameDiv.textContent = group.name;
+    const projLabel = new CSS2DObject(projNameDiv);
+    projLabel.position.set(0, 60, 0); // will be repositioned
+    projLabel.userData = { _isProjLabel: true, _projKey: projKey };
+    scene.add(projLabel);
+
+    needsReposition = true;
+  }
+
+  projectCount = newProjKeys.size;
+  return needsReposition;
+}
+
 function incrementalUpdate(newAgents) {
   // Obtener IDs actuales
   const prevIds = new Set(agentMap.keys());
@@ -1444,6 +1548,8 @@ function incrementalUpdate(newAgents) {
   // Si hay que agregar o sacar, necesitamos reposicionar TODOS los orbitadores
   // porque los índices cambian.
   if (toRemove.length > 0 || toAdd.length > 0) {
+    // Sync project nodes first (handle new/removed projects)
+    syncProjectNodes(newAgents);
     repositionAllAgents(newAgents);
   }
 
@@ -1740,7 +1846,7 @@ function rebuildScene() {
     projNameDiv.style.cssText = `
       color: rgba(255,255,255,0.35);
       font-family: 'SF Mono', 'Consolas', monospace;
-      font-size: 11px;
+      font-size: 13px;
       font-weight: 600;
       letter-spacing: 3px;
       text-transform: uppercase;
@@ -2209,14 +2315,15 @@ window.refreshAgents = async function(forceRebuild = false) {
     const data = await res.json();
     const newAgents = data.agents || [];
 
-    // Comparar si cambiaron
-    const dataKey = JSON.stringify(newAgents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, sessionTitle: a.sessionTitle, isExternal: a.isExternal, projectId: a.projectId })));
-    if (dataKey === lastAgentData && agents.length > 0 && !forceRebuild) {
+    // ── GHOST FILTER: aplicar filtro temprano para que todo use datos consistentes ──
+    agents = calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
+    allAgentsWithData = [...agents];
+
+    // Comparar si cambiaron (usando datos ya filtrados)
+    const dataKey = JSON.stringify(agents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, sessionTitle: a.sessionTitle, isExternal: a.isExternal, projectId: a.projectId })));
+    if (dataKey === lastAgentData && agentMap.size > 0 && !forceRebuild) {
       // Sin cambios estructurales, solo actualizar estados
-      agents = calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
-      allAgentsWithData = [...agents];
-      // Update statuses in existing mages
-      for (const agent of newAgents) {
+      for (const agent of agents) {
         const id = agent.id || agent.pid;
         const entry = agentMap.get(id);
         if (entry && !entry.exiting) {
@@ -2232,21 +2339,22 @@ window.refreshAgents = async function(forceRebuild = false) {
     }
 
     lastAgentData = dataKey;
-    agents = calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
+
+    // ── Guardar project keys (BUGFIX: projChanged detection) ──
+    const prevProjKeys = new Set((agents || []).map(a => a.projectId || '__default__'));
 
     // Si es el primer build o hay muchos cambios, hacer rebuild completo
     const currentIds = new Set(agentMap.keys());
-    const newIds = new Set(newAgents.map(a => a.id || a.pid));
+    const newIds = new Set(agents.map(a => a.id || a.pid));
     // Rebuild si no hay agentMap previo o si la diferencia es > 50% o si cambiaron los proyectos
     const diffCount = [...currentIds].filter(id => !newIds.has(id)).length +
                       [...newIds].filter(id => !currentIds.has(id)).length;
                       
-    const currentProjKeys = new Set((agents || []).map(a => a.projectId || '__default__'));
-    const newProjKeys = new Set(newAgents.map(a => a.projectId || '__default__'));
-    let projChanged = currentProjKeys.size !== newProjKeys.size;
+    const newProjKeys = new Set(agents.map(a => a.projectId || '__default__'));
+    let projChanged = prevProjKeys.size !== newProjKeys.size;
     if (!projChanged) {
         for (const pk of newProjKeys) {
-            if (!currentProjKeys.has(pk)) {
+            if (!prevProjKeys.has(pk)) {
                 projChanged = true;
                 break;
             }
@@ -2273,7 +2381,7 @@ window.refreshAgents = async function(forceRebuild = false) {
         }
       }
     } else {
-      incrementalUpdate(newAgents);
+      incrementalUpdate(agents);
       updateAllFlames();
     }
   } catch(e) {
@@ -2790,7 +2898,7 @@ window.addEventListener('beforeunload', () => bc.close());
 
 function connectWebSocket() {
   try {
-    const ws = new WebSocket('ws://localhost:3001/ws/hermes');
+    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws/hermes`);
     ws.onopen = () => {
       console.log('[AGENTS-ROOM] Conectado a WebSocket Server de Sincronización.');
     };
