@@ -1198,14 +1198,18 @@ async function init() {
                     } else if (data.event === 'sync:connected') {
                         mySocketId = data.socketId;
                         console.log(`[WS-SYNC] Conectado al servidor de sincronización. Socket ID: ${mySocketId}`);
-                        // Cargar estado inicial al conectar
-                        await loadData(false);
-                        syncUI();
-                        checkSystemHealth();
-                        fetchModels();
-                        // ─── Cargar instancias Hermes iniciales ───
-                        if (window.refreshHermesInstances) {
-                            window.refreshHermesInstances();
+                        // Cargar estado inicial al conectar (solo si no hay agente activo)
+                        if (isTabBusy()) {
+                            console.log('[SYNC] ⏭️ sync:connected — omitiendo loadData porque hay agente activo');
+                        } else {
+                            await loadData(false);
+                            syncUI();
+                            checkSystemHealth();
+                            fetchModels();
+                            // ─── Cargar instancias Hermes iniciales ───
+                            if (window.refreshHermesInstances) {
+                                window.refreshHermesInstances();
+                            }
                         }
                     } else if (data.event === 'sync:masterClaimed') {
                         const wasMaster = amIMaster;
@@ -1373,13 +1377,18 @@ async function init() {
     document.addEventListener('visibilitychange', async () => {
         if (!document.hidden) {
             console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
-            await loadData(false);
-            syncUI();
-            checkSystemHealth();
-            updateAgentBadge();
-            refreshConsoleUI();
-            if (window.refreshHermesInstances) {
-                window.refreshHermesInstances();
+            // 🐛 BUGFIX: No recargar si hay un agente activo (misma razón que BroadcastChannel)
+            if (isTabBusy()) {
+                console.log('[SYNC] 👁️ visibilitychange ignorado — agente activo');
+            } else {
+                await loadData(false);
+                syncUI();
+                checkSystemHealth();
+                updateAgentBadge();
+                refreshConsoleUI();
+                if (window.refreshHermesInstances) {
+                    window.refreshHermesInstances();
+                }
             }
         }
     });
@@ -1390,13 +1399,22 @@ async function init() {
         const syncChannel = new BroadcastChannel('jp-agents-sync');
         syncChannel.onmessage = async (event) => {
             if (event.data.type === 'thinking-changed') {
-                console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
-                await loadData(false);
-                syncUI();
-                updateAgentBadge();
-                refreshConsoleUI();
-                if (window.refreshHermesInstances) {
-                    window.refreshHermesInstances();
+                // 🐛 BUGFIX: NO recargar si hay un agente activo
+                // loadData() reemplaza state.projects con objetos nuevos,
+                // lo que deja huérfanas las referencias a chat en medio de
+                // triggerHermesLogic(). El push del assistant message va al
+                // objeto viejo, y saveData() guarda el nuevo state sin el mensaje.
+                if (isTabBusy()) {
+                    console.log('[SYNC] 📡 BroadcastChannel: thinking-changed ignorado — agente activo');
+                } else {
+                    console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
+                    await loadData(false);
+                    syncUI();
+                    updateAgentBadge();
+                    refreshConsoleUI();
+                    if (window.refreshHermesInstances) {
+                        window.refreshHermesInstances();
+                    }
                 }
             }
         };
