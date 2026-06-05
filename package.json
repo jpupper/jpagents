@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run mcp-server\" \"vite\"",
+    "dev": "concurrently --restart-tries 3 --restart-after 2000 \"npm run server\" \"npm run mcp-server\" \"vite\"",
     "server": "node server.js",
     "mcp-server": "node mcp_server.js",
+    "telegram-bridge": "node telegram-bridge.js",
+    "god-worker": "node hermes-god-worker.js",
+    "hot-reload": "node hot-reload.js",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -25,13 +28,16 @@
     "cors": "^2.8.6",
     "diff": "^9.0.0",
     "express": "^5.2.1",
+    "grammy": "^1.43.0",
     "lucide-static": "^1.8.0",
     "marked": "^18.0.2",
     "mongodb": "^7.2.0",
     "node-fetch": "^3.3.2",
     "nodemon": "^3.1.14",
+    "pdf-parse": "^2.4.5",
     "screenshot-desktop": "^1.15.4",
     "sqlite3": "^6.0.1",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "ws": "^8.16.0"
   }
 }

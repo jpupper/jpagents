@@ -2,10 +2,21 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   server: {
-    hmr: false, // Disable Hot Module Replacement to prevent auto-refresh when editing files
+    port: 43412,
+    strictPort: true,
+    host: '0.0.0.0',  // Accesible desde cualquier dispositivo en la red local
+    hmr: false,
     watch: {
-      // You can also ignore specific files/folders here if needed
-      // ignored: ['**/node_modules/**', '**/proyects/**'],
+      ignored: [
+        '**/node_modules/**',
+        '**/projects/**',
+        '**/proyects/**',
+        '**/*.json',
+        '**/*.db*',
+        '**/vector_store/**',
+        '**/rag_uploads/**',
+        '**/scratch/**'
+      ]
     }
   }
 });

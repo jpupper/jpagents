@@ -18,6 +18,8 @@ dist-ssr
 .idea
 .DS_Store
 *.suo
+# Windows device file — conflicts with git indexing
+nul
 *.ntvs*
 *.njsproj
 *.sln
@@ -26,4 +28,12 @@ dist-ssr
 # Project files
 proyects/
 
+# Large binary / generated files
 checkpoints.db
+checkpoints.db-shm
+checkpoints.db-wal
+vector_store/
+rag_uploads/
+
+# Temp images for Hermes
+temp_images/

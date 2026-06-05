@@ -8,9 +8,10 @@ import { z } from "zod";
 import fetch from "node-fetch";
 import fs from 'fs/promises';
 import path from 'path';
-import { logAgentTrace } from "./agent_trace_logger.js";
-import { validateCodeSyntax, validateObjective, validateFilesCreated } from "./validator_routines.js";
+import { logAgentTrace, updateAgentTrace } from "./agent_trace_logger.js";
+import { validateCodeSyntax, validateObjective, validateFilesCreated, validateConsoleLogs } from "./validator_routines.js";
 import { getCollection } from "./db.js";
+import { queryVectorStore } from "./rag_manager.js";
 import * as Diff from 'diff';
 
 
@@ -198,6 +199,36 @@ const writeFile = tool(
     }
 );
 
+const searchKnowledge = tool(
+    async ({ query }, config) => {
+        try {
+            await logAgentTrace(config.configurable.projectId || "global", config.configurable.thread_id, "tool_call", { tool: "search_knowledge", args: { query } });
+            
+            const results = await queryVectorStore(query, 4);
+            let formattedResults = "Resultados de la Base de Conocimiento:\n\n";
+            
+            if (!results || results.length === 0) {
+                formattedResults = "No se encontró información relevante en la base de conocimiento.";
+            } else {
+                results.forEach((r, i) => {
+                    formattedResults += `--- Documento: ${r.metadata.source} ---\n${r.pageContent}\n\n`;
+                });
+            }
+
+            await logAgentTrace(config.configurable.projectId || "global", config.configurable.thread_id, "tool_result", { tool: "search_knowledge", success: true });
+            return formattedResults;
+        } catch (err) {
+            await logAgentTrace(config.configurable.projectId || "global", config.configurable.thread_id, "tool_result", { tool: "search_knowledge", success: false, error: err.message });
+            return `ERROR AL BUSCAR EN BASE DE CONOCIMIENTO: ${err.message}`;
+        }
+    },
+    {
+        name: "search_knowledge",
+        description: "Busca información en la base de conocimiento (documentos RAG subidos por el usuario) para responder preguntas sobre manuales, guías o documentación.",
+        schema: z.object({ query: z.string().describe("Pregunta o término a buscar en los documentos") }),
+    }
+);
+
 
 const editFile = tool(
     async ({ path: requestedPath, target, replacement }, config) => {
@@ -290,7 +321,81 @@ const summarizeRepo = tool(
     }
 );
 
-const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles];
+const webFetch = tool(
+    async ({ url, maxBytes, timeoutMs, allowLocal }, config) => {
+        try {
+            return await callMCP("web_fetch", { url, maxBytes, timeoutMs, allowLocal }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_fetch",
+        description: "Descarga una URL y devuelve texto limpio (HTML->texto) con límites de tamaño.",
+        schema: z.object({
+            url: z.string().describe("URL http/https"),
+            maxBytes: z.number().optional().describe("Máximo de bytes a leer del body"),
+            timeoutMs: z.number().optional().describe("Timeout en ms"),
+            allowLocal: z.boolean().optional().describe("Permite localhost/IPs privadas")
+        }),
+    }
+);
+
+const webSearch = tool(
+    async ({ query, numResults, timeoutMs, provider, searxngUrls }, config) => {
+        try {
+            return await callMCP("web_search", { query, numResults, timeoutMs, provider, searxngUrls }, config.configurable.thread_id, config.configurable.projectId);
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_search",
+        description: "Busca en internet y devuelve resultados (título/url/snippet).",
+        schema: z.object({
+            query: z.string().describe("Consulta a buscar"),
+            numResults: z.number().optional().describe("Cantidad de resultados (máx 10)"),
+            timeoutMs: z.number().optional().describe("Timeout en ms"),
+            provider: z.enum(["searxng", "duckduckgo_instant_answer"]).optional(),
+            searxngUrls: z.array(z.string()).optional().describe("Lista opcional de instancias SearXNG base URL")
+        }),
+    }
+);
+
+const webIndex = tool(
+    async ({ url, mode, maxPages, maxDepth, sameOrigin, maxBytesPerPage, maxCharsTotal, maxFiles, maxFileBytes, includeBinary, timeoutMs, allowLocal }, config) => {
+        try {
+            return await callMCP(
+                "web_index",
+                { url, mode, maxPages, maxDepth, sameOrigin, maxBytesPerPage, maxCharsTotal, maxFiles, maxFileBytes, includeBinary, timeoutMs, allowLocal },
+                config.configurable.thread_id,
+                config.configurable.projectId
+            );
+        } catch (err) {
+            return `ERROR DE INFRAESTRUCTURA: ${err.message}`;
+        }
+    },
+    {
+        name: "web_index",
+        description: "Indexa un sitio (crawling) o un repo de GitHub (archivos clave) a partir de una URL.",
+        schema: z.object({
+            url: z.string().describe("URL del sitio o repositorio"),
+            mode: z.enum(["auto", "site", "github_repo"]).optional(),
+            maxPages: z.number().optional(),
+            maxDepth: z.number().optional(),
+            sameOrigin: z.boolean().optional(),
+            maxBytesPerPage: z.number().optional(),
+            maxCharsTotal: z.number().optional(),
+            maxFiles: z.number().optional(),
+            maxFileBytes: z.number().optional(),
+            includeBinary: z.boolean().optional(),
+            timeoutMs: z.number().optional(),
+            allowLocal: z.boolean().optional()
+        }),
+    }
+);
+
+const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles, searchKnowledge, webFetch, webSearch, webIndex];
 const toolNode = new ToolNode(tools);
 
 // Define el esquema de estado del grafo
@@ -323,6 +428,18 @@ const AgentState = Annotation.Root({
   requiresRetry: Annotation({
     reducer: (x, y) => y,
   }),
+  validatorAgentActive: Annotation({
+    reducer: (x, y) => y ?? x ?? false,
+  }),
+  validatorIterations: Annotation({
+    reducer: (x, y) => y ?? x ?? 15,
+  }),
+  validatorPrompt: Annotation({
+    reducer: (x, y) => y ?? x ?? "",
+  }),
+  validatorCount: Annotation({
+    reducer: (x, y) => (y !== undefined ? y : (x || 0)),
+  }),
 });
 
 // --- Graph Definition ---
@@ -350,7 +467,11 @@ const callModel = async (state, config) => {
         }
     }
 
-    await logAgentTrace(state.projectId || "global", threadId, "thinking", { 
+    // Si la iteración anterior fue un error y tenemos la reflexión
+    const recentMessages = state.messages.slice(-5);
+    const reflectionPrompt = recentMessages.find(m => m.content && m.content.includes("ANÁLISIS DE ERROR")) ? "Ten en cuenta el análisis de error previo para no repetir fallos." : "";
+
+    const traceId = await logAgentTrace(state.projectId || "global", threadId, "thinking", { 
         messages_count: state.messages.length, 
         model: modelName,
         iteration: state.iterations 
@@ -385,10 +506,31 @@ const callModel = async (state, config) => {
         }).bindTools(tools);
     }
 
-    // Pre-procesar mensajes para DeepSeek: asegurar que reasoning_content se envíe de vuelta
+    // Pre-procesar mensajes para DeepSeek y limitar contexto
+    // Recorte seguro: Mantenemos el primer mensaje (objetivo) y los últimos N,
+    // asegurando no romper la secuencia de tool_calls y tool results.
+    let safeMessages = state.messages;
+    const MAX_MESSAGES = 40;
+    
+    if (safeMessages.length > MAX_MESSAGES) {
+        // Encontrar un punto de corte seguro (un mensaje de usuario o asistente sin tool_calls pendientes)
+        let cutIndex = safeMessages.length - MAX_MESSAGES;
+        
+        // Retroceder o avanzar para no cortar entre un AI tool_calls y el tool result
+        while (cutIndex < safeMessages.length && 
+               (safeMessages[cutIndex].role === "tool" || 
+               (safeMessages[cutIndex - 1] && safeMessages[cutIndex - 1].tool_calls?.length > 0))) {
+            cutIndex++;
+        }
+        
+        if (cutIndex < safeMessages.length) {
+            safeMessages = [safeMessages[0], ...safeMessages.slice(cutIndex)];
+        }
+    }
+
     const messages = [
         { role: "system", content: systemPrompt },
-        ...state.messages.map(m => {
+        ...safeMessages.map(m => {
             const msg = { role: m.role || (m._getContent ? "assistant" : "user"), content: m.content };
             // Si es un mensaje de asistente con razonamiento previo, incluirlo
             if (m.additional_kwargs && m.additional_kwargs.reasoning_content) {
@@ -402,6 +544,16 @@ const callModel = async (state, config) => {
     let response;
     try {
         response = await model.invoke(messages);
+        
+        // Update the thinking trace with what the agent actually thought/responded
+        if (traceId) {
+            let thoughtProcess = response.content;
+            if (response.additional_kwargs?.reasoning_content) {
+                thoughtProcess = response.additional_kwargs.reasoning_content + "\n\n---\n\n" + response.content;
+            }
+            await updateAgentTrace(traceId, { thought: thoughtProcess });
+        }
+        
     } catch (error) {
         console.error(`[GRAPH ERROR] Error invoking model ${modelName}:`, error);
         return { 
@@ -517,12 +669,93 @@ const callModel = async (state, config) => {
     };
 };
 
+
+
+// Nodo del Mega Validador (Bucle forzado)
+const runMegaValidator = async (state, config) => {
+    const threadId = config.configurable.thread_id;
+    const projectId = config.configurable.projectId || state.projectId || "global";
+    
+    // Si no está activo, reportar que no hay más iteraciones
+    if (!state.validatorAgentActive) {
+        return { validatorCount: 0, requiresRetry: false };
+    }
+
+    const currentValidatorCount = state.validatorCount || 0;
+    const maxIterations = state.validatorIterations || 15;
+
+    console.log(`[GRAPH] Mega Validator Iteration: ${currentValidatorCount + 1}/${maxIterations}`);
+
+    // Si ya llegamos al límite, terminar
+    if (currentValidatorCount >= maxIterations) {
+        console.log(`[GRAPH] Mega Validator: Max iterations reached.`);
+        return { requiresRetry: false, validatorCount: 0 };
+    }
+
+    await logAgentTrace(projectId, threadId, "validation_start", { type: "mega_validator", iteration: currentValidatorCount + 1 });
+
+    const modelName = state.model || "llama3";
+    let model;
+    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+        const url = state.baseUrl || (modelName.startsWith("deepseek") ? "https://api.deepseek.com" : undefined);
+        model = new ChatOpenAI({
+            apiKey: state.apiKey,
+            configuration: { baseURL: url },
+            modelName: modelName,
+            temperature: 0.7,
+        });
+    } else {
+        model = new ChatOllama({
+            baseUrl: "http://localhost:11434",
+            model: modelName,
+            temperature: 0.7,
+        });
+    }
+
+    const validatorPrompt = state.validatorPrompt || `### MEGA VALIDATOR AGENT
+    Tu misión es ser extremadamente crítico con el trabajo realizado por el otro agente.
+    Analiza el código, el cumplimiento de objetivos y propón mejoras.
+    Si consideras que la tarea está perfecta y no hay NADA más que mejorar tras revisar profundamente, responde "TASK VALIDATED".
+    De lo contrario, da instrucciones claras de mejora.`;
+
+    const recentHistoryText = state.messages.slice(-15).map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join("\n\n");
+
+    const messages = [
+        { role: "system", content: validatorPrompt },
+        { role: "user", content: `Contexto reciente del agente:\n\n${recentHistoryText}` }
+    ];
+
+    try {
+        const response = await model.invoke(messages);
+        const content = response.content;
+
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "mega_validator", content: content, success: false });
+
+        return {
+            messages: [{ role: "system", content: `### 🛡️ MEGA VALIDATOR (Iteración ${currentValidatorCount + 1}/${maxIterations})\n${content}` }],
+            validatorCount: currentValidatorCount + 1,
+            requiresRetry: true,
+            iterations: (state.iterations || 0) + 1
+        };
+    } catch (e) {
+        console.error("[GRAPH] Mega Validator LLM Error:", e.message);
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "mega_validator", error: e.message, success: false });
+        return { requiresRetry: false }; // Si falla el LLM del validador, no bloqueamos el flujo
+    }
+};
+
+
 // Nodo de Validación Integral (Sintaxis y Objetivo)
 const runValidation = async (state, config) => {
+    const threadId = config.configurable.thread_id;
+    const projectId = config.configurable.projectId || state.projectId || "global";
+    await logAgentTrace(projectId, threadId, "validation_start", { type: "standard_validation" });
+
     // 1. Validar Sintaxis primero
     const syntaxResult = await validateCodeSyntax(state, config);
     if (!syntaxResult.isValid) {
         console.log(`[GRAPH] Code syntax validation failed.`);
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "syntax", success: false, feedback: syntaxResult.feedback });
         return { 
             messages: [{ role: "system", content: syntaxResult.feedback }],
             iterations: (state.iterations || 0) + 1,
@@ -534,6 +767,7 @@ const runValidation = async (state, config) => {
     const objectiveResult = await validateObjective(state, config);
     if (!objectiveResult.isValid) {
         console.log(`[GRAPH] Objective validation failed.`);
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "objective", success: false, feedback: objectiveResult.feedback });
         return { 
             messages: [{ role: "system", content: objectiveResult.feedback }],
             iterations: (state.iterations || 0) + 1,
@@ -545,6 +779,7 @@ const runValidation = async (state, config) => {
     const filesResult = await validateFilesCreated(state, config);
     if (!filesResult.isValid) {
         console.log(`[GRAPH] Files creation validation failed.`);
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "files", success: false, feedback: filesResult.feedback });
         return { 
             messages: [{ role: "system", content: filesResult.feedback }],
             iterations: (state.iterations || 0) + 1,
@@ -552,7 +787,20 @@ const runValidation = async (state, config) => {
         };
     }
     
+    // 4. Validar Consola del Frontend
+    const consoleResult = await validateConsoleLogs(state, config);
+    if (!consoleResult.isValid) {
+        console.log(`[GRAPH] Console logs validation failed.`);
+        await logAgentTrace(projectId, threadId, "validation_result", { type: "console", success: false, feedback: consoleResult.feedback });
+        return { 
+            messages: [{ role: "system", content: consoleResult.feedback }],
+            iterations: (state.iterations || 0) + 1,
+            requiresRetry: true
+        };
+    }
+    
     console.log(`[GRAPH] All validations passed.`);
+    await logAgentTrace(projectId, threadId, "validation_result", { type: "all", success: true, feedback: "All validations passed." });
     return { requiresRetry: false };
 };
 
@@ -605,7 +853,10 @@ const reflectOnError = async (state, config) => {
 
     await logAgentTrace(state.projectId || "global", threadId, "reflection_result", { solution: response.content });
 
-    return { messages: [{ role: "system", content: `🚨 ANÁLISIS DE ERROR: ${response.content}\n\nPor favor, intenta corregir esto usando las herramientas de nuevo con los parámetros correctos.` }] };
+    return { 
+        messages: [{ role: "system", content: `🚨 ANÁLISIS DE ERROR: ${response.content}\n\nPor favor, intenta corregir esto usando las herramientas de nuevo con los parámetros correctos.` }],
+        iterations: (state.iterations || 0) + 1
+    };
 };
 
 // Lógica de Enrutamiento (Conditional Edge)
@@ -637,6 +888,13 @@ const shouldContinue = (state) => {
         return "validate";
     }
 
+    // Si el Mega Validador está activo, forzamos la entrada al flujo de validación
+    // para cumplir con el número de iteraciones configurado, incluso si el agente no concluyó con keywords.
+    if (state.validatorAgentActive && (state.validatorCount || 0) < state.validatorIterations) {
+        console.log(`[GRAPH] Mega Validator active (${state.validatorCount}/${state.validatorIterations}). Forcing validation loop.`);
+        return "validate";
+    }
+
     // Si no está ejecutando herramientas ni concluyendo, terminar interacción para respuesta al usuario
     return "__end__";
 };
@@ -657,7 +915,20 @@ const routeAfterTools = (state) => {
 };
 
 const checkValidation = (state) => {
-    if (state.requiresRetry && state.iterations < 10) {
+    if (state.requiresRetry && state.iterations < 100) {
+        return "agent";
+    }
+    
+    // Si la validación normal pasó, ir al Mega Validador si está activo
+    if (state.validatorAgentActive && (state.validatorCount || 0) < state.validatorIterations) {
+        return "megaValidator";
+    }
+
+    return "__end__";
+};
+
+const checkMegaValidation = (state) => {
+    if (state.requiresRetry && (state.validatorCount || 0) < state.validatorIterations) {
         return "agent";
     }
     return "__end__";
@@ -669,6 +940,7 @@ const workflow = new StateGraph(AgentState)
     .addNode("tools", toolNode)
     .addNode("reflect", reflectOnError)
     .addNode("validate", runValidation)
+    .addNode("megaValidator", runMegaValidator)
     .addEdge("__start__", "agent")
     .addConditionalEdges("agent", shouldContinue, {
         "tools": "tools",
@@ -684,6 +956,11 @@ const workflow = new StateGraph(AgentState)
     })
     .addEdge("reflect", "agent")
     .addConditionalEdges("validate", checkValidation, {
+        "agent": "agent",
+        "megaValidator": "megaValidator",
+        "__end__": "__end__"
+    })
+    .addConditionalEdges("megaValidator", checkMegaValidation, {
         "agent": "agent",
         "__end__": "__end__"
     });

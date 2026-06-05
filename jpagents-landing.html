@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JP Agents — Multi-Agent Orchestration Platform</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #08080c;
+  --bg-card: #111116;
+  --bg-card-hover: #18181f;
+  --border: #1e1e28;
+  --border-glow: #7c4dff;
+  --accent: #7c4dff;
+  --accent2: #448aff;
+  --accent3: #00e5ff;
+  --text: #d4d4e0;
+  --text-dim: #707088;
+  --text-bright: #eeeef8;
+  --gradient: linear-gradient(135deg, #7c4dff 0%, #448aff 50%, #00e5ff 100%);
+  --gradient-text: linear-gradient(135deg, #b388ff, #7c4dff, #448aff);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: 'Outfit', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* ─── Background Glow ─── */
+.glow-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(120px);
+  pointer-events: none;
+  z-index: 0;
+}
+.glow-orb.orb1 {
+  width: 600px; height: 600px;
+  background: rgba(124,77,255,0.08);
+  top: -200px; right: -200px;
+}
+.glow-orb.orb2 {
+  width: 500px; height: 500px;
+  background: rgba(68,138,255,0.06);
+  bottom: -150px; left: -150px;
+}
+.glow-orb.orb3 {
+  width: 400px; height: 400px;
+  background: rgba(0,229,255,0.04);
+  top: 40%; left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* ─── Grid overlay ─── */
+.grid-overlay {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(124,77,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124,77,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Container ─── */
+.container {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ─── Hero ─── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 80px 24px 60px;
+  position: relative;
+}
+
+.logo {
+  width: 88px;
+  height: 84px;
+  margin-bottom: 32px;
+  filter: drop-shadow(0 0 40px rgba(124,77,255,0.3));
+}
+
+.hero h1 {
+  font-size: clamp(2.8rem, 7vw, 5rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  background: var(--gradient-text);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 16px;
+}
+
+.hero .subtitle {
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  font-weight: 300;
+  color: var(--text-dim);
+  max-width: 640px;
+  margin-bottom: 40px;
+  letter-spacing: 0.02em;
+}
+
+.hero .tagline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: rgba(124,77,255,0.5);
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+/* ─── Buttons ─── */
+.hero-btns {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 32px;
+  border-radius: 12px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--gradient);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 24px rgba(124,77,255,0.25);
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 40px rgba(124,77,255,0.35);
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover {
+  border-color: var(--accent);
+  color: var(--text-bright);
+  background: rgba(124,77,255,0.06);
+  transform: translateY(-2px);
+}
+
+.btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* ─── Scroll indicator ─── */
+.scroll-indicator {
+  position: absolute;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.3;
+  animation: bob 2s ease-in-out infinite;
+}
+.scroll-indicator span {
+  font-size: 0.6rem;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.scroll-indicator .line {
+  width: 1px;
+  height: 32px;
+  background: linear-gradient(to bottom, var(--accent), transparent);
+}
+
+@keyframes bob {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(6px); }
+}
+
+/* ─── Sections ─── */
+section {
+  padding: 80px 0;
+}
+
+.section-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: clamp(1.8rem, 3.5vw, 2.5rem);
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 16px;
+  letter-spacing: -0.02em;
+}
+
+.section-desc {
+  font-size: 1rem;
+  color: var(--text-dim);
+  max-width: 600px;
+  font-weight: 300;
+  margin-bottom: 48px;
+}
+
+/* ─── Features Grid ─── */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.feature-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px 28px;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+.feature-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gradient);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.feature-card:hover {
+  border-color: rgba(124,77,255,0.2);
+  background: var(--bg-card-hover);
+  transform: translateY(-3px);
+}
+.feature-card:hover::before { opacity: 1; }
+
+.feature-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(124,77,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  margin-bottom: 18px;
+}
+
+.feature-card h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 10px;
+}
+
+.feature-card p {
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.7;
+  font-weight: 300;
+}
+
+/* ─── Tech Stack ─── */
+.tech-section {
+  text-align: center;
+}
+
+.tech-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 32px;
+}
+
+.tech-badge {
+  padding: 10px 22px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--text);
+  transition: all 0.3s;
+}
+.tech-badge:hover {
+  border-color: var(--accent);
+  background: rgba(124,77,255,0.08);
+  color: var(--text-bright);
+}
+
+/* ─── Stats ─── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 24px;
+  margin: 48px 0;
+}
+
+.stat-item {
+  text-align: center;
+  padding: 28px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.stat-item .num {
+  font-size: 2.4rem;
+  font-weight: 700;
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.stat-item .label {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 6px;
+  font-weight: 300;
+}
+
+/* ─── Screenshot mock ─── */
+.mockup-section {
+  text-align: center;
+  padding: 40px 0;
+}
+
+.mockup-frame {
+  max-width: 900px;
+  margin: 0 auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 20px 80px rgba(0,0,0,0.5);
+}
+
+.mockup-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--border);
+}
+.mockup-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+}
+.mockup-dot.r { background: #ff5f56; }
+.mockup-dot.y { background: #ffbd2e; }
+.mockup-dot.g { background: #27c93f; }
+.mockup-label {
+  margin-left: 12px;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-dim);
+}
+
+.mockup-content {
+  padding: 32px;
+  display: grid;
+  grid-template-columns: 220px 1fr 200px;
+  gap: 16px;
+  min-height: 340px;
+}
+.mockup-sidebar {
+  background: rgba(124,77,255,0.04);
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+}
+.mockup-sidebar .bar {
+  height: 14px;
+  background: rgba(124,77,255,0.12);
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+.mockup-sidebar .bar:first-child {
+  width: 70%;
+  height: 20px;
+  background: linear-gradient(90deg, rgba(124,77,255,0.2), transparent);
+}
+.mockup-main {
+  background: rgba(255,255,255,0.02);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+.mockup-main .chat {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  align-items: flex-start;
+}
+.mockup-main .chat .avatar {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--gradient);
+  flex-shrink: 0;
+}
+.mockup-main .chat .bubble {
+  background: rgba(124,77,255,0.08);
+  border: 1px solid rgba(124,77,255,0.1);
+  border-radius: 12px;
+  padding: 12px 16px;
+  flex: 1;
+}
+.mockup-main .chat .bubble .line {
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 3px;
+  margin-bottom: 6px;
+}
+.mockup-main .chat .bubble .line:last-child { width: 60%; }
+
+.mockup-right {
+  background: rgba(255,255,255,0.02);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+.mockup-right .bar {
+  height: 10px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.mockup-right .bar:nth-child(3) { width: 55%; }
+.mockup-right .bar:nth-child(4) { width: 40%; }
+
+@media (max-width: 700px) {
+  .mockup-content {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+  .mockup-sidebar { display: none; }
+  .mockup-right { display: none; }
+}
+
+/* ─── CTA ─── */
+.cta-section {
+  text-align: center;
+  padding: 100px 0;
+  position: relative;
+}
+.cta-section::before {
+  content: '';
+  position: absolute;
+  inset: 40px 10%;
+  background: radial-gradient(ellipse at center, rgba(124,77,255,0.06), transparent 70%);
+  pointer-events: none;
+}
+
+.cta-section h2 {
+  font-size: clamp(1.8rem, 3.5vw, 2.5rem);
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 16px;
+}
+.cta-section p {
+  color: var(--text-dim);
+  max-width: 500px;
+  margin: 0 auto 36px;
+  font-weight: 300;
+}
+
+/* ─── Footer ─── */
+footer {
+  text-align: center;
+  padding: 40px 24px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  font-weight: 300;
+}
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+footer a:hover {
+  text-decoration: underline;
+}
+footer .heart {
+  color: #ff5f56;
+  display: inline-block;
+  animation: heartbeat 1.4s ease-in-out infinite;
+}
+@keyframes heartbeat {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+/* ─── Nav ─── */
+nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(8,8,12,0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(30,30,40,0.5);
+}
+
+nav .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--text-bright);
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+nav .brand svg { width: 28px; height: 27px; }
+nav .brand span { color: var(--accent); }
+
+nav .nav-links {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+nav .nav-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 400;
+  transition: color 0.2s;
+}
+nav .nav-links a:hover { color: var(--text-bright); }
+nav .nav-links .gh-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+nav .nav-links .gh-link svg { width: 18px; height: 18px; }
+
+@media (max-width: 480px) {
+  nav .nav-links a:not(.gh-link) { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- Background -->
+<div class="glow-orb orb1"></div>
+<div class="glow-orb orb2"></div>
+<div class="glow-orb orb3"></div>
+<div class="grid-overlay"></div>
+
+<!-- Nav -->
+<nav>
+  <a href="#" class="brand">
+    <svg viewBox="0 0 48 46" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z" fill="#7c4dff"/>
+    </svg>
+    JP<span>Agents</span>
+  </a>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#tech">Tech</a>
+    <a href="https://github.com/jpupper/jpagents" target="_blank" class="gh-link">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.05.66 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <svg class="logo" viewBox="0 0 48 46" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z" fill="url(#logoGrad)"/>
+    <defs><linearGradient id="logoGrad" x1="0" y1="0" x2="48" y2="46"><stop offset="0%" stop-color="#b388ff"/><stop offset="50%" stop-color="#7c4dff"/><stop offset="100%" stop-color="#448aff"/></linearGradient></defs>
+  </svg>
+  <p class="tagline">Multi-Agent Orchestration Platform</p>
+  <h1>JP Agents</h1>
+  <p class="subtitle">
+    Una plataforma avanzada para orquestar agentes de IA que trabajan en paralelo, validan su propio código y potencian tu desarrollo con Ollama, MCP y LangGraph.
+  </p>
+  <div class="hero-btns">
+    <a href="https://github.com/jpupper/jpagents" target="_blank" class="btn btn-primary">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.05.66 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      Ver en GitHub
+    </a>
+    <a href="#features" class="btn btn-outline">Explorar Features</a>
+  </div>
+  <div class="scroll-indicator">
+    <span>Scroll</span>
+    <div class="line"></div>
+  </div>
+</section>
+
+<!-- Mockup -->
+<section class="container mockup-section">
+  <div class="mockup-frame">
+    <div class="mockup-bar">
+      <div class="mockup-dot r"></div>
+      <div class="mockup-dot y"></div>
+      <div class="mockup-dot g"></div>
+      <span class="mockup-label">JP Agents — localhost:5173</span>
+    </div>
+    <div class="mockup-content">
+      <div class="mockup-sidebar">
+        <div class="bar" style="width:70%"></div>
+        <div class="bar"></div>
+        <div class="bar" style="width:55%"></div>
+        <div class="bar" style="width:80%"></div>
+        <div class="bar"></div>
+        <div class="bar" style="width:45%"></div>
+      </div>
+      <div class="mockup-main">
+        <div class="chat">
+          <div class="avatar"></div>
+          <div class="bubble">
+            <div class="line" style="width:80%"></div>
+            <div class="line" style="width:50%"></div>
+          </div>
+        </div>
+        <div class="chat" style="flex-direction:row-reverse">
+          <div class="avatar" style="background:linear-gradient(135deg,#448aff,#00e5ff)"></div>
+          <div class="bubble" style="background:rgba(68,138,255,0.06);border-color:rgba(68,138,255,0.12)">
+            <div class="line" style="width:90%"></div>
+            <div class="line" style="width:65%"></div>
+            <div class="line" style="width:40%"></div>
+          </div>
+        </div>
+        <div class="chat">
+          <div class="avatar"></div>
+          <div class="bubble">
+            <div class="line" style="width:75%"></div>
+            <div class="line" style="width:100%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="mockup-right">
+        <div class="bar" style="width:80%"></div>
+        <div class="bar"></div>
+        <div class="bar" style="width:55%"></div>
+        <div class="bar" style="width:40%"></div>
+        <div class="bar" style="width:70%"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Stats -->
+<section class="container">
+  <div class="stats-row">
+    <div class="stat-item">
+      <div class="num">8,000+</div>
+      <div class="label">Líneas de frontend</div>
+    </div>
+    <div class="stat-item">
+      <div class="num">Ollama</div>
+      <div class="label">Inferencia local</div>
+    </div>
+    <div class="stat-item">
+      <div class="num">3D</div>
+      <div class="label">Agents Room (Three.js)</div>
+    </div>
+    <div class="stat-item">
+      <div class="num">MCP</div>
+      <div class="label">Model Context Protocol</div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="container" id="features">
+  <p class="section-label">Features</p>
+  <h2 class="section-title">Orquestación Multi-Agente</h2>
+  <p class="section-desc">JP Agents coordina agentes de IA que trabajan en equipo sobre tu proyecto, con auto-validación y corrección automática.</p>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">🧠</div>
+      <h3>Agentes en Paralelo</h3>
+      <p>Crea y gestiona múltiples agentes trabajando simultáneamente en diferentes tareas del mismo proyecto. Cada uno con su propio skill, modelo y contexto.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔄</div>
+      <h3>Auto-Validación</h3>
+      <p>Los agentes ejecutan el proyecto, toman screenshots y revisan logs para autocorregirse hasta que el código funcione correctamente.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔌</div>
+      <h3>Protocolo MCP</h3>
+      <p>Integración nativa con Model Context Protocol para manipulación de archivos segura y estandarizada, con debugger de tráfico en tiempo real.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🏰</div>
+      <h3>Agents Room 3D</h3>
+      <p>Visualización en Three.js de todos tus agentes orbitando alrededor del proyecto. Cada agente es una esfera con brillo y estado en tiempo real.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <h3>Hermes Bridge</h3>
+      <p>Integración directa con Hermes Agent para cada proyecto. Inicia, monitorea y controla sesiones de Hermes desde la interfaz de JP Agents.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📝</div>
+      <h3>Editor con Diff</h3>
+      <p>Visualiza y edita código con resaltado de sintaxis, control de cambios con Aceptar/Rechazar, diff visual, y editor con gutter + cursor info.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🗃️</div>
+      <h3>Git Integrado</h3>
+      <p>Realiza commits y push directamente desde la interfaz. Control de versiones sin salir del flujo de trabajo.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Monitor de Agentes</h3>
+      <p>Panel de control centralizado para supervisar todos los agentes activos, su estado, último avance y chat administrativo global.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🎯</div>
+      <h3>Skills por Proyecto</h3>
+      <p>Configura prompts de sistema globales, por proyecto o por agente. Skills reutilizables que se aplican automáticamente a nuevos agentes.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🕸️</div>
+      <h3>Agentic Matrix Tree</h3>
+      <p>Visualización interactiva del árbol de decisiones de cada agente con D3.js: cada llamada a herramienta, reflexión y error se renderiza en tiempo real.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🖥️</div>
+      <h3>Terminal Integrada</h3>
+      <p>Terminal embebida con soporte para ejecutar comandos, detener procesos, y configurar comandos de ejecución por proyecto.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🎨</div>
+      <h3>Glassmorphism UI</h3>
+      <p>Interfaz moderna con diseño glassmorphism, tema oscuro, animaciones suaves y tipografía Outfit. UX pensada para flujos intensivos de desarrollo.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Tech Stack -->
+<section class="container tech-section" id="tech">
+  <p class="section-label">Tech Stack</p>
+  <h2 class="section-title">Tecnologías</h2>
+  <p class="section-desc" style="margin:0 auto 16px">Construido con herramientas modernas para máxima performance y flexibilidad.</p>
+  <div class="tech-grid">
+    <span class="tech-badge">Vite</span>
+    <span class="tech-badge">Vanilla JS</span>
+    <span class="tech-badge">CSS3</span>
+    <span class="tech-badge">Node.js</span>
+    <span class="tech-badge">Express</span>
+    <span class="tech-badge">Ollama</span>
+    <span class="tech-badge">LangGraph</span>
+    <span class="tech-badge">MCP SDK</span>
+    <span class="tech-badge">Three.js</span>
+    <span class="tech-badge">D3.js</span>
+    <span class="tech-badge">MongoDB</span>
+    <span class="tech-badge">WebSocket</span>
+    <span class="tech-badge">Highlight.js</span>
+    <span class="tech-badge">Hermes Agent</span>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="container cta-section">
+  <h2>¿Listo para potenciar tu desarrollo?</h2>
+  <p>Clona el repositorio, instalá las dependencias y ejecutá tu primer agente en minutos.</p>
+  <div class="hero-btns">
+    <a href="https://github.com/jpupper/jpagents" target="_blank" class="btn btn-primary">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.05.66 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      Clonar desde GitHub
+    </a>
+    <a href="https://github.com/jpupper/jpagents#readme" target="_blank" class="btn btn-outline">Leer README</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>Hecho con <span class="heart">♥</span> por <a href="https://github.com/jpupper" target="_blank">JPupper</a></p>
+  <p style="margin-top:8px;font-size:0.75rem">
+    <a href="https://github.com/jpupper/jpagents" target="_blank">github.com/jpupper/jpagents</a>
+  </p>
+</footer>
+
+</body>
+</html>

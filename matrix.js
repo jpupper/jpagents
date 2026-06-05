@@ -108,43 +108,90 @@ export function initMatrix(containerId, svgId) {
             .attr("fill", d => getNodeColor(d.data))
             .style("filter", d => `drop-shadow(0 0 5px ${getNodeColor(d.data)})`)
             .on("mouseover", (event, d) => {
-                tooltip.classList.remove('hidden');
+                // If there's a pinned tooltip, do not override it unless hovering over the pinned node
+                if (tooltip.dataset.pinned === 'true' && tooltip.dataset.nodeId !== d.data.id) {
+                    return;
+                }
+                renderTooltip(event, d, false);
+            })
+            .on("mouseout", (event, d) => {
+                if (tooltip.dataset.pinned !== 'true') {
+                    tooltip.classList.add('hidden');
+                }
+            })
+            .on("click", (event, d) => {
+                // Pin the tooltip on click
+                if (tooltip.dataset.pinned === 'true' && tooltip.dataset.nodeId === d.data.id) {
+                    // Toggle off if clicking the same node
+                    tooltip.dataset.pinned = 'false';
+                    tooltip.style.pointerEvents = 'none';
+                    tooltip.classList.add('hidden');
+                } else {
+                    tooltip.dataset.pinned = 'true';
+                    tooltip.dataset.nodeId = d.data.id;
+                    tooltip.style.pointerEvents = 'auto';
+                    renderTooltip(event, d, true);
+                }
+            });
 
-                // Using fixed positioning to avoid issues with relative parents
+        function renderTooltip(event, d, isPinned) {
+            tooltip.classList.remove('hidden');
+
+            // Using fixed positioning to avoid issues with relative parents
+            if (event.clientX !== undefined && event.clientY !== undefined) {
                 tooltip.style.position = 'fixed';
                 tooltip.style.left = (event.clientX + 15) + 'px';
                 tooltip.style.top = (event.clientY + 15) + 'px';
+            }
+            
+            // Allow interaction if pinned
+            tooltip.style.pointerEvents = tooltip.dataset.pinned === 'true' ? 'auto' : 'none';
 
-                // Ensure it doesn't go off screen
-                const rect = tooltip.getBoundingClientRect();
-                if (event.clientX + 15 + 320 > window.innerWidth) {
-                    tooltip.style.left = (event.clientX - 335) + 'px';
-                }
-                if (event.clientY + 15 + rect.height > window.innerHeight) {
-                    tooltip.style.top = (event.clientY - rect.height - 15) + 'px';
-                }
+            // Ensure it doesn't go off screen
+            const rect = tooltip.getBoundingClientRect();
+            // Use current coordinates or default to window center if not available
+            const clientX = event.clientX || window.innerWidth / 2;
+            const clientY = event.clientY || window.innerHeight / 2;
+            
+            if (clientX + 15 + 320 > window.innerWidth) {
+                tooltip.style.left = (clientX - 335) + 'px';
+            }
+            if (clientY + 15 + rect.height > window.innerHeight) {
+                tooltip.style.top = (clientY - rect.height - 15) + 'px';
+            }
 
-                let detailsHtml = '';
-                if (d.data.details) {
-                    if (d.data.name.includes('tool')) {
-                        const tool = d.data.details.tool || 'Desconocida';
-                        const args = d.data.details.args ? ` -> <code>${d.data.details.args.path || ''}</code>` : '';
-                        detailsHtml = `<p><strong>🛠️ Herramienta:</strong> ${tool}${args}</p>`;
-                    } else {
-                        detailsHtml = `<pre>${JSON.stringify(d.data.details, null, 2)}</pre>`;
-                    }
+            let detailsHtml = '';
+            if (d.data.details) {
+                if (d.data.name === 'User Input') {
+                    detailsHtml = `<div class="tooltip-section"><strong>💬 Input del Usuario:</strong><br/>${d.data.details.message || ''}</div>`;
+                } else if (d.data.name.includes('thinking')) {
+                    const thought = d.data.details.thought || 'Pensando...';
+                    const displayThought = thought.length > 500 && tooltip.dataset.pinned !== 'true' 
+                        ? thought.substring(0, 500) + '... (Click para fijar y ver más)' 
+                        : thought;
+                    detailsHtml = `<div class="tooltip-section"><strong>🧠 Pensamiento:</strong><br/><pre style="white-space: pre-wrap; max-height: 300px; overflow-y: auto; font-size: 0.85em;">${displayThought}</pre></div>`;
+                } else if (d.data.name.includes('tool_call') || d.data.name.includes('tool_result')) {
+                    const tool = d.data.details.tool || 'Desconocida';
+                    const args = d.data.details.args ? `<pre style="white-space: pre-wrap; max-height: 200px; overflow-y: auto; font-size: 0.85em;">${JSON.stringify(d.data.details.args, null, 2)}</pre>` : '';
+                    const result = d.data.details.success !== undefined ? `<br/><strong>Éxito:</strong> ${d.data.details.success}` : '';
+                    detailsHtml = `<div class="tooltip-section"><strong>🛠️ Herramienta:</strong> ${tool}${result}<br/><strong>Parámetros:</strong>${args}</div>`;
+                } else if (d.data.name.includes('model_response')) {
+                    detailsHtml = `<div class="tooltip-section"><strong>🤖 Respuesta del Modelo:</strong><br/><pre style="white-space: pre-wrap; max-height: 300px; overflow-y: auto; font-size: 0.85em;">${d.data.details.content || ''}</pre></div>`;
+                } else {
+                    detailsHtml = `<pre style="white-space: pre-wrap; max-height: 200px; overflow-y: auto; font-size: 0.85em;">${JSON.stringify(d.data.details, null, 2)}</pre>`;
                 }
+            }
 
-                tooltip.innerHTML = `
-                    <h4>${d.data.name}</h4>
-                    <p>Tipo: ${d.data.type}</p>
-                    ${detailsHtml}
-                    ${d.data.timestamp ? `<p><small>${new Date(d.data.timestamp).toLocaleTimeString()}</small></p>` : ''}
-                `;
-            })
-            .on("mouseout", () => {
-                tooltip.classList.add('hidden');
-            });
+            tooltip.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="margin: 0; color: var(--accent-color);">${d.data.name}</h4>
+                    ${tooltip.dataset.pinned === 'true' ? '<span style="cursor:pointer; font-size: 1.2em;" onclick="document.getElementById(\'matrix-tooltip\').dataset.pinned=\'false\'; document.getElementById(\'matrix-tooltip\').style.pointerEvents=\'none\'; document.getElementById(\'matrix-tooltip\').classList.add(\'hidden\');">✖</span>' : ''}
+                </div>
+                <p style="font-size: 0.8em; opacity: 0.8; margin-top: 5px;">Tipo: ${d.data.type}</p>
+                ${detailsHtml}
+                ${d.data.timestamp ? `<p style="text-align: right;"><small>${new Date(d.data.timestamp).toLocaleTimeString()}</small></p>` : ''}
+            `;
+        }
 
         nodes.selectAll("text")
             .data(d => [d])

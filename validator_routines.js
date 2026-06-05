@@ -255,4 +255,89 @@ Por favor, asegúrate de ejecutar la herramienta 'write_file' para CADA UNO de e
     return { isValid: true };
 };
 
+/**
+ * Valida los errores de la consola del frontend si está activada la opción.
+ */
+export const validateConsoleLogs = async (state, config) => {
+    const threadId = config.configurable.thread_id;
+    const projectId = config.configurable.projectId || state.projectId || "global";
+    
+    console.log(`[VALIDATOR] Iniciando validación de consola del frontend...`);
+
+    const lastMessage = state.messages[state.messages.length - 1];
+    const content = typeof lastMessage.content === 'string' ? lastMessage.content : '';
+    
+    const isConcluding = content.includes("TASK COMPLETE") || 
+                         content.includes("FINALIZADO") || 
+                         content.includes("COMPLETADO") || 
+                         content.includes("Conclusión") ||
+                         content.includes("Listo");
+                         
+    if (!isConcluding) {
+        return { isValid: true };
+    }
+    
+    let isConsoleValidationActive = true; // Default
+    
+    try {
+        const collection = getCollection('sessions');
+        const data = await collection.findOne({ _id: 'global_state' });
+        const sessions = data ? data.state : {};
+        if (sessions.consoleValidation !== undefined) {
+            isConsoleValidationActive = sessions.consoleValidation;
+        }
+    } catch (e) {
+        console.warn(`[VALIDATOR] No se pudo cargar estado de validación de consola, asumiendo true.`);
+    }
+    
+    if (!isConsoleValidationActive) {
+        console.log(`[VALIDATOR] Validación de consola desactivada.`);
+        return { isValid: true };
+    }
+    
+    try {
+        const collection = getCollection('client_logs');
+        const logs = await collection.find({}).sort({ timestamp: -1 }).limit(50).toArray();
+        
+        if (!logs || logs.length === 0) {
+            return { isValid: true };
+        }
+        
+        // Buscar solo logs recientes (ej. últimos 2 minutos) que sean de tipo "error" y no hayan sido vistos
+        const recentErrors = logs.filter(log => 
+            log.type === 'error' && 
+            !log.seenByAgent &&
+            (Date.now() - log.timestamp < 2 * 60 * 1000)
+        );
+        
+        if (recentErrors.length > 0) {
+            const errorMessages = recentErrors.map(e => e.messages.join(' ')).join('\n');
+            
+            // Marcar como vistos
+            const ids = recentErrors.map(e => e._id);
+            await collection.updateMany({ _id: { $in: ids } }, { $set: { seenByAgent: true } });
+            
+            await logAgentTrace(projectId, threadId, "validation_console_error", { errors: recentErrors.length });
+            
+            return {
+                isValid: false,
+                feedback: `🚨 ERRORES DE CONSOLA DETECTADOS EN EL FRONTEND:
+Se han detectado los siguientes errores recientes en la consola del navegador al ejecutar tu código:
+
+\`\`\`
+${errorMessages.substring(0, 2000)}
+\`\`\`
+
+Por favor, revisa el código fuente (HTML/JS/CSS), encuentra la causa de estos errores y corrígelos usando 'edit_file' o 'write_file'.
+Una vez corregido, responde con TASK COMPLETE.`
+            };
+        }
+        
+    } catch (e) {
+        console.warn(`[VALIDATOR] No se pudo leer client_logs de DB: ${e.message}`);
+    }
+    
+    return { isValid: true };
+};
+
 

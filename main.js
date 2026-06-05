@@ -1,12 +1,17 @@
 import './style.css'
 import { marked } from 'marked'
 import { initMatrix } from './matrix.js'
+import { stripAnsi } from './ansi-utils.js'
+import { createChat, isAgentActive, getAgentStatusLabel, getAgentStatusClass } from './agent-utils.js'
 
 let activeMatrix = null;
 
 // --- Console Log Interceptor ---
 (function () {
-    const API_BASE = 'http://localhost:3001/api';
+    const API_BASE = (() => {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+        return `http://${host}:4699/api`;
+    })();
     const originalConsole = {
         log: console.log,
         error: console.error,
@@ -101,10 +106,90 @@ marked.setOptions({
     headerIds: false
 });
 
+// ── ANSI Escape Code Stripper (comprehensive) ──
+// Hermes emite secuencias ANSI (colores, cursor, erase, scroll) que se ven como basura en HTML.
+// Ahora importado desde ansi-utils.js
+window.stripAnsi = stripAnsi;
 
-const API_BASE = 'http://localhost:3001/api';
+// ── ANSI to HTML Converter ──
+// Convierte secuencias de escape ANSI (colores, bold, etc.) en <span> con estilo CSS.
+// Soporta: colores 30-37, 90-97 (fg), 40-47, 100-107 (bg), bold(1), dim(2), italic(3), underline(4)
+function ansiToHtml(text) {
+    if (typeof text !== 'string') return escapeHtml(String(text));
+    // Primero escapamos HTML para prevenir XSS
+    let html = escapeHtml(text);
+    let result = '';
+    let i = 0;
+    let openSpans = 0;
+    // Paleta ANSI oscura (legible sobre fondo oscuro)
+    const FG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const FG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    const BG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const BG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    let cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false };
+
+    function styleStr() {
+        const s = [];
+        if (cur.fg) s.push('color:' + cur.fg);
+        if (cur.bg) s.push('background-color:' + cur.bg);
+        if (cur.bold) s.push('font-weight:bold');
+        if (cur.dim) s.push('opacity:0.6');
+        if (cur.italic) s.push('font-style:italic');
+        if (cur.underline) s.push('text-decoration:underline');
+        return s.join(';');
+    }
+
+    function closeSpans() { while (openSpans > 0) { result += '</span>'; openSpans--; } }
+    function openSpan() {
+        closeSpans();
+        const st = styleStr();
+        if (st) { result += '<span style="' + st + '">'; openSpans = 1; }
+    }
+
+    while (i < html.length) {
+        if (html.charCodeAt(i) === 27 && html.charAt(i + 1) === '[') {
+            let j = i + 2;
+            while (j < html.length && !/[A-Za-z@-_]/.test(html.charAt(j))) j++;
+            if (j >= html.length) break;
+            const params = html.substring(i + 2, j);
+            const final = html.charAt(j);
+            i = j + 1;
+            if (final !== 'm') continue; // solo SGR, ignorar cursor/erase/scroll
+            const codes = params ? params.split(';').map(Number) : [0];
+            for (const c of codes) {
+                if (c === 0) { cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false }; }
+                else if (c === 1) cur.bold = true;
+                else if (c === 2) cur.dim = true;
+                else if (c === 3) cur.italic = true;
+                else if (c === 4) cur.underline = true;
+                else if (c === 22) { cur.bold = false; cur.dim = false; }
+                else if (c === 23) cur.italic = false;
+                else if (c === 24) cur.underline = false;
+                else if (c >= 30 && c <= 37) cur.fg = FG[c - 30];
+                else if (c === 39) cur.fg = null;
+                else if (c >= 90 && c <= 97) cur.fg = FG_BRIGHT[c - 90];
+                else if (c >= 40 && c <= 47) cur.bg = BG[c - 40];
+                else if (c === 49) cur.bg = null;
+                else if (c >= 100 && c <= 107) cur.bg = BG_BRIGHT[c - 100];
+            }
+            openSpan();
+            continue;
+        }
+        result += html.charAt(i);
+        i++;
+    }
+    closeSpans();
+    return result.replace(/\r\n?/g, '\n');
+}
+window.ansiToHtml = ansiToHtml;
+
+const API_BASE = (() => {
+    const host = window.location.hostname;
+    const port = 4699; // Backend siempre en 4699
+    return `http://${host}:${port}/api`;
+})();
 window.API_BASE = API_BASE;
-const OLLAMA_BASE = 'http://localhost:11434/api';
+const OLLAMA_BASE = 'http://localhost:11434/api'; // Ollama solo corre localmente
 
 // PROMPTS MANAGEMENT
 let promptsCache = {
@@ -195,7 +280,18 @@ class MCPClient {
             console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
             this.eventSource = new EventSource(`${this.baseUrl}/sse`);
 
+            // Timeout: si después de 5s no se conectó, resolver igual (sin MCP)
+            const timeout = setTimeout(() => {
+                if (!this._mcpConnected) {
+                    console.warn("[MCP-CLIENT] Timeout conectando a MCP server — modo sin MCP.");
+                    this._mcpWarned = true;
+                    resolve(false);
+                }
+            }, 5000);
+
             this.eventSource.onopen = () => {
+                this._mcpConnected = true;
+                clearTimeout(timeout);
                 this.log('connect', 'received', 'SSE connection opened');
             };
 
@@ -219,13 +315,20 @@ class MCPClient {
             };
 
             this.eventSource.onerror = (error) => {
-                console.error("[MCP-CLIENT] SSE Error:", error);
+                // BUGFIX: El EventSource reconecta automáticamente cada ~3-5s cuando
+                // el MCP server no está corriendo. El "error" con isTrusted=true es normal
+                // y no hay que loguearlo como error del frontend cada vez.
+                // Solo mostrar warning la primera vez.
+                if (!this._mcpWarned) {
+                    console.warn("[MCP-CLIENT] MCP Server no disponible en", this.baseUrl, "- conectá el MCP server para usar herramientas.");
+                    this._mcpWarned = true;
+                }
                 const dot = document.getElementById('mcp-status-dot');
                 if (dot) {
                     dot.classList.remove('live');
                     dot.classList.add('dead');
                 }
-                reject(error);
+                // No reject para evitar que el error se propague cada 5s
             };
         });
     }
@@ -331,7 +434,9 @@ class MCPClient {
 }
 
 const mcpClient = new MCPClient('http://127.0.0.1:2998');
-mcpClient.connect().catch(e => console.error("MCP Connection failed:", e));
+mcpClient.connect().then(ok => {
+    if (ok) console.log("[MCP-CLIENT] ✅ Conectado a MCP Server");
+});
 
 // Helper for logging API errors with auto-retry for transient failures
 
@@ -521,6 +626,22 @@ async function performPeriodicSync() {
 }
 
 // New State Structure
+const DEFAULT_NAMING_PROMPT = `Eres un generador de nombres creativos para AGENTES de IA.
+
+Tu tarea: dado el mensaje de un usuario, genera un NOMBRE CORTO (2-4 palabras) en español que describa creativamente la tarea o el objetivo.
+
+REGLAS:
+- Solo devuelve el nombre, sin explicaciones, sin comillas, sin puntos.
+- Máximo 4 palabras, mínimo 2.
+- Debe sonar como un NOMBRE PROPIO de proyecto/misión, no una descripción.
+- Sé creativo: usa metáforas, conceptos abstractos o combinaciones originales.
+- Ejemplo: usuario dice "crea un juego de naves espaciales" → nombre: "Galaxia Atómica"
+- Ejemplo: usuario dice "haz un análisis de ventas del mes" → nombre: "Balance Financiero"
+- Ejemplo: usuario dice "escribe un script para ordenar archivos" → nombre: "Clasificador Digital"
+- NO copies el prompt del usuario literalmente. INVENTA un nombre.
+
+Respuesta solo el nombre:`;
+
 const DEFAULT_USER_SYSTEM_PROMPT = `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
 
 Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
@@ -556,7 +677,19 @@ REGLAS CRÍTICAS:
 
 INSTRUCCIONES DE COMANDO:
 - Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
-- Administración: [CREATE_PROJECT: Nombre], [CREATE_AGENT: Proyecto: Agente], [DELETE_PROJECT: ID]`;
+- Administración de proyectos: [CREATE_PROJECT: Nombre], [DELETE_PROJECT: ID_o_Nombre]
+- Administración de agentes: [CREATE_AGENT: Proyecto : NombreAgente], [DELETE_AGENT: Proyecto : Agente], [STOP_AGENT: Proyecto : Agente]
+- Consulta: [LIST_AGENTS] (el sistema te muestra la tabla actualizada de agentes)
+
+REGLAS:
+- Usá [CREATE_PROJECT: Nombre] para crear un proyecto nuevo (sin comillas en el nombre).
+- Usá [CREATE_AGENT: NombreProyecto : NombreAgente] para crear un agente DENTRO de un proyecto existente.
+- Usá [DELETE_AGENT: Proyecto : Agente] para eliminar un agente específico.
+- Usá [STOP_AGENT: Proyecto : Agente] para detener un agente que está corriendo.
+- Usá [DELETE_PROJECT: ID_o_Nombre] para eliminar un proyecto entero.
+- Usá [@NombreAgente: "Instrucción detallada"] para delegar tareas a agentes existentes.
+- SIEMPRE creá el proyecto primero, después el agente, después delegá la tarea.
+- NO uses comillas en los nombres de proyectos o agentes dentro de los comandos.`;
 
 
 let state = {
@@ -567,7 +700,14 @@ let state = {
     selectedAdminModel: '', // Dedicated model for Admin
     mode: 'auto', // 'auto' or 'supervised'
     userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
+    namingPrompt: DEFAULT_NAMING_PROMPT,
     orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
+    secondAgentConfig: {
+        enabled: true,
+        model: 'gemma4:e4b',
+        temperature: 0.7,
+        maxTokens: 50
+    },
     improverPrompt: "",
     deepseekApiKey: '',
     openaiApiKey: '',
@@ -575,6 +715,7 @@ let state = {
     customApiBase: '',
     deepseekThinking: true,
     adminMessages: [],
+    telegramMessages: [],  // { type: 'incoming'|'outgoing'|'status'|'error', chatId, from?, text, timestamp }
     adminIsThinking: false,
     adminIsStopped: false,
     maxValidationRetries: 15,
@@ -585,6 +726,10 @@ let state = {
         currentStep: 0
     },
     skillsMetadata: {} // Maps skill name to metadata object { isDefault: boolean }
+    , sidebarWidth: 260,
+    sidebarVisible: true,
+    fileExplorerWidth: 300,
+    fileExplorerVisible: true
 };
 
 let pendingDeletes = new Set();
@@ -604,6 +749,90 @@ function generateRandomProjectName() {
     const color = COLORS[Math.floor(Math.random() * COLORS.length)];
     const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
     return `${adj} ${color} ${animal}`;
+}
+
+/**
+ * Genera un nombre corto para un agente a partir del prompt del usuario.
+ * Extrae las primeras ~4-6 palabras significativas del prompt.
+ */
+async function generateChatNameFromPrompt(prompt) {
+    if (!prompt || typeof prompt !== 'string') return null;
+
+    // Intentar con el Second Agent (Gemma4 / Ollama local)
+    if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
+        try {
+            const namingInstruction = state.namingPrompt || DEFAULT_NAMING_PROMPT;
+            const saModel = state.secondAgentConfig.model;
+            const temperature = state.secondAgentConfig.temperature || 0.7;
+            const maxTokens = state.secondAgentConfig.maxTokens || 50;
+
+            const response = await fetch(`${OLLAMA_BASE}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: saModel,
+                    prompt: `${namingInstruction}\n\nMensaje del usuario: ${prompt.trim()}`,
+                    stream: false,
+                    options: {
+                        temperature: temperature,
+                        num_predict: maxTokens
+                    }
+                }),
+                signal: AbortSignal.timeout(8000)
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                let name = (data.response || '').trim().replace(/["']/g, '').split('\n')[0];
+                if (name && name.length > 2 && name.length <= 40) {
+                    console.log(`[NAMING] 🦙 ${saModel} generó: "${name}" desde Ollama`);
+                    return name;
+                }
+            }
+        } catch (e) {
+            console.warn(`[NAMING] ⚠️ Second Agent (Ollama) no disponible (${e.message}), usando fallback...`);
+        }
+    }
+
+    // ─── FALLBACK: método antiguo (primeras palabras) ───
+    // FIX: Sanitizar caracteres HTML-breaking y validar calidad del nombre
+    //      Nombres con <, >, ', " rompían el template literal de renderTabs() y tildeaban la UI.
+    let text = prompt.trim()
+        .replace(/^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|saludos)[,\s!.]*/i, '')
+        .replace(/^(necesito|quiero|puedes|podrias|necesitamos|tenemos que|hay que|me gustaria|quisiera|hace falta)[,\s]*/i, '')
+        .replace(/^(por favor|please|fa vor)[,\s]*/i, '')
+        .replace(/^(que me|ayudame|hazme|creame|hacé|che[,\s]*)/i, '')
+        .trim();
+
+    if (!text) text = prompt.trim();
+
+    // ─── Sanitizar: remover caracteres que rompen HTML y URLs/código ───
+    // Solo permitir: letras, números, espacios, guiones, tildes, ñ
+    const cleanText = text.replace(/[<>"'&|{}[\]()=+*%$#@!\\\/]/g, ' ').replace(/\s+/g, ' ').trim();
+    const words = cleanText.split(/\s+/).filter(w => {
+        // Filtrar palabras de una sola letra, puros números, o muy largas (>40 chars como URLs)
+        return w.length > 1 && w.length <= 40 && !/^\d+$/.test(w);
+    });
+
+    const nameWords = words.slice(0, 3);
+
+    let name = nameWords
+        .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())
+        .join(' ');
+
+    // ─── Validación final: nombre vacío o demasiado corto → fallback con timestamp ───
+    if (!name || name.length < 3) {
+        const now = new Date();
+        const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        name = `Tarea ${ts}`;
+        console.log(`[NAMING] 📛 Fallback naming produjo nombre vacío, usando timestamp: "${name}"`);
+    }
+
+    if (name.length > 28) {
+        return name.slice(0, 25).trim() + '...';
+    }
+
+    return name || null;
 }
 
 // DOM Elements
@@ -650,15 +879,147 @@ const stopAdminBtn = document.getElementById('stop-admin-btn');
 const attachImgBtn = document.getElementById('attach-img');
 const imageInput = document.getElementById('image-input');
 const imagePreviewContainer = document.getElementById('image-preview-container');
-const projectRunContainer = document.getElementById('project-run-container');
-const runProjectBtn = document.getElementById('run-project-btn');
+const micBtn = document.getElementById('mic-btn');
 
-// Git Controls
-const gitControlsContainer = document.getElementById('git-controls-container');
-const gitBtn = document.getElementById('git-btn');
-const gitCommitContainer = document.getElementById('git-commit-container');
-const gitCommitMessageInput = document.getElementById('git-commit-message');
-const gitConfirmBtn = document.getElementById('git-confirm-btn');
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  🎤 STANDALONE MICROPHONE INIT (corre aunque init() falle)
+//  IIFE independiente de setupEventListeners() para
+//  garantizar que el micrófono funcione siempre.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+(function initStandaloneMic() {
+    if (!micBtn || micBtn.__micStandaloneReady) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return; // Navegador no soporta — botón queda inerte
+
+    let recognition = null;
+    let isRecording = false;
+    let finalTranscript = '';
+    let restartTimeout = null;
+
+    function initRecognition() {
+        const rec = new SpeechRecognition();
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.lang = 'es-AR';
+        return rec;
+    }
+
+    function wireRecognition(rec) {
+        rec.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interim += transcript;
+                }
+            }
+            chatInput.value = (finalTranscript + interim).trim();
+            chatInput.dispatchEvent(new Event('input'));
+        };
+
+        rec.onerror = (event) => {
+            console.warn('[SPEECH-STANDALONE] Error:', event.error, event.message);
+            if (event.error === 'not-allowed') {
+                showToast('\uD83C\uDFA4 Permiso de micrófono denegado. Permití el acceso en la configuración del navegador.', 'error');
+                stopRecording(false);
+            } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                showToast(`\uD83C\uDFA4 Error de voz: ${event.error}`, 'error');
+            }
+        };
+
+        rec.onspeechstart = () => { micBtn.style.animation = 'mic-pulse 0.8s ease-in-out infinite'; };
+        rec.onspeechend = () => { micBtn.style.animation = ''; };
+
+        rec.onend = () => {
+            if (!isRecording) return;
+            recognition = null;
+            clearTimeout(restartTimeout);
+            restartTimeout = setTimeout(() => {
+                if (!isRecording) return;
+                try {
+                    const newRec = initRecognition();
+                    if (!newRec) return;
+                    recognition = newRec;
+                    wireRecognition(newRec);
+                    newRec.start();
+                } catch (e) {
+                    console.warn('[SPEECH-STANDALONE] Reinicio fallido, reintentando:', e.message);
+                    restartTimeout = setTimeout(() => {
+                        if (!isRecording) return;
+                        try {
+                            const retryRec = initRecognition();
+                            if (!retryRec) return;
+                            recognition = retryRec;
+                            wireRecognition(retryRec);
+                            retryRec.start();
+                        } catch (e2) {
+                            console.error('[SPEECH-STANDALONE] Reintento final fallido:', e2.message);
+                            stopRecording(true);
+                        }
+                    }, 500);
+                }
+            }, 250);
+        };
+    }
+
+    function startRecording() {
+        try {
+            if (recognition) { try { recognition.abort(); } catch(e) {} recognition = null; }
+            clearTimeout(restartTimeout);
+
+            recognition = initRecognition();
+            if (!recognition) return;
+
+            isRecording = true;
+            finalTranscript = '';
+            micBtn.classList.add('mic-recording');
+            chatInput.closest('.input-wrapper')?.classList.add('mic-active');
+            micBtn.innerHTML = '\uD83D\uDD34';
+            micBtn.title = 'Grabando... click para detener';
+            chatInput.placeholder = '\uD83C\uDFA4 Te escucho... hablá ahora...';
+            chatInput.value = '';
+
+            wireRecognition(recognition);
+            recognition.start();
+            showToast('\uD83C\uDFA4 Escuchando... hablá claro. Click en \uD83D\uDD34 para detener.', 'info', 2000);
+        } catch (e) {
+            console.error('[SPEECH-STANDALONE] Start error:', e);
+            showToast('\uD83C\uDFA4 Error al iniciar el micrófono.', 'error');
+            stopRecording(false);
+        }
+    }
+
+    function stopRecording(showFeedback = true) {
+        isRecording = false;
+        clearTimeout(restartTimeout);
+        restartTimeout = null;
+        if (recognition) { try { recognition.abort(); } catch (e) {} recognition = null; }
+        micBtn.classList.remove('mic-recording');
+        chatInput.closest('.input-wrapper')?.classList.remove('mic-active');
+        micBtn.innerHTML = '\uD83C\uDFA4';
+        micBtn.title = 'Grabar mensaje de voz (Web Speech)';
+        micBtn.style.animation = '';
+        chatInput.placeholder = 'Escribe una instrucción para el agente...';
+        if (showFeedback && chatInput.value.trim()) {
+            showToast('\u2705 Texto transcrito. Editá si hace falta y enviá.', 'success', 3000);
+        }
+    }
+
+    micBtn.onclick = () => {
+        if (isRecording) { stopRecording(true); } else { startRecording(); }
+    };
+
+    micBtn.__micStandaloneReady = true;
+    console.log('[SPEECH-STANDALONE] Micrófono inicializado correctamente.');
+})();
+
+// Git Controls (GIT Tab)
+const gitPushBtn = document.getElementById('git-push-btn');
+const gitResetOriginBtn = document.getElementById('git-reset-origin-btn');
+const gitRefreshBtn = document.getElementById('git-refresh-btn');
+const gitCommitMsgInput = document.getElementById('git-commit-msg');
 
 // Terminal Elements
 const terminalTabContent = document.getElementById('terminal-tab-content');
@@ -667,13 +1028,17 @@ const terminalInput = document.getElementById('terminal-input');
 const clearTerminalBtn = document.getElementById('clear-terminal-btn');
 const terminalRunBtn = document.getElementById('terminal-run-btn');
 const terminalStopBtn = document.getElementById('terminal-stop-btn');
-const openWebBtn = document.getElementById('open-web-btn');
 const matrixTabContent = document.getElementById('matrix-tab-content');
 
 let currentAttachedImages = [];
+let lastRenderedChatId = null;
+let lastRenderedProjectId = null;
 let skillsList = [];
 let skillsCache = {}; // Cache for skill contents: { name: content }
+let hermesSkillsList = []; // Hermes skills: [{ name, category, description }]
+let hermesSkillsCache = {}; // Cache for Hermes skill contents
 let activeSkillName = null;
+let activeSkillSource = 'local'; // 'local' or 'hermes'
 
 // DOM Elements for Skills
 const skillsManagerBtn = document.getElementById('skills-manager-btn');
@@ -688,40 +1053,391 @@ const saveSkillBtn = document.getElementById('save-skill-btn');
 const deleteSkillBtn = document.getElementById('delete-skill-btn');
 const newSkillBtn = document.getElementById('new-skill-btn');
 const agentSkillSelect = document.getElementById('agent-skill-select');
+const skillsSearchInput = document.getElementById('skills-search-input');
+
+// =============================================
+// PANEL RESIZE & TOGGLE LOGIC
+// =============================================
+
+function applyPanelState() {
+    const app = document.getElementById('app');
+    if (!app) return;
+
+    // Sidebar
+    const sidebar = document.querySelector('.sidebar');
+    const sidebarReopen = document.getElementById('sidebar-reopen-tab');
+    const sidebarHandle = document.getElementById('sidebar-resize-handle');
+    if (state.sidebarVisible) {
+        sidebar.classList.remove('collapsed');
+        sidebarReopen.classList.remove('collapsed');
+        if (sidebarHandle) { sidebarHandle.style.display = ''; sidebarHandle.style.left = state.sidebarWidth + 'px'; }
+        app.style.setProperty('--sidebar-width', state.sidebarWidth + 'px');
+    } else {
+        sidebar.classList.add('collapsed');
+        sidebarReopen.classList.add('collapsed');
+        if (sidebarHandle) { sidebarHandle.style.display = 'none'; }
+        app.style.setProperty('--sidebar-width', '0px');
+    }
+
+    // File Explorer
+    const explorer = document.querySelector('.file-explorer');
+    const explorerReopen = document.getElementById('explorer-reopen-tab');
+    const explorerHandle = document.getElementById('explorer-resize-handle');
+    if (state.fileExplorerVisible) {
+        explorer.classList.remove('collapsed');
+        explorerReopen.classList.remove('collapsed');
+        if (explorerHandle) { explorerHandle.style.display = ''; explorerHandle.style.right = state.fileExplorerWidth + 'px'; }
+        app.style.setProperty('--explorer-width', state.fileExplorerWidth + 'px');
+    } else {
+        explorer.classList.add('collapsed');
+        explorerReopen.classList.add('collapsed');
+        if (explorerHandle) { explorerHandle.style.display = 'none'; }
+        app.style.setProperty('--explorer-width', '0px');
+    }
+}
+
+window.toggleSidebar = function() {
+    state.sidebarVisible = !state.sidebarVisible;
+    applyPanelState();
+    saveData();
+};
+
+window.toggleFileExplorer = function() {
+    state.fileExplorerVisible = !state.fileExplorerVisible;
+    applyPanelState();
+    saveData();
+};
+
+function initPanelResize() {
+    const sidebarHandle = document.getElementById('sidebar-resize-handle');
+    const explorerHandle = document.getElementById('explorer-resize-handle');
+    const app = document.getElementById('app');
+
+    if (!app) return;
+
+    function startResize(handle, isLeft) {
+        let startX, startWidth;
+
+        function onMouseDown(e) {
+            e.preventDefault();
+            startX = e.clientX;
+            startWidth = isLeft ? state.sidebarWidth : state.fileExplorerWidth;
+            handle.classList.add('active');
+            document.body.classList.add('resizing');
+            app.style.transition = 'none'; // disable transition during drag
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        }
+
+        function onMouseMove(e) {
+            const delta = isLeft ? (e.clientX - startX) : (startX - e.clientX);
+            let newWidth = Math.max(isLeft ? 180 : 200, Math.min(isLeft ? 500 : 600, startWidth + delta));
+            if (isLeft) {
+                state.sidebarWidth = newWidth;
+                app.style.setProperty('--sidebar-width', newWidth + 'px');
+                handle.style.left = newWidth + 'px';
+            } else {
+                state.fileExplorerWidth = newWidth;
+                app.style.setProperty('--explorer-width', newWidth + 'px');
+                handle.style.right = newWidth + 'px';
+            }
+        }
+
+        function onMouseUp() {
+            handle.classList.remove('active');
+            document.body.classList.remove('resizing');
+            app.style.transition = ''; // restore CSS transition
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            saveData();
+        }
+
+        handle.addEventListener('mousedown', onMouseDown);
+    }
+
+    if (sidebarHandle) startResize(sidebarHandle, true);
+    if (explorerHandle) startResize(explorerHandle, false);
+
+    // Apply initial state
+    applyPanelState();
+}
 
 // Initialize
 async function init() {
-    await loadPrompts();
-    await checkSystemHealth();
-    await fetchModels();
-    await loadData();
-    await loadSkills();
+    // Cada await tiene su propio catch para que un fallo no detenga toda la inicialización
+    try { await loadPrompts(); } catch (e) { console.warn('[INIT] loadPrompts falló:', e.message || e); }
+    try { await checkSystemHealth(); } catch (e) { console.warn('[INIT] checkSystemHealth falló:', e.message || e); }
+    try { await fetchModels(); } catch (e) { console.warn('[INIT] fetchModels falló:', e.message || e); }
+    try { await loadData(); applyPanelState(); } catch (e) { console.warn('[INIT] loadData falló:', e.message || e); }
+    try { await loadSkills(); } catch (e) { console.warn('[INIT] loadSkills falló:', e.message || e); }
+    
+
     setupEventListeners();
     setupSkillsEventListeners();
     setupTerminalEvents();
-    setupOpenWebEvent();
+    initPanelResize();
+    
+    // ─── Auto-transformación
+    // (Eliminado: refreshConsoleUI cada 10s — ahora se actualiza vía WS events)
+    
+    // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
+    function connectGlobalWS() {
+        const wsHost = window.location.hostname;
+        const wsPort = 4699;
+        try {
+            const sysWs = new WebSocket(`ws://${wsHost}:${wsPort}/ws/hermes`);
+            syncWs = sysWs;
+            
+            sysWs.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.event === 'system:restart') {
+                        console.log('[SYS] 🔄 Reinicio del servidor detectado:', data.reason);
+                        refreshConsoleUI();
+                    } else if (data.event === 'sync:connected') {
+                        mySocketId = data.socketId;
+                        console.log(`[WS-SYNC] Conectado al servidor de sincronización. Socket ID: ${mySocketId}`);
+                        // Cargar estado inicial al conectar (solo si no hay agente activo)
+                        if (isTabBusy()) {
+                            console.log('[SYNC] ⏭️ sync:connected — omitiendo loadData porque hay agente activo');
+                        } else {
+                            await loadData(false);
+                            syncUI();
+                            checkSystemHealth();
+                            fetchModels();
+                            // ─── Cargar instancias Hermes iniciales ───
+                            if (window.refreshHermesInstances) {
+                                window.refreshHermesInstances();
+                            }
+                        }
+                    } else if (data.event === 'sync:masterClaimed') {
+                        const wasMaster = amIMaster;
+                        amIMaster = (data.socketId === mySocketId);
+                        console.log(`[SYNC-FLOW] 👑 sync:masterClaimed. socketId = ${data.socketId}, mySocketId = ${mySocketId}, amIMaster = ${amIMaster}`);
+                        if (wasMaster !== amIMaster) {
+                            console.log(`[WS-SYNC] Cambio de rol. ¿Soy MASTER?: ${amIMaster}`);
+                        }
+                    } else if (data.event === 'sync:stateUpdated') {
+                        console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
+                        if (isTabBusy()) {
+                            console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
+                        } else {
+                            console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
+                            await loadData(false);
+                            syncUI();
+                        }
+                        // Siempre refrescar badge, consola e instancias Hermes cuando cambia el estado
+                        updateAgentBadge();
+                        refreshConsoleUI();
+                        if (window.refreshHermesInstances) {
+                            window.refreshHermesInstances();
+                        }
+                    } else if (data.event === 'hermes:status' || data.event === 'hermes:agent:started' || data.event === 'hermes:agent:completed' || data.event === 'hermes:agent:stopped') {
+                        // ─── Evento WS: estado de agente Hermes cambió ───
+                        console.log(`[WS-HERMES] Evento ${data.event}${data.resync?' (RESYNC)':''}: ${data.instanceKey} → ${data.status || 'N/A'}`);
+
+                        // BUGFIX: Actualizar chat.isThinking según el estado real del bridge
+                        // El bridge es la FUENTE DE VERDAD. Siempre actualizar isThinking
+                        // sin importar el valor actual (para que resync funcione correctamente).
+                        if (data.instanceKey && data.instanceKey !== '*') {
+                            const [wsProjId, wsChatId] = data.instanceKey.split(':');
+                            if (wsProjId && wsChatId) {
+                                for (const proj of state.projects) {
+                                    if (proj.id === wsProjId || proj.id === `proj-${wsProjId}`) {
+                                        const chat = proj.chats?.find(c => c.id === wsChatId);
+                                        if (chat) {
+                                            const isRunning = data.status === 'running' || data.status === 'starting';
+                                            const isStopped = data.status === 'stopped' || data.status === 'idle' || data.status === 'error' || data.status === 'off';
+                                            if (isRunning) {
+                                                // Siempre marcar como pensando si el bridge dice running
+                                                if (!chat.isThinking) {
+                                                    updateThinking(chat, true, 'Procesando...', 'Hermes trabajando');
+                                                } else {
+                                                    // Actualizar subtext aunque ya esté pensando (resync)
+                                                    chat.thinkingStatus = 'Procesando...';
+                                                    chat.thinkingSubtext = 'Hermes trabajando (resync)';
+                                                }
+                                            } else if (isStopped && chat.isThinking) {
+                                                // 🐛 BUGFIX: Resync 'idle' NO debe overridear el estado local
+                                                // Cuando el frontend arranca un agente via triggerHermesLogic(),
+                                                // setea chat.isThinking=true ANTES de conectar el WS.
+                                                // Al conectarse, el bridge hace resync y manda 'idle' (status inicial)
+                                                // porque el bridge aún no recibió el mensaje.
+                                                // Ese 'idle' de resync NO debe borrar el flag de pensando
+                                                // porque el agente YA arrancó del lado del frontend.
+                                                if (data.resync) {
+                                                    console.log(`[WS-HERMES] Resync 'idle' ignorado para ${data.instanceKey} — agente marcado como activo localmente`);
+                                                } else {
+                                                    updateThinking(chat, false);
+                                                }
+                                            }
+                                            // Si el bridge dice idle/stopped y isThinking es false → no hacer nada (correcto)
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        updateAgentBadge();
+                        refreshConsoleUI();
+                        // Refrescar panel Hermes si está abierto
+                        if (window.refreshHermesInstances) {
+                            window.refreshHermesInstances();
+                        }
+                        // Si hay un chat activo, actualizar su UI Hermes
+                        const activeChat = getActiveChat();
+                        const activeProject = getActiveProject();
+                        if (activeChat && activeProject) {
+                            updateHermesUI(activeProject.id, activeChat.id);
+                        }
+                    }
+                    // ─── TELEGRAM MONITOR EVENTS ───
+                    if (data.event === 'telegram:incoming') {
+                        state.telegramMessages.push({
+                            type: 'incoming', chatId: data.chatId,
+                            from: data.from, text: data.text, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'user', content: `📱 Telegram (${data.from}): ${data.text}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                        updateTelegramBadge();
+                    }
+                    if (data.event === 'telegram:outgoing') {
+                        state.telegramMessages.push({
+                            type: 'outgoing', chatId: data.chatId,
+                            text: data.text, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'system', content: `📱 HERMES GOD → Telegram: ${data.text}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:thinking') {
+                        state.telegramMessages.push({
+                            type: 'thinking', chatId: data.chatId,
+                            text: 'HERMES GOD está pensando...', timestamp: Date.now()
+                        });
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:error') {
+                        state.telegramMessages.push({
+                            type: 'error', chatId: data.chatId, error: data.error, timestamp: Date.now()
+                        });
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: 'system', content: `❌ Telegram Error: ${data.error}`, timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                        renderTelegramMessages();
+                    }
+                    if (data.event === 'telegram:status') {
+                        const dot = document.getElementById('telegram-status-dot');
+                        const text = document.getElementById('telegram-status-text');
+                        if (dot) dot.className = `telegram-dot ${data.connected ? 'online' : 'offline'}`;
+                        if (text) text.textContent = data.connected ? `🟢 @${data.username || 'Conectado'}` : '🔴 Desconectado';
+                        state.telegramMessages.push({
+                            type: 'status',
+                            text: data.connected ? `Bot @${data.username || ''} conectado` : 'Bot desconectado',
+                            timestamp: Date.now()
+                        });
+                        renderTelegramMessages();
+                    }
+                } catch(e) {}
+            };
+            sysWs.onclose = () => {
+                console.log('[SYS] ⚠️ Servidor desconectado (posible reinicio). Reintentando conexión en 3s...');
+                syncWs = null;
+                amIMaster = false;
+                setTimeout(connectGlobalWS, 3000);
+                setTimeout(() => refreshConsoleUI(), 3000);
+            };
+            sysWs.onerror = () => {
+                syncWs = null;
+                amIMaster = false;
+            };
+        } catch(e) {
+            setTimeout(connectGlobalWS, 3000);
+        }
+    }
+    connectGlobalWS();
+    
+    // ─── Auto-sync al recuperar foco de pestaña ───
+    // Cuando el usuario vuelve a esta pestaña, recarga estado completo
+    // para sincronizar cambios hechos en otras pestañas/dispositivos
+    document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden) {
+            console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
+            // 🐛 BUGFIX: No recargar si hay un agente activo (misma razón que BroadcastChannel)
+            if (isTabBusy()) {
+                console.log('[SYNC] 👁️ visibilitychange ignorado — agente activo');
+            } else {
+                await loadData(false);
+                syncUI();
+                checkSystemHealth();
+                updateAgentBadge();
+                refreshConsoleUI();
+                if (window.refreshHermesInstances) {
+                    window.refreshHermesInstances();
+                }
+            }
+        }
+    });
+
+    // ─── BroadcastChannel: sincronización inmediata entre pestañas ───
+    // Más rápido que el roundtrip WS (server → broadcast → client)
+    try {
+        const syncChannel = new BroadcastChannel('jp-agents-sync');
+        syncChannel.onmessage = async (event) => {
+            if (event.data.type === 'thinking-changed') {
+                // 🐛 BUGFIX: NO recargar si hay un agente activo
+                // loadData() reemplaza state.projects con objetos nuevos,
+                // lo que deja huérfanas las referencias a chat en medio de
+                // triggerHermesLogic(). El push del assistant message va al
+                // objeto viejo, y saveData() guarda el nuevo state sin el mensaje.
+                if (isTabBusy()) {
+                    console.log('[SYNC] 📡 BroadcastChannel: thinking-changed ignorado — agente activo');
+                } else {
+                    console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
+                    await loadData(false);
+                    syncUI();
+                    updateAgentBadge();
+                    refreshConsoleUI();
+                    if (window.refreshHermesInstances) {
+                        window.refreshHermesInstances();
+                    }
+                }
+            }
+        };
+    } catch(e) {
+        // BroadcastChannel no disponible en este navegador
+    }
+    
+    // Primer refresh de consola
+    setTimeout(() => refreshConsoleUI(), 2000);
     setupOpenFolderExplorer();
 
-    // Periodically check health and external instructions every 1 minute
-    setInterval(performPeriodicSync, 60000);
+    // Periodic sync para instrucciones externas (cada 2 min — no para polling de estado)
+    setInterval(performPeriodicSync, 120000);
 
-    // Poll Ollama health and models more frequently to update UI automatically
-    setInterval(async () => {
-        const ollamaDot = document.getElementById('ollama-status-dot');
-        const wasDead = ollamaDot && ollamaDot.classList.contains('dead');
-
-        await checkSystemHealth();
-
-        const isLive = ollamaDot && ollamaDot.classList.contains('live');
-        if ((wasDead && isLive) || !state.models || state.models.length === 0) {
-            await fetchModels();
-        }
-    }, 5000);
+    // Ollama health check: ya no es polling, se hace al conectar WS y al reconectar
+    checkSystemHealth();
+    fetchModels();
 
 }
 
 
-async function loadData() {
+async function loadData(shouldScan = true) {
+    console.log('[SYNC-FLOW] 🔄 loadData() called. shouldScan =', shouldScan, 'caller =', new Error().stack.split('\n')[2]);
     try {
         const res = await fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
@@ -731,6 +1447,13 @@ async function loadData() {
         } else if (data && typeof data === 'object') {
             state.projects = (data.projects || []).map(sanitizeProject);
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
+            state.namingPrompt = data.namingPrompt || DEFAULT_NAMING_PROMPT;
+            state.secondAgentConfig = data.secondAgentConfig || {
+                enabled: true,
+                model: 'gemma4:e4b',
+                temperature: 0.7,
+                maxTokens: 50
+            };
             state.orchestratorPrompt = data.orchestratorPrompt || DEFAULT_ORCHESTRATOR_PROMPT;
             state.improverPrompt = data.improverPrompt || "";
             state.activeProjectId = data.activeProjectId || null;
@@ -738,6 +1461,10 @@ async function loadData() {
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
             state.skillsMetadata = data.skillsMetadata || {};
+            state.sidebarWidth = data.sidebarWidth || 260;
+            state.sidebarVisible = data.sidebarVisible !== undefined ? data.sidebarVisible : true;
+            state.fileExplorerWidth = data.fileExplorerWidth || 300;
+            state.fileExplorerVisible = data.fileExplorerVisible !== undefined ? data.fileExplorerVisible : true;
             state.deepseekApiKey = data.deepseekApiKey || '';
             state.openaiApiKey = data.openaiApiKey || '';
             state.openrouterApiKey = data.openrouterApiKey || '';
@@ -760,7 +1487,7 @@ async function loadData() {
 
         renderProjectList();
         const active = getActiveProject();
-        if (active && active.folder) window.scanFolder(active.folder, active.id);
+        if (shouldScan && active && active.folder) window.scanFolder(active.folder, active.id);
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
@@ -784,7 +1511,7 @@ function appendToTerminal(text, type = 'stdout', projectId = null) {
     if (activeProject && activeProject.id === (projectId || activeProject.id)) {
         const line = document.createElement('div');
         line.className = `terminal-line ${type}`;
-        line.textContent = text;
+        line.innerHTML = ansiToHtml(text);
         terminalOutput.appendChild(line);
         terminalOutput.scrollTop = terminalOutput.scrollHeight;
     }
@@ -802,7 +1529,7 @@ function refreshTerminalUI() {
         project.terminalLogs.forEach(log => {
             const line = document.createElement('div');
             line.className = `terminal-line ${log.type}`;
-            line.textContent = log.text;
+            line.innerHTML = ansiToHtml(log.text);
             terminalOutput.appendChild(line);
         });
     } else {
@@ -1022,45 +1749,47 @@ function setupOpenFolderExplorer() {
     const btn = document.getElementById('open-folder-explorer');
     if (btn) {
         btn.onclick = async () => {
-            const project = getActiveProject();
-            if (!project || !project.folder) return;
+            // 1. Matar cualquier selector de carpeta que esté abierto (con retry)
+            let killed = false;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const killCtrl = new AbortController();
+                    const killTimeout = setTimeout(() => killCtrl.abort(), 3000);
+                    const killRes = await fetch(`${API_BASE}/utils/kill-pick-folder`, {
+                        method: 'POST',
+                        signal: killCtrl.signal
+                    });
+                    clearTimeout(killTimeout);
+                    if (killRes.ok) killed = true;
+                } catch (e) {
+                    console.warn(`[setupOpenFolderExplorer] kill-pick-folder intento ${attempt + 1} falló:`, e.message);
+                }
+                if (killed) break;
+                if (attempt === 0) await new Promise(r => setTimeout(r, 400)); // esperar y reintentar
+            }
+            if (!killed) {
+                console.warn('[setupOpenFolderExplorer] No se pudo matar el diálogo anterior — puede haber conflicto.');
+            }
+            // 2. Pequeña pausa para asegurar que el proceso anterior se limpió
+            await new Promise(r => setTimeout(r, 300));
+            // 3. Abrir un selector de carpeta NUEVO (con await para atrapar errores)
             try {
-                await fetch(`${API_BASE}/utils/open-folder`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ folderPath: project.folder })
-                });
+                await nativePickFolder();
             } catch (e) {
-                console.error("Error abriendo carpeta:", e);
+                const errMsg = e.message || 'Error desconocido';
+                console.error('Error abriendo selector de carpeta:', errMsg);
+                alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
+                    'Error: ' + errMsg + '\n\n' +
+                    'Posibles causas:\n' +
+                    '• El diálogo fue cancelado o cerrado\n' +
+                    '• El servidor no respondió a tiempo\n' +
+                    '• Intentá de nuevo — suele funcionar al segundo intento.');
             }
         };
-    }
-}
 
-function setupOpenWebEvent() {
-    openWebBtn.addEventListener('click', async () => {
-        const project = getActiveProject();
-        if (!project || !project.folder) return;
+    }   // if (btn)
 
-        try {
-            const res = await fetch(`${API_BASE}/files/read`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filePath: `${project.folder}/run.bat` })
-            });
-            const data = await res.json();
-            if (data.content) {
-                const match = data.content.match(/set PORT=(\d+)/);
-                if (match) {
-                    window.open(`http://localhost:${match[1]}`, '_blank');
-                    return;
-                }
-            }
-        } catch (e) { }
-
-        alert("No se detectó un puerto activo. Ejecuta 'RUN' primero.");
-    });
-}
+}   // function setupOpenFolderExplorer()
 
 
 
@@ -1097,6 +1826,11 @@ let isSaving = false;
 let savePending = false;
 
 async function saveData() {
+    console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2]);
+    if (!amIMaster) {
+        claimMaster();
+    }
+
     if (isSaving) {
         savePending = true;
         return;
@@ -1109,6 +1843,8 @@ async function saveData() {
         const payload = {
             projects: state.projects,
             userSystemPrompt: state.userSystemPrompt,
+            namingPrompt: state.namingPrompt,
+            secondAgentConfig: state.secondAgentConfig,
             orchestratorPrompt: state.orchestratorPrompt,
             improverPrompt: state.improverPrompt,
             activeProjectId: state.activeProjectId,
@@ -1122,7 +1858,12 @@ async function saveData() {
             deepseekThinking: state.deepseekThinking,
             selectedModel: state.selectedModel,
             selectedAdminModel: state.selectedAdminModel,
-            skillsMetadata: state.skillsMetadata
+            skillsMetadata: state.skillsMetadata,
+            sidebarWidth: state.sidebarWidth,
+            sidebarVisible: state.sidebarVisible,
+            fileExplorerWidth: state.fileExplorerWidth,
+            fileExplorerVisible: state.fileExplorerVisible,
+            deletedProjectIds: state.deletedProjectIds
         };
         
         console.log(`[STATE] Guardando estado... (${state.projects.length} proyectos)`);
@@ -1134,6 +1875,10 @@ async function saveData() {
         
         if (!res.ok) {
             console.error("[STATE] Error al guardar el estado:", res.statusText);
+        } else {
+            if (amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
+                syncWs.send(JSON.stringify({ event: 'sync:stateUpdate' }));
+            }
         }
     } catch (e) {
         console.error("[STATE] Excepción al guardar datos:", e);
@@ -1149,6 +1894,49 @@ async function clearClientLogs() {
     try {
         await fetch(`${API_BASE}/utils/client-logs/clear`, { method: 'POST' });
     } catch (e) { }
+}
+
+let amIMaster = false;
+let mySocketId = null;
+let syncWs = null;
+
+function claimMaster() {
+    console.log('[SYNC-FLOW] 👑 claimMaster() called. amIMaster =', amIMaster, 'readyState =', syncWs ? syncWs.readyState : 'null');
+    if (!amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
+        console.log('[WS-SYNC] Reclamando rol de MASTER para esta pestaña.');
+        syncWs.send(JSON.stringify({ event: 'sync:claimMaster' }));
+        amIMaster = true; // Asignación proactiva local
+    }
+}
+
+// Registrar interacciones físicas para reclamar MASTER
+window.addEventListener('mousedown', claimMaster);
+window.addEventListener('keydown', claimMaster);
+window.addEventListener('touchstart', claimMaster);
+
+function isTabBusy() {
+    if (isSaving) return true;
+    if (state.adminIsThinking) return true;
+    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => isAgentActive(c)))) {
+        return true;
+    }
+    return false;
+}
+
+function syncUI() {
+    const project = getActiveProject();
+    if (project) {
+        const chats = project.chats || [];
+        const isChat = chats.some(c => c.id === project.activeTabId);
+        if (isChat) {
+            renderMessages(true);
+        } else {
+            renderTabs();
+        }
+    } else {
+        renderProjectList();
+        renderTabs();
+    }
 }
 
 async function getTaskState() {
@@ -1190,6 +1978,26 @@ async function loadSkills() {
             }
         }
 
+        // Also load Hermes skills
+        try {
+            const hRes = await fetch(`${API_BASE}/hermes/skills`);
+            const hData = await hRes.json();
+            hermesSkillsList = hData.skills || [];
+            
+            // Cache Hermes skill contents
+            for (const skill of hermesSkillsList) {
+                try {
+                    const sRes = await fetch(`${API_BASE}/hermes/skills/${skill.category}/${skill.name}`);
+                    const sData = await sRes.json();
+                    hermesSkillsCache[skill.name] = sData.content || "";
+                } catch (e) {
+                    console.warn(`Error caching Hermes skill ${skill.name}:`, e);
+                }
+            }
+        } catch (e) {
+            console.warn('Error loading Hermes skills:', e);
+        }
+
         renderSkillsList();
         updateSkillSelects();
     } catch (e) {
@@ -1200,33 +2008,83 @@ async function loadSkills() {
 function renderSkillsList() {
     if (!skillsListEl) return;
 
-    skillsListEl.innerHTML = skillsList.map(name => {
-        const isDefault = state.skillsMetadata[name]?.isDefault;
-        const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
-        return `
-            <div class="skill-item ${activeSkillName === name ? 'active' : ''}" onclick="window.selectSkill('${name}')">
-                <span class="skill-icon">🧠</span>
-                <span class="skill-name">${name} ${badge}</span>
-            </div>
-        `;
-    }).join('');
+    // Determine which list to show based on active source
+    const skills = activeSkillSource === 'hermes' ? hermesSkillsList : skillsList;
+    const searchTerm = skillsSearchInput ? skillsSearchInput.value.toLowerCase().trim() : '';
+
+    skillsListEl.innerHTML = skills
+        .filter(s => {
+            const name = typeof s === 'string' ? s : s.name;
+            return !searchTerm || name.toLowerCase().includes(searchTerm);
+        })
+        .map(s => {
+            const name = typeof s === 'string' ? s : s.name;
+            const description = typeof s === 'string' ? '' : (s.description || '');
+            const category = typeof s === 'string' ? '' : (s.category || '');
+            const source = typeof s === 'string' ? 'local' : 'hermes';
+            const isDefault = activeSkillSource === 'local' ? (state.skillsMetadata[name]?.isDefault) : false;
+            const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
+            const catTag = category ? `<span class="skill-cat-tag">${category}</span>` : '';
+            const isActive = activeSkillName === name;
+            return `
+                <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}', '${activeSkillSource}')">
+                    <span class="skill-icon">${source === 'hermes' ? '⚡' : '🧠'}</span>
+                    <span class="skill-name">${escapeHtml(name)} ${badge} ${catTag}</span>
+                    ${description ? `<span class="skill-desc">${escapeHtml(description.slice(0, 60))}</span>` : ''}
+                </div>
+            `;
+        }).join('') || '<div class="empty-state" style="padding: 1rem; font-size: 0.85rem;">No hay skills disponibles.</div>';
 }
 
-window.selectSkill = async (name) => {
+window.selectSkill = async (name, source = 'local') => {
     activeSkillName = name;
+    activeSkillSource = source;
     renderSkillsList();
 
     try {
-        const res = await fetch(`${API_BASE}/skills/${name}`);
-        const data = await res.json();
+        let content = '';
+        if (source === 'hermes') {
+            const s = hermesSkillsList.find(sk => sk.name === name);
+            if (s) {
+                const res = await fetch(`${API_BASE}/hermes/skills/${s.category}/${name}`);
+                const data = await res.json();
+                content = data.content || '';
+                hermesSkillsCache[name] = content;
+            } else {
+                content = hermesSkillsCache[name] || '';
+            }
+        } else {
+            const res = await fetch(`${API_BASE}/skills/${name}`);
+            const data = await res.json();
+            content = data.content || '';
+            skillsCache[name] = content;
+        }
 
         skillNameInput.value = name;
-        skillContentTextarea.value = data.content || '';
+        skillContentTextarea.value = content || '';
 
-        // Load metadata
-        const meta = state.skillsMetadata[name] || { isDefault: false };
+        // Read-only mode for Hermes skills
+        const isHermes = source === 'hermes';
+        skillNameInput.disabled = isHermes;
+        skillContentTextarea.disabled = isHermes;
+        if (saveSkillBtn) saveSkillBtn.style.display = isHermes ? 'none' : '';
+        if (deleteSkillBtn) deleteSkillBtn.style.display = isHermes ? 'none' : '';
+        if (newSkillBtn) newSkillBtn.style.display = isHermes ? 'none' : '';
+        const improveBtn = document.getElementById('improve-skill-btn');
+        if (improveBtn) improveBtn.style.display = isHermes ? 'none' : '';
+        const hermesBadge = document.getElementById('hermes-skill-badge');
+        if (hermesBadge) hermesBadge.classList.toggle('hidden', !isHermes);
         const defaultCheckbox = document.getElementById('skill-default-checkbox');
-        if (defaultCheckbox) defaultCheckbox.checked = meta.isDefault;
+        if (defaultCheckbox) {
+            if (isHermes) {
+                defaultCheckbox.checked = false;
+                defaultCheckbox.disabled = true;
+            } else {
+                const meta = state.skillsMetadata[name] || { isDefault: false };
+                defaultCheckbox.checked = meta.isDefault;
+                defaultCheckbox.disabled = false;
+            }
+        }
 
         skillEditorContainer.classList.remove('hidden');
         skillEmptyState.classList.add('hidden');
@@ -1244,8 +2102,20 @@ function updateSkillSelects() {
     selects.forEach(s => {
         if (!s.el) return;
         const currentVal = s.el.value;
-        s.el.innerHTML = `<option value="">${s.label}</option>` +
-            skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        let options = `<option value="">${s.label}</option>`;
+        // Local skills
+        options += '<optgroup label="📁 Skills Locales">';
+        options += skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        options += '</optgroup>';
+        // Hermes skills
+        if (hermesSkillsList.length > 0) {
+            options += '<optgroup label="⚡ Skills Hermes">';
+            options += hermesSkillsList.map(sk => 
+                `<option value="${sk.name}" data-source="hermes" data-category="${sk.category || ''}">${sk.name} (${sk.category || 'general'})</option>`
+            ).join('');
+            options += '</optgroup>';
+        }
+        s.el.innerHTML = options;
         s.el.value = currentVal;
     });
 }
@@ -1338,19 +2208,62 @@ function setupSkillsEventListeners() {
         });
     }
 
+    // ─── Skills Source Tab Switching ───
+    document.querySelectorAll('.skills-source-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const source = tab.dataset.skillsSource;
+            if (source === activeSkillSource) return;
+            
+            // Update active tab
+            document.querySelectorAll('.skills-source-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            
+            // Switch source
+            activeSkillSource = source;
+            activeSkillName = null;
+            
+            // Show/hide new skill button for Hermes view
+            if (newSkillBtn) newSkillBtn.style.display = source === 'hermes' ? 'none' : '';
+            
+            // Clear editor
+            skillEditorContainer.classList.add('hidden');
+            skillEmptyState.classList.remove('hidden');
+            
+            renderSkillsList();
+        });
+    });
+    
+    // ─── Skills Search ───
+    if (skillsSearchInput) {
+        skillsSearchInput.addEventListener('input', () => {
+            renderSkillsList();
+        });
+    }
+
     if (agentSkillSelect) {
         agentSkillSelect.addEventListener('change', async () => {
-            const skillName = agentSkillSelect.value;
+            const selectedOption = agentSkillSelect.options[agentSkillSelect.selectedIndex];
+            const skillName = selectedOption.value;
             if (!skillName) return;
 
             const chat = getActiveChat();
             if (chat) {
                 if (!chat.skills) chat.skills = [];
-                if (!chat.skills.includes(skillName)) {
-                    chat.skills.push(skillName);
-                    renderAgentSkills();
-                    saveData();
+                // Check for Hermes skill (has data-source attribute)
+                const source = selectedOption.dataset.source;
+                const category = selectedOption.dataset.category;
+                if (source === 'hermes') {
+                    const skillObj = { name: skillName, source: 'hermes', category: category || '' };
+                    if (!chat.skills.find(s => (typeof s === 'object' ? s.name : s) === skillName)) {
+                        chat.skills.push(skillObj);
+                    }
+                } else {
+                    if (!chat.skills.includes(skillName)) {
+                        chat.skills.push(skillName);
+                    }
                 }
+                renderAgentSkills();
+                saveData();
             }
             // Reset select
             agentSkillSelect.value = "";
@@ -1360,17 +2273,27 @@ function setupSkillsEventListeners() {
     const projectSkillSelect = document.getElementById('project-skill-select');
     if (projectSkillSelect) {
         projectSkillSelect.addEventListener('change', async () => {
-            const skillName = projectSkillSelect.value;
+            const selectedOption = projectSkillSelect.options[projectSkillSelect.selectedIndex];
+            const skillName = selectedOption.value;
             if (!skillName) return;
 
             const project = getActiveProject();
             if (project) {
                 if (!project.skills) project.skills = [];
-                if (!project.skills.includes(skillName)) {
-                    project.skills.push(skillName);
-                    renderProjectSkills();
-                    saveData();
+                const source = selectedOption.dataset.source;
+                const category = selectedOption.dataset.category;
+                if (source === 'hermes') {
+                    const skillObj = { name: skillName, source: 'hermes', category: category || '' };
+                    if (!project.skills.find(s => (typeof s === 'object' ? s.name : s) === skillName)) {
+                        project.skills.push(skillObj);
+                    }
+                } else {
+                    if (!project.skills.includes(skillName)) {
+                        project.skills.push(skillName);
+                    }
                 }
+                renderProjectSkills();
+                saveData();
             }
             // Reset select
             projectSkillSelect.value = "";
@@ -1390,18 +2313,27 @@ function renderAgentSkills() {
     }
 
     container.classList.remove('hidden');
-    container.innerHTML = chat.skills.map(skill => `
-        <div class="skill-tag">
-            <span>🧠 ${skill}</span>
-            <span class="remove-skill" onclick="window.removeAgentSkill('${skill}')">&times;</span>
-        </div>
-    `).join('');
+    container.innerHTML = chat.skills.map(skill => {
+        const skName = typeof skill === 'object' ? skill.name : skill;
+        const isHermes = typeof skill === 'object' && skill.source === 'hermes';
+        const icon = isHermes ? '⚡' : '🧠';
+        return `
+            <div class="skill-tag ${isHermes ? 'hermes-skill' : ''}">
+                <span>${icon} ${skName}</span>
+                <span class="remove-skill" onclick="window.removeAgentSkill('${skName}', ${isHermes})">&times;</span>
+            </div>
+        `;
+    }).join('');
 }
 
-window.removeAgentSkill = (skillName) => {
+window.removeAgentSkill = (skillName, isHermes) => {
     const chat = getActiveChat();
     if (chat && chat.skills) {
-        chat.skills = chat.skills.filter(s => s !== skillName);
+        chat.skills = chat.skills.filter(s => {
+            const name = typeof s === 'object' ? s.name : s;
+            const h = typeof s === 'object' && s.source === 'hermes';
+            return !(name === skillName && h === !!isHermes);
+        });
         renderAgentSkills();
         saveData();
     }
@@ -1417,18 +2349,27 @@ function renderProjectSkills() {
         return;
     }
 
-    container.innerHTML = project.skills.map(skill => `
-        <div class="skill-tag project-skill">
-            <span>🧠 ${skill}</span>
-            <span class="remove-skill" onclick="window.removeProjectSkill('${skill}')">&times;</span>
-        </div>
-    `).join('');
+    container.innerHTML = project.skills.map(skill => {
+        const skName = typeof skill === 'object' ? skill.name : skill;
+        const isHermes = typeof skill === 'object' && skill.source === 'hermes';
+        const icon = isHermes ? '⚡' : '🧠';
+        return `
+            <div class="skill-tag project-skill ${isHermes ? 'hermes-skill' : ''}">
+                <span>${icon} ${skName}</span>
+                <span class="remove-skill" onclick="window.removeProjectSkill('${skName}', ${isHermes})">&times;</span>
+            </div>
+        `;
+    }).join('');
 }
 
-window.removeProjectSkill = (skillName) => {
+window.removeProjectSkill = (skillName, isHermes) => {
     const project = getActiveProject();
     if (project && project.skills) {
-        project.skills = project.skills.filter(s => s !== skillName);
+        project.skills = project.skills.filter(s => {
+            const name = typeof s === 'object' ? s.name : s;
+            const h = typeof s === 'object' && s.source === 'hermes';
+            return !(name === skillName && h === !!isHermes);
+        });
         renderProjectSkills();
         saveData();
     }
@@ -1453,22 +2394,59 @@ async function refreshConsoleUI() {
         const res = await fetch(`${API_BASE}/utils/client-logs`);
         const logs = await res.json();
 
-        if (!logs || logs.length === 0) {
+        // Also fetch restart history
+        let restartHistory = [];
+        try {
+            const rhRes = await fetch(`${API_BASE}/system/restart-history`);
+            const rhData = await rhRes.json();
+            restartHistory = rhData.history || [];
+        } catch (e) {}
+
+        if ((!logs || logs.length === 0) && restartHistory.length === 0) {
             consoleOutput.innerHTML = '<div class="log-empty">No hay logs registrados.</div>';
             return;
         }
 
-        consoleOutput.innerHTML = logs.reverse().map(l => {
+        let html = '';
+        
+        // Show restart events first (most recent = visual priority)
+        const recentStarts = restartHistory.filter(r => r.reason === 'server-start').slice(-1);
+        const recentRestarts = restartHistory.filter(r => r.reason !== 'server-start').slice(-5).reverse();
+        
+        // Server is live badge
+        if (recentStarts.length > 0) {
+            const startTime = new Date(recentStarts[0].time).toLocaleTimeString();
+            html += `<div class="log-entry system">
+                <span class="log-time">[${startTime}]</span>
+                <span class="log-type">SISTEMA:</span>
+                <span class="log-msg">🟢 Servidor activo</span>
+            </div>`;
+        }
+        
+        // Restart events
+        for (const r of recentRestarts) {
+            const time = new Date(r.time).toLocaleTimeString();
+            const reasonLabel = r.reason === 'auto-restart' ? 'auto-transformación' : (r.reason === 'manual' ? 'manual' : r.reason);
+            html += `<div class="log-entry system">
+                <span class="log-time">[${time}]</span>
+                <span class="log-type">SISTEMA:</span>
+                <span class="log-msg">🔄 Reinicio (${reasonLabel})</span>
+            </div>`;
+        }
+        
+        // Client logs
+        html += logs.reverse().map(l => {
             const time = new Date(l.timestamp).toLocaleTimeString();
             return `
                 <div class="log-entry ${l.type}">
                     <span class="log-time">[${time}]</span>
                     <span class="log-type">${l.type.toUpperCase()}:</span>
-                    <span class="log-msg">${l.messages.join(' ')}</span>
+                    <span class="log-msg">${(l.messages || []).join(' ')}</span>
                 </div>
             `;
         }).join('');
 
+        consoleOutput.innerHTML = html;
     } catch (e) {
         consoleOutput.innerHTML = 'Error al cargar logs.';
     }
@@ -1605,7 +2583,6 @@ async function checkProjectHealth(project) {
     } catch (e) {
         project.isCorrupted = true;
     }
-    renderProjectList();
 }
 
 async function checkAllProjectsHealth() {
@@ -1614,6 +2591,8 @@ async function checkAllProjectsHealth() {
             checkProjectHealth(p);
         }
     }
+    // Single render after all health checks
+    renderProjectList();
 }
 
 function getActiveProject() {
@@ -1689,6 +2668,11 @@ function renderModelSelects() {
         projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
     }
 
+    const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+    if (projectModelHeaderSelect) {
+        projectModelHeaderSelect.innerHTML = '<option value="">Usar Global</option>' + html;
+    }
+
     const agentModelSelect = document.getElementById('agent-model-select');
     if (agentModelSelect) {
         agentModelSelect.innerHTML = '<option value="">Default (Proyecto/Global)</option>' + html;
@@ -1713,16 +2697,50 @@ function checkVisionCapability() {
     const isVision = selected && selected.dataset.vision === 'true';
     // We keep it visible as requested, but maybe style it differently
     attachImgBtn.classList.remove('hidden');
-    if (!isVision) {
-        attachImgBtn.title = "Adjuntar imagen (El modelo actual podría no soportar visión)";
-    } else {
-        attachImgBtn.title = "Adjuntar imagen (Modelo Vision detectado)";
+}
+
+// ─── Second Agent helpers ───
+
+function populateSecondAgentModelSelect() {
+    const sel = document.getElementById('second-agent-model');
+    if (!sel) return;
+    const models = state.ollamaModels || [];
+    if (models.length === 0) {
+        sel.innerHTML = '<option value="">No hay modelos Ollama disponibles</option>';
+        return;
+    }
+    sel.innerHTML = models.map(m =>
+        `<option value="${m.name}">${m.name}</option>`
+    ).join('');
+}
+
+async function checkSecondAgentHealth() {
+    const dot = document.getElementById('second-agent-status-dot');
+    const text = document.getElementById('second-agent-status-text');
+    if (!dot || !text) return;
+    try {
+        const res = await fetch(`${OLLAMA_BASE}/tags`);
+        if (res.ok) {
+            dot.className = 'dot live';
+            dot.style.background = '#22d3ee';
+            text.textContent = 'Ollama conectado ✅';
+        } else {
+            dot.className = 'dot dead';
+            dot.style.background = '#ef4444';
+            text.textContent = 'Ollama no responde ❌';
+        }
+    } catch (e) {
+        dot.className = 'dot dead';
+        dot.style.background = '#ef4444';
+        text.textContent = 'Ollama no disponible ❌';
     }
 }
 
+// Imported Chat Summary (Chat History) Functions
+
 function renderProjectList() {
-    chatList.innerHTML = state.projects.map(p => {
-        const isThinking = p.chats && p.chats.some(c => c.isThinking);
+    chatList.innerHTML = state.projects.map((p, idx) => {
+        const isThinking = p.chats && p.chats.some(c => isAgentActive(c));
         const corruptedClass = p.isCorrupted ? 'corrupted' : '';
         const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
         const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
@@ -1738,8 +2756,16 @@ function renderProjectList() {
         return `
             <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
                  data-id="${p.id}" 
+                 data-idx="${idx}"
                  title="${corruptedTitle}"
+                 draggable="true"
+                 ondragstart="window.onProjectDragStart(event, '${p.id}')"
+                 ondragend="window.onProjectDragEnd(event)"
+                 ondragover="window.onProjectDragOver(event)"
+                 ondragleave="window.onProjectDragLeave(event)"
+                 ondrop="window.onProjectDrop(event, '${p.id}')"
                  onclick="window.switchProject('${p.id}', event)">
+                <span class="drag-grip" title="Arrastrar para reordenar">⠿</span>
                 <div class="chat-item-main">
                     <div class="name-row">
                         <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
@@ -1797,14 +2823,24 @@ function renderTabs() {
 
     // 2. Chats Tabs
     const chats = project.chats || [];
-    chats.forEach(chat => {
+    chats.forEach((chat, idx) => {
         const summonedClass = chat.isNew ? 'summoned-anim' : '';
         if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
 
         tabsHtml += `
-            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" onclick="window.switchTab('${chat.id}')">
-                <span>🤖 ${chat.name}</span>
-                <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
+            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" 
+                 data-tab-id="${chat.id}"
+                 data-tab-type="chat"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${chat.id}', 'chat')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
+                 onclick="window.switchTab('${chat.id}')">
+                <span>🤖 ${escapeHtml(chat.name)}</span>
+                <div class="dot ${isAgentActive(chat) ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
             </div>
         `;
@@ -1812,10 +2848,20 @@ function renderTabs() {
 
     // 3. File Tabs
     const openFiles = project.openFiles || [];
-    openFiles.forEach(file => {
+    openFiles.forEach((file, idx) => {
         const sanitizedPath = file.path.replace(/\\/g, '/');
         tabsHtml += `
-            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" onclick="window.switchTab('${sanitizedPath}')">
+            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
+                 data-tab-id="${sanitizedPath}"
+                 data-tab-type="file"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${sanitizedPath}', 'file')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${sanitizedPath}', 'file')"
+                 onclick="window.switchTab('${sanitizedPath}')">
                 <span>📄 ${file.name}</span>
                 <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">&times;</span>
             </div>
@@ -1829,10 +2875,27 @@ function renderTabs() {
         </div>
     `;
 
-    // 5. Matrix Agentic Tree (Global/Project Context)
+    // 5. Hermes Tab (si está visible)
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
+        tabsHtml += `
+            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
+                <span>⚡ Hermes</span>
+            </div>
+        `;
+    }
+
+    // 6. Matrix Agentic Tree (Global/Project Context)
     tabsHtml += `
         <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
             <span>🕸️ Matrix</span>
+        </div>
+    `;
+
+    // 7. GIT Tab
+    tabsHtml += `
+        <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
+            <span>🔀 GIT</span>
         </div>
     `;
 
@@ -1948,44 +3011,70 @@ window.removeSkillFromModal = (skillName, projectId) => {
 
 window.stopActiveAgent = () => {
     const chat = getActiveChat();
-    if (chat) {
-        chat.isStopped = true;
-        chat.isThinking = false;
-        const sendBtn = document.getElementById('send-btn');
-        const stopBtn = document.getElementById('stop-btn');
-        if (sendBtn) sendBtn.classList.remove('hidden');
-        if (stopBtn) stopBtn.classList.add('hidden');
-
-        chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
-        renderMessages();
+    const project = getActiveProject();
+    if (project && chat) {
+        window.stopAgent(project.id, chat.id);
     }
 };
 
 window.stopAgent = (projectId, chatId) => {
-    // If only one arg provided, assume it's chatId and use active project
+    let projId = projectId;
+    let chId = chatId;
     if (chatId === undefined) {
-        chatId = projectId;
+        chId = projectId;
         const project = getActiveProject();
         if (!project) return;
-        const chat = project.chats.find(c => c.id === chatId);
-        if (chat) {
-            chat.isStopped = true;
-            chat.isThinking = false;
-            if (chat.abortController) {
-                try { chat.abortController.abort(); } catch (e) { }
-            }
+        projId = project.id;
+    }
+
+    const project = state.projects.find(p => p.id === projId);
+    if (!project) return;
+    const chat = project.chats.find(c => c.id === chId);
+    if (chat) {
+        chat.isStopped = true;
+        chat.isThinking = false;
+        chat.isStreaming = false;
+
+        // Admin log
+        adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
+
+        // Abort fetch controller (para el agente local de LangGraph)
+        if (chat.abortController) {
+            try { chat.abortController.abort(); } catch (e) { }
         }
-    } else {
-        const project = state.projects.find(p => p.id === projectId);
-        if (!project) return;
-        const chat = project.chats.find(c => c.id === chatId);
-        if (chat) {
-            chat.isStopped = true;
-            chat.isThinking = false;
-            if (chat.abortController) {
-                try { chat.abortController.abort(); } catch (e) { }
-            }
+
+        // Call backend API to stop the Hermes subprocess
+        fetch(`${API_BASE}/hermes/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: projId, chatId: chId })
+        }).catch(err => console.warn('Error calling hermes/stop:', err));
+
+        // Mark progress messages as finished/minimized
+        if (chat.messages) {
+            chat.messages.forEach(m => {
+                if (m.isProgress && !m.finished) {
+                    m.finished = true;
+                    m.minimized = true;
+                    m.content += '\n🛑 Proceso detenido por el usuario.\n';
+                }
+            });
         }
+
+        // Hide thinking indicators if this is the active chat
+        const activeChat = getActiveChat();
+        if (activeChat && activeChat.id === chat.id) {
+            const sendBtn = document.getElementById('send-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            if (sendBtn) sendBtn.classList.remove('hidden');
+            if (stopBtn) stopBtn.classList.add('hidden');
+            updateThinking(chat, false);
+        }
+
+        chat.messages.push({ role: 'system', content: '🛑 Solicitud de detención del agente enviada.' });
+
+        renderMessages();
+        saveData();
     }
     renderAdminMonitor();
     renderTabs();
@@ -2004,6 +3093,10 @@ function updateViewVisibility() {
     if (skillsTabContent) skillsTabContent.classList.add('hidden');
     if (matrixTabContent) matrixTabContent.classList.add('hidden');
     if (terminalTabContent) terminalTabContent.classList.add('hidden');
+    const hermesTabContent = document.getElementById('hermes-tab-content');
+    if (hermesTabContent) hermesTabContent.classList.add('hidden');
+    const gitTabContent = document.getElementById('git-tab-content');
+    if (gitTabContent) gitTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -2014,6 +3107,14 @@ function updateViewVisibility() {
             refreshTerminalUI();
         }
         terminalInput.focus();
+        return;
+    }
+
+    if (project && project.activeTabId === 'hermes') {
+        saveFileBtn.classList.add('hidden');
+        if (hermesTabContent) {
+            hermesTabContent.classList.remove('hidden');
+        }
         return;
     }
 
@@ -2042,6 +3143,16 @@ function updateViewVisibility() {
                 }
             }
         }
+        return;
+    }
+
+    if (project && project.activeTabId === 'git') {
+        saveFileBtn.classList.add('hidden');
+        const gitTabContent = document.getElementById('git-tab-content');
+        if (gitTabContent) {
+            gitTabContent.classList.remove('hidden');
+        }
+        window.refreshGitTab();
         return;
     }
 
@@ -2083,18 +3194,41 @@ function updateViewVisibility() {
 
     if (isChat) {
         saveFileBtn.classList.add('hidden');
+        const wasHidden = chatTabContent.classList.contains('hidden');
         chatTabContent.classList.remove('hidden');
-        renderMessages(false); // Pass false to avoid recursive renderTabs
-        renderAgentSkills();
-
-        // Sync mode toggles with current chat mode
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
+            // Solo renderizar mensajes si la vista estaba oculta (cambio de tab real) o si cambió el chat/proyecto
+            const chatOrProjectChanged = chat.id !== lastRenderedChatId || project.id !== lastRenderedProjectId;
+            if (wasHidden || chatOrProjectChanged) {
+                lastRenderedChatId = chat.id;
+                lastRenderedProjectId = project.id;
+                renderMessages(false);
+                renderAgentSkills();
+            }
             syncModeUI(chat.mode);
 
-            // Sync chat header
-            const agentNameSpan = document.getElementById('chat-agent-name');
-            if (agentNameSpan) agentNameSpan.textContent = `🤖 ${chat.name}`;
+            // Sync chat header — nombre editable
+            const agentNameInput = document.getElementById('chat-agent-name-input');
+            if (agentNameInput) {
+                if (!agentNameInput.hasAttribute('data-manual')) {
+                    agentNameInput.value = chat.name || 'Agente';
+                }
+            }
+
+            // Sync toggle Hermes
+            const hermesBtn = document.getElementById('hermes-toggle-btn');
+            if (hermesBtn) {
+                if (chat.useHermes) {
+                    hermesBtn.classList.add('on');
+                    hermesBtn.classList.remove('off');
+                    hermesBtn.querySelector('.toggle-label').textContent = 'Hermes';
+                } else {
+                    hermesBtn.classList.remove('on');
+                    hermesBtn.classList.add('off');
+                    hermesBtn.querySelector('.toggle-label').textContent = 'Local';
+                }
+            }
 
             // Update STOP button and thinking indicator based on current state
             const stopBtn = document.getElementById('stop-btn');
@@ -2104,6 +3238,46 @@ function updateViewVisibility() {
             if (stopBtn) stopBtn.classList.toggle('hidden', !chat.isThinking);
             if (thinkingInd) thinkingInd.classList.toggle('hidden', !chat.isThinking);
             if (statusSpan && chat.thinkingStatus) statusSpan.textContent = chat.thinkingStatus;
+
+            // Verificar estado de Hermes si el toggle está activo
+            if (chat.useHermes && project && project.folder) {
+                const hermesPlayBtn = document.getElementById('hermes-play-btn');
+                const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+                const hermesStatusDot = document.getElementById('hermes-status-dot');
+                // Health-check usando el endpoint dedicado en vez de listar instancias
+                fetch(`${API_BASE}/hermes/status/${encodeURIComponent(project.id)}/${encodeURIComponent(chat.id)}`).then(r => r.json()).then(status => {
+                    if (status.alive && status.hasBridge) {
+                        if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
+                        if (hermesStatusDot) {
+                            hermesStatusDot.className = status.status === 'running' || status.status === 'thinking'
+                                ? 'hermes-status-dot running' : 'hermes-status-dot online';
+                        }
+                    } else if (status.alive && !status.hasBridge) {
+                        if (hermesPlayBtn) { hermesPlayBtn.classList.remove('hidden'); hermesPlayBtn.title = '🔄 Agente detectado — reiniciar'; }
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot ghost';
+                    } else {
+                        if (hermesPlayBtn) { hermesPlayBtn.classList.remove('hidden'); hermesPlayBtn.title = 'Iniciar Hermes'; }
+                        if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                        if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+                    }
+                }).catch(() => {
+                    if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+                    if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                    if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+                });
+                // Iniciar health-check periódico (30s) para esta ventana de chat
+                if (window.startHealthCheck) window.startHealthCheck(project.id, chat.id);
+            } else {
+                // Si no usa Hermes, ocultar botones
+                const hermesPlayBtn = document.getElementById('hermes-play-btn');
+                const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+                const hermesStatusDot = document.getElementById('hermes-status-dot');
+                if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            }
 
             // Sync chat model select
             const chatModelSelect = document.getElementById('chat-model-select');
@@ -2124,6 +3298,8 @@ function updateViewVisibility() {
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
+        // Detener health-check al salir de un chat
+        stopHealthCheck();
     } else if (isOpenFile) {
         saveFileBtn.classList.remove('hidden');
         editorTabContent.classList.remove('hidden');
@@ -2157,6 +3333,10 @@ function updateViewVisibility() {
         const projectModelSelect = document.getElementById('project-model-select');
         if (projectModelSelect) {
             projectModelSelect.value = project.model || '';
+        }
+        const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+        if (projectModelHeaderSelect) {
+            projectModelHeaderSelect.value = project.model || '';
         }
 
         // Sync project prompt UI
@@ -2287,11 +3467,93 @@ function getLanguage(ext) {
     };
     return map[ext] || null;
 }
-
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (typeof text !== 'string') return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+// Limpiar historial de Telegram
+const telegramClearBtn = document.getElementById('telegram-clear-btn');
+if (telegramClearBtn) {
+    telegramClearBtn.onclick = () => {
+        state.telegramMessages = [];
+        renderTelegramMessages();
+    };
+}
+
+// Badge opcional para el botón de Telegram
+function updateTelegramBadge() {
+    const count = state.telegramMessages.filter(m => m.type === 'incoming').length;
+    const btn = document.querySelector('.admin-sub-tab[data-sub-tab="telegram"]');
+    if (btn) {
+        const existing = btn.querySelector('.tg-badge');
+        if (existing) existing.remove();
+        if (count > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'tg-badge';
+            badge.textContent = count;
+            btn.appendChild(badge);
+        }
+    }
+}
+
+function formatProgressLines(rawContent) {
+    if (!rawContent) return '';
+    const lines = rawContent.split('\n');
+    return lines.map(line => {
+        const trimmed = line.trim();
+        const escaped = escapeHtml(line);
+        if (trimmed.startsWith('+')) {
+            return `<span class="diff-add">${escaped}</span>`;
+        } else if (trimmed.startsWith('-')) {
+            return `<span class="diff-del">${escaped}</span>`;
+        } else if (trimmed.startsWith('🛠️') || trimmed.includes('🛠️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('📖') || trimmed.startsWith('📝') || trimmed.startsWith('🔧') || trimmed.startsWith('🔍') || trimmed.startsWith('⚙️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('✅')) {
+            return `<span class="status-ok">${escaped}</span>`;
+        } else if (trimmed.startsWith('❌')) {
+            return `<span class="status-err">${escaped}</span>`;
+        } else if (trimmed.startsWith('🤔')) {
+            return `<span class="thinking-line">${escaped}</span>`;
+        }
+        return escaped;
+    }).join('\n');
+}
+
+// Highlight git diff output with colors: green for additions, red for deletions
+function highlightGitDiff(diffText) {
+    if (!diffText) return '';
+    const lines = diffText.split('\n');
+    const out = [];
+    for (const line of lines) {
+        // Escape HTML first
+        const esc = escapeHtml(line);
+        // Header lines (diff --git, index, ---, +++)
+        if (/^(diff --git|index |--- |\+\+\+ )/.test(esc)) {
+            out.push('<span class="gd-header">' + esc + '</span>');
+        }
+        // Hunk header (@@ ... @@)
+        else if (/^@@ /.test(esc)) {
+            out.push('<span class="gd-hunk">' + esc + '</span>');
+        }
+        // Removed lines
+        else if (/^\-/.test(esc)) {
+            out.push('<span class="gd">' + esc + '</span>');
+        }
+        // Added lines
+        else if (/^\+/.test(esc)) {
+            out.push('<span class="gi">' + esc + '</span>');
+        }
+        // Everything else
+        else {
+            out.push(esc);
+        }
+    }
+    return out.join('\n');
 }
 
 window.switchTab = (id) => {
@@ -2315,6 +3577,10 @@ window.switchTab = (id) => {
         renderTabs();
         renderMessages(); // To refresh chat if switching to a chat tab
         saveData();
+
+        // Reset git commit message context when switching agents
+        if (gitCommitMsgInput) gitCommitMsgInput.value = '';
+        p._lastTabId = id;
     }
 };
 
@@ -2332,16 +3598,11 @@ window.addChat = async () => {
         .filter(n => !isNaN(n));
     const nextNum = agentNumbers.length > 0 ? Math.max(...agentNumbers) + 1 : 1;
 
-    const newChat = {
-        id: 'chat-' + generateId(),
+    const newChat = createChat(p, {
         name: 'Agente ' + nextNum,
-        messages: [],
-        isThinking: false,
-        mode: 'auto',
-        lastProgress: Date.now(),
-        isStopped: false,
-        skills: [...(p.skills || [])] // Inherit project skills
-    };
+        useHermes: true,
+        skills: p.skills ? [...p.skills] : undefined
+    });
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
     renderTabs();
@@ -2386,6 +3647,9 @@ window.closeFileTab = (path) => {
 };
 
 window.switchProject = (id, event = null) => {
+    // Don't switch if we just finished a drag
+    if (draggedProjectId) return;
+    
     if (event) {
         // If it's the active project and we clicked the name, let contenteditable work
         if (event.target.classList.contains('session-name') && id === state.activeProjectId) return;
@@ -2403,6 +3667,9 @@ window.switchProject = (id, event = null) => {
     // Crucial: Update the input immediately to the project's folder
     folderPathInput.value = project.folder || '';
 
+    // Clear git commit input when switching projects
+    if (gitCommitMsgInput) gitCommitMsgInput.value = '';
+
     renderProjectList();
     renderTabs();
 
@@ -2413,8 +3680,6 @@ window.switchProject = (id, event = null) => {
     } else {
         console.log("📂 Project has no folder.");
         renderFileList();
-        projectRunContainer.classList.add('hidden');
-        gitControlsContainer.classList.add('hidden');
     }
     saveData();
 };
@@ -2435,6 +3700,21 @@ window.handleDeleteClick = (id, event) => {
             }
         }, 5000);
     }
+};
+
+// Permite que el agente Hermes setee la carpeta activa de un proyecto y escanee archivos
+window.setProjectFolder = async (projectId, folderPath) => {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) {
+        console.error('❌ setProjectFolder: proyecto no encontrado:', projectId);
+        return { success: false, error: 'Project not found' };
+    }
+    project.folder = folderPath;
+    folderPathInput.value = folderPath;
+    await window.scanFolder(folderPath, projectId);
+    saveData();
+    console.log('✅ setProjectFolder:', projectId, '->', folderPath);
+    return { success: true, folder: folderPath };
 };
 
 window.cancelDelete = (id, event) => {
@@ -2487,7 +3767,22 @@ window.deleteProject = async (id) => {
             await fetch(`${API_BASE}/admin/traces?projectId=${id}`, { method: 'DELETE' }).catch(e => console.error(e));
             
             // 3. Save the new global state (without this project)
+            // BUGFIX: Incluir deletedProjectIds para que el merge de saveSessions
+            // NO restaure este proyecto desde la DB (evita que proyectos borrados vuelvan)
+            state.deletedProjectIds = [id];
+            // Si también hay agentes (chats) con identity files, limpiarlos
+            if (project.chats) {
+                for (const chat of project.chats) {
+                    try {
+                        await fetch(`${API_BASE}/hermes/purge-identities`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }
+                        }).catch(() => {});
+                    } catch {}
+                }
+            }
             await saveData();
+            delete state.deletedProjectIds;
             adminLog(`✅ Proyecto <strong>${project.name}</strong> eliminado correctamente.`);
         } catch (serverError) {
             console.error("[DELETE] Error en la sincronización con el servidor:", serverError);
@@ -2647,7 +3942,7 @@ window.clearAllArchivedProjects = async () => {
     }
 };
 
-function renderMessages(shouldRenderLayout = true) {
+function renderMessages(shouldRenderLayout = false) {
     const chat = getActiveChat();
     if (!chat) return;
 
@@ -2686,6 +3981,9 @@ function renderMessages(shouldRenderLayout = true) {
 
     chatMessages.innerHTML = '';
     chat.messages.forEach(m => {
+        // Saltar mensajes de progreso ya finalizados — se muestran minimizados
+        if (m.isProgress && m.finished && m._hidden) return;
+
         const div = document.createElement('div');
         div.className = `message ${m.role}`;
 
@@ -2694,7 +3992,43 @@ function renderMessages(shouldRenderLayout = true) {
             imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
         }
 
-        div.innerHTML = imageHtml + formatMarkdown(m.content);
+        // Si es un mensaje de progreso de Hermes (activo o finalizado)
+        if (m.isProgress) {
+            div.id = m.id;
+            const isMinimized = m.minimized === true;
+            const isFinished = m.finished === true;
+            const progressLines = m.content.split('\n').filter(l => l.trim());
+            const summary = progressLines[0] || '⚡ Procesando...';
+            // Si está finalizado, buscar la línea de "✅ Tarea completada" o error
+            const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+            const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+            const displaySummary = errorLine || doneLine || summary;
+            const detailContent = progressLines.slice(1).join('\n');
+            const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+            div.className = `message system hermes-progress ${stateClass}`;
+            div.innerHTML = `
+                <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="toggleProgress(this)">
+                    <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
+                    <span class="progress-summary">${escapeHtml(displaySummary)}</span>
+                </div>
+                <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
+                    <pre>${formatProgressLines(detailContent)}</pre>
+                </div>
+            `;
+        } else {
+            div.innerHTML = imageHtml + formatMarkdown(m.content);
+        }
+
+        // Si hay cambios de archivo y es assistant
+        if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
+            const changesDiv = document.createElement('div');
+            changesDiv.className = 'file-changes';
+            m.fileChanges.forEach(change => {
+                changesDiv.innerHTML += `<span class="file-change ${change.type}">${change.type === 'add' ? '+' : '-'} ${change.file}</span>`;
+            });
+            div.appendChild(changesDiv);
+        }
+
         chatMessages.appendChild(div);
     });
 
@@ -2717,6 +4051,24 @@ function renderMessages(shouldRenderLayout = true) {
 
 }
 
+// Función para toggle del progreso de Hermes
+window.toggleProgress = function(el) {
+    const container = el.closest('.hermes-progress');
+    const detail = container.querySelector('.hermes-progress-detail');
+    const arrow = el.querySelector('.progress-arrow');
+    if (detail.style.display === 'none') {
+        detail.style.display = 'block';
+        arrow.textContent = '▼';
+        el.classList.remove('minimized');
+        el.classList.add('maximized');
+    } else {
+        detail.style.display = 'none';
+        arrow.textContent = '▶';
+        el.classList.remove('maximized');
+        el.classList.add('minimized');
+    }
+};
+
 window.toggleActionGroup = (header) => {
     const group = header.closest('.action-group');
     if (group) {
@@ -2724,8 +4076,22 @@ window.toggleActionGroup = (header) => {
     }
 };
 
+// Debouncer para renderizados pesados de layout durante streaming
+let _thinkingLayoutTimer = null;
+const _debounceThinkingLayout = () => {
+    if (_thinkingLayoutTimer) clearTimeout(_thinkingLayoutTimer);
+    _thinkingLayoutTimer = setTimeout(() => {
+        _thinkingLayoutTimer = null;
+        renderProjectList();
+        renderAdminMonitor();
+        renderTabs();
+        updateAgentBadge();
+    }, 200);
+};
+
 function updateThinking(chat, isThinking, status = "", subtext = "") {
     if (!chat) return;
+    const prevThinking = chat.isThinking;
     chat.isThinking = isThinking;
     chat.thinkingStatus = status;
     chat.thinkingSubtext = subtext;
@@ -2762,14 +4128,26 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
         if (project && project.activeTabId === 'admin') renderAdminMonitor();
     }
     renderMessages(false);
-    renderProjectList(); // Added to update dots
-    renderAdminMonitor(); // Added to update monitor
-    renderTabs(); // Added to update tabs dots
+    // Layout updates (sidebar dots, tabs, admin monitor) are debounced to avoid cascade
+    _debounceThinkingLayout();
+
+    // ─── MULTI-TAB SYNC: Persistir y notificar cuando cambia el estado de thinking ───
+    if (prevThinking !== isThinking) {
+        saveData();
+        // Notificar vía BroadcastChannel para sincronización inmediata entre pestañas
+        try {
+            const bc = new BroadcastChannel('jp-agents-sync');
+            bc.postMessage({ type: 'thinking-changed', chatId: chat.id, isThinking, timestamp: Date.now() });
+            bc.close();
+        } catch(e) {}
+    }
 }
 
 function formatMarkdown(text) {
     try {
-        const str = (typeof text === 'string') ? text : (typeof text === 'object' ? JSON.stringify(text, null, 2) : String(text || ""));
+        // Strip ANSI escape codes first (Hermes emits terminal colors)
+        const clean = stripAnsi(text);
+        const str = (typeof clean === 'string') ? clean : (typeof clean === 'object' ? JSON.stringify(clean, null, 2) : String(clean || ""));
         if (marked && marked.parse) {
             return marked.parse(str, { gfm: true, breaks: true });
         }
@@ -2815,49 +4193,182 @@ async function sendMessage() {
     renderMessages();
 
     await triggerAgentLogic(project, chat);
+    
+    // Broadcast a Agents Room (otras pestañas) que el estado cambió
+    try {
+        const bc = new BroadcastChannel('jp-agents-room');
+        bc.postMessage({ type: 'agents-updated', timestamp: Date.now() });
+        bc.close();
+    } catch(e) {}
 }
+
+// ─── Toast / Notification System ───
+function showToast(message, type = 'info', duration = 4000) {
+    const existing = document.querySelector('.toast-notification');
+    if (existing) existing.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification toast-${type}`;
+    
+    const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
+    toast.innerHTML = `<span class="toast-icon">${icons[type] || 'ℹ️'}</span><span class="toast-text">${escapeHtml(message)}</span>`;
+    
+    document.body.appendChild(toast);
+    
+    // Animate in
+    requestAnimationFrame(() => toast.classList.add('show'));
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        toast.classList.add('hide');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+window.showToast = showToast;
+
+// ─── Notification Sounds (Web Audio API) ───
+let _audioCtx = null;
+function _getAudioCtx() {
+    if (!_audioCtx) {
+        try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+    }
+    return _audioCtx;
+}
+
+function playAgentCompleteSound() {
+    const ctx = _getAudioCtx();
+    if (!ctx) return;
+    // Pleasant ascending chime: C-E-G arpeggio
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, now + i * 0.12);
+        gain.gain.linearRampToValueAtTime(0.15, now + i * 0.12 + 0.05);
+        gain.gain.linearRampToValueAtTime(0, now + i * 0.12 + 0.35);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now + i * 0.12); osc.stop(now + i * 0.12 + 0.35);
+    });
+}
+
+function playAgentErrorSound() {
+    const ctx = _getAudioCtx();
+    if (!ctx) return;
+    // Harsh descending buzz: two dissonant tones
+    const now = ctx.currentTime;
+    const notes = [440, 370, 311]; // A4, F#4, Eb4 — tense descending
+    notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, now + i * 0.1);
+        gain.gain.linearRampToValueAtTime(0.1, now + i * 0.1 + 0.03);
+        gain.gain.linearRampToValueAtTime(0, now + i * 0.1 + 0.3);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now + i * 0.1); osc.stop(now + i * 0.1 + 0.3);
+    });
+}
+window.playAgentCompleteSound = playAgentCompleteSound;
+window.playAgentErrorSound = playAgentErrorSound;
 
 async function improvePrompt(targetElementId, e) {
     const target = document.getElementById(targetElementId);
     if (!target) return;
 
     const content = target.value.trim();
-    if (!content) return;
+    if (!content) {
+        showToast('Escribí algo primero para mejorar el prompt.', 'warning');
+        return;
+    }
 
     const originalText = target.value;
     const btn = e?.currentTarget || (e ? e.target : null);
     const originalBtnText = btn ? btn.innerText : null;
 
     if (btn) {
-        btn.innerText = "⏳...";
+        btn.innerText = "⏳";
         btn.disabled = true;
     }
     target.disabled = true;
 
     try {
-        const selectedModel = state.selectedModel || modelSelect.value || 'llama3';
+        // Usar el modelo del agente/chat activo si mejoramos el chat-input
+        let selectedModel;
+        let apiKey = null;
+        let baseUrl = null;
+        
+        // BUGFIX: Usar el SECOND AGENT (Ollama local) para mejorar prompts,
+        // no el modelo del chat principal. El second agent es más rápido
+        // y está diseñado para tareas auxiliares como esta.
+        if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
+            selectedModel = state.secondAgentConfig.model;
+            // Second agent siempre usa Ollama local
+            apiKey = null;
+            baseUrl = null;
+        } else if (targetElementId === 'chat-input') {
+            const chat = getActiveChat();
+            const project = getActiveProject();
+            const agentModelSelect = document.getElementById('agent-model-select');
+            selectedModel = chat?.model || project?.model || (agentModelSelect ? agentModelSelect.value : '') || state.selectedModel || modelSelect.value || '';
+        } else {
+            selectedModel = state.selectedModel || modelSelect.value || '';
+        }
+        
+        // Detectar API según el modelo (misma lógica que en agent chat)
+        // Si el modelo está vacío, forzar Ollama local
+        if (selectedModel) {
+            if (selectedModel.includes('/')) {
+                apiKey = state.openrouterApiKey;
+                baseUrl = "https://openrouter.ai/api/v1";
+            } else if (selectedModel.startsWith('deepseek')) {
+                apiKey = state.deepseekApiKey;
+                baseUrl = "https://api.deepseek.com";
+            } else if (selectedModel.startsWith('gpt') || selectedModel.startsWith('o1') || selectedModel.startsWith('o3')) {
+                apiKey = state.openaiApiKey;
+            } else if (state.customApiBase) {
+                baseUrl = state.customApiBase;
+            }
+        }
+        
+        // Si no hay API key y el modelo es remoto, advertir y forzar Ollama
+        if (selectedModel && !apiKey && baseUrl && baseUrl !== 'http://localhost:11434') {
+            console.warn(`[IMPROVE] No hay API key configurada para ${selectedModel}, redirigiendo a Ollama.`);
+            apiKey = null;
+            baseUrl = null;
+            selectedModel = ''; // Forzar a que el servidor use su default
+        }
+        
+        showToast('✨ Mejorando prompt...', 'info');
+        
         const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, model: selectedModel })
+            body: JSON.stringify({ content, model: selectedModel, apiKey, baseUrl })
         });
 
-        if (!res.ok) throw new Error("Error al mejorar el prompt");
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            throw new Error(errData.error || `Error ${res.status}`);
+        }
 
         const data = await res.json();
         if (data.improvedContent && data.improvedContent !== originalText) {
-            // Consistent behavior: Always show Diff UI so user can review and apply/discard
+            showToast('✅ Prompt mejorado. Revisá los cambios.', 'success');
             showPromptDiffUI(targetElementId, originalText, data.improvedContent);
         } else {
-            console.log("[IMPROVE] El contenido ya es óptimo o no hubo cambios.");
+            showToast('El prompt ya está óptimo, no se necesitaron cambios.', 'info');
         }
     } catch (e) {
         console.error("Error improvePrompt:", e);
-        alert("No se pudo mejorar el prompt: " + e.message);
+        showToast('No se pudo mejorar el prompt: ' + e.message, 'error');
         target.value = originalText;
     } finally {
         if (btn) {
-            btn.innerText = originalBtnText || "🪄";
+            btn.innerText = originalBtnText || "✨";
             btn.disabled = false;
         }
         target.disabled = false;
@@ -3076,20 +4587,44 @@ Analiza si la aplicación está funcionando como se esperaba según los requisit
 async function triggerAgentLogic(project, chat, origin = 'user') {
     if (chat.isThinking) return;
 
+    // Verificar si el toggle Hermes está activo para este chat
+    const hermesBtn = document.getElementById('hermes-toggle-btn');
+    const useHermes = hermesBtn && hermesBtn.classList.contains('on');
+
+    if (useHermes) {
+        // Auto-start Hermes si no hay instancia activa
+        if (project && project.folder) {
+            try {
+                const instRes = await fetch(`${API_BASE}/hermes/instances`);
+                const instData = await instRes.json();
+                const exists = (instData.instances || []).find(i => i.chatId === chat.id && i.projectId === project.id && i.status !== 'stopped');
+                if (!exists) {
+                    console.log('[HERMES] Auto-starting Hermes for chat:', chat.id);
+                    const model = chat.model || project.model || '';
+                    await fetch(`${API_BASE}/hermes/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            projectId: project.id,
+                            chatId: chat.id,
+                            workdir: project.folder,
+                            model: model || null,
+                            name: chat.name || 'Hermes Agent'
+                        })
+                    });
+                }
+            } catch(e) {
+                console.warn('[HERMES] Auto-start failed:', e.message);
+                // Continue anyway — triggerHermesLogic will show error
+            }
+        }
+        return await triggerHermesLogic(project, chat, origin);
+    }
+
     await setAgentActive(true);
     await clearClientLogs();
 
-    const thinkingPhrases = [
-        "Analizando solicitud...",
-        "Consultando redes neuronales...",
-        "Diseñando solución...",
-        "Reflexionando...",
-        "Evaluando posibilidades...",
-        "Sintetizando respuesta...",
-        "Pensando profundamente..."
-    ];
-    const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
-    updateThinking(chat, true, "Esperando respuesta", randomPhrase);
+    updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
     renderMessages();
 
@@ -3123,6 +4658,26 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         if (isTechnical) {
             taskState.objective = lastUserMsg.content;
             taskState.currentState = "STARTING TASK";
+
+            // ─── Auto-naming: Si el agente tiene nombre genérico ("Agente N"), asignar nombre desde el prompt ───
+            if (/^Agente \d+$/.test(chat.name)) {
+                // 🔥 ASINCRÓNICO: no bloquea al agente, nombra en paralelo
+                generateChatNameFromPrompt(lastUserMsg.content).then(generatedName => {
+                    if (generatedName) {
+                        console.log(`[NAMING] Auto-nombrando agente desde prompt: "${generatedName}"`);
+                        chat.name = generatedName;
+                        const agentNameInput = document.getElementById('chat-agent-name-input');
+                        if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                            agentNameInput.value = generatedName;
+                        }
+                        renderTabs();
+                        renderAdminMonitor();
+                        saveData();
+                    }
+                });
+            }
+            // ─── Fin auto-naming ───
+
         } else if (isGreeting) {
             taskState.objective = "CONVERSATION";
             taskState.currentState = "IDLE/CHATTING";
@@ -3484,6 +5039,11 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     } catch (e) {
         updateThinking(chat, false);
         chat.messages.push({ role: 'agent', content: '⚠️ Error: ' + e.message });
+        // 🔊 Error notification sound
+        try { playAgentErrorSound(); } catch(e) {}
+        // Mark chat as errored so Agents Room shows the cross
+        chat._errored = true;
+        chat._errorMessage = e.message || 'Error desconocido';
         renderMessages();
     } finally {
         // If triggered by admin, report back to admin log
@@ -3556,13 +5116,6 @@ window.scanFolder = async function (pathInput = null, projectId = null) {
         // Only update UI elements if this is still the active project
         if (state.activeProjectId === targetProjectId) {
             folderPathInput.value = data.currentPath;
-
-            // Auto-detect run.bat
-            const hasRunBat = targetProject.currentFiles.some(f => f.name.toLowerCase() === 'run.bat');
-            projectRunContainer.classList.toggle('hidden', !hasRunBat);
-
-            // Show Git controls if folder is selected
-            gitControlsContainer.classList.toggle('hidden', !targetProject.folder);
 
             // Auto-detect skill.md
             const skillFile = targetProject.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
@@ -3797,21 +5350,9 @@ Eres un asistente de programación experto con acceso a herramientas nativas.
 `;
 }
 
-window.stopAgent = (projectId, chatId) => {
-    const project = state.projects.find(p => p.id === projectId);
-    if (!project) return;
-    const chat = project.chats.find(c => c.id === chatId);
-    if (!chat) return;
-
-    chat.isStopped = true;
-    chat.isThinking = false;
-    adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
-
-    if (state.activeProjectId === projectId && project.activeTabId === chatId) {
-        renderMessages();
-    }
-    if (project.activeTabId === 'admin') renderAdminMonitor();
-};
+// stopAgent is defined globally above — keep only one definition.
+// The canonical stopAgent handles: abort fetch, call /api/hermes/stop backend,
+// mark progress, hide thinking indicators, admin log, save data.
 
 function adminLog(msg) {
     if (!adminChatMessages) return;
@@ -3830,12 +5371,16 @@ function renderAdminMessages() {
 
     let thinkingHtml = '';
     if (state.adminIsThinking) {
+        const thinkingText = state.adminThinkingText 
+            ? state.adminThinkingText.split('\n').filter(l => l.trim()).map(l => `<div>${escapeHtml(l)}</div>`).join('')
+            : '';
         thinkingHtml = `
             <div class="message agent thinking">
                 <div class="thinking-bubble-content">
                     <div class="spinner"></div>
                     <div class="thinking-text-wrapper">
-                        <div class="thinking-status">Orquestador pensando...</div>
+                        <div class="thinking-status">💭 Orquestador pensando...</div>
+                        ${thinkingText ? `<div class="thinking-subtext thinking-stream">${thinkingText}</div>` : ''}
                     </div>
                 </div>
             </div>
@@ -3882,6 +5427,37 @@ window.clearAdminChat = () => {
     saveData();
 };
 
+// ─── TELEGRAM MONITOR ───
+function renderTelegramMessages() {
+    const container = document.getElementById('telegram-messages');
+    if (!container) return;
+    if (state.telegramMessages.length === 0) {
+        container.innerHTML = '<div class="telegram-placeholder">Esperando mensajes de Telegram...</div>';
+        return;
+    }
+    container.innerHTML = '';
+    state.telegramMessages.forEach(m => {
+        const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+        const div = document.createElement('div');
+        div.className = `telegram-msg telegram-${m.type}`;
+        let icon = '📩', label = 'Entrante';
+        if (m.type === 'outgoing') { icon = '📤'; label = 'Saliente'; }
+        else if (m.type === 'status') { icon = '🔵'; label = 'Estado'; }
+        else if (m.type === 'error') { icon = '❌'; label = 'Error'; }
+        else if (m.type === 'thinking') { icon = '💭'; label = 'Pensando'; }
+        div.innerHTML = `
+            <div class="telegram-msg-header">
+                <span class="telegram-msg-type">${icon} ${label}</span>
+                <span class="telegram-msg-time">${time}</span>
+            </div>
+            <div class="telegram-msg-from">${m.from ? `👤 ${m.from}` : ''}</div>
+            <div class="telegram-msg-text">${escapeHtml(m.text || m.error || '')}</div>
+        `;
+        container.appendChild(div);
+    });
+    setTimeout(() => { container.scrollTop = container.scrollHeight; }, 50);
+}
+
 function buildAdminSystemPrompt() {
     const agentsList = state.projects.flatMap(p => p.chats.map(c => {
         const lastMsg = c.messages.length > 0 ? c.messages[c.messages.length - 1].content : '(Sin actividad)';
@@ -3906,16 +5482,31 @@ ESTADO ACTUAL DE LA RED DE AGENTES:
 ${agentsTable}
 
 INSTRUCCIONES ADICIONALES:
+- **DELEGACIÓN ASINCRÓNICA**: Ahora cuando usás [@Agente: "instrucción"], el sistema NO espera la respuesta. Delega la tarea en background y te responde INMEDIATAMENTE. Recibirás el resultado automáticamente cuando el agente termine.
 - Si un agente está "OCIOSO", evalúa su último mensaje. Si ha terminado exitosamente, revisa si el objetivo general del usuario se ha cumplido.
 - NO des por finalizada la tarea global hasta que TODOS los subagentes asignados hayan completado sus partes exitosamente. Si alguno falló o está atascado, envíale instrucciones correctivas con [@Agente: "Tu instrucción..."].
 - Si el usuario pide algo complejo, puedes encadenar comandos: [CREATE_PROJECT] [CREATE_AGENT] [@Agente: "Instrucción"] todo en una sola respuesta.
-- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro y sigue checkeando iterativamente hasta que todos confirmen el éxito completo.` ;
+- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro. Pero recordá que las delegaciones son ASINCRÓNICAS — respondé inmediatamente después de delegar, no esperes resultados.
+- **ARRIBA TENÉS LA TABLA COMPLETA DE AGENTES con su estado actualizado.** No necesitas pedir el status porque ya lo tenés acá en cada llamada.
+- Cuando un agente termine una tarea, el sistema te notificará automáticamente con un mensaje como: ✅ *Delegación Completada* — 🤖 **Nombre** (Proyecto). Si el objetivo general del usuario se cumplió, informalo. Si no, podés enviar nuevas instrucciones.
+- **USO DE LA API**: Podés llamar a las APIs de JP Agents directamente usando el formato [API: METHOD /endpoint {body}] en tu respuesta. El sistema ejecutará la llamada y te devolverá el resultado.
+  Ejemplos:
+  - [API: GET /api/admin/agents] → lista todos los agentes con su estado
+  - [API: POST /api/admin/projects/create {"name":"MiProyecto"}] → crea un proyecto
+  - [API: POST /api/admin/agents/create {"projectId":"MiProyecto","name":"MiAgente"}] → crea un agente
+  - [API: POST /api/admin/agents/create {"projectId":"nombre-del-proyecto","name":"Agente1","model":"deepseek-v4-flash"}] → crear con modelo específico
+  - [API: DELETE /api/admin/agents/projectId/chatId] → eliminar un agente
+- **CREAR PROYECTOS Y AGENTES**: Podés usar los comandos tradicionales [CREATE_PROJECT: nombre], [CREATE_AGENT: proyecto : nombre] o el nuevo formato [API: POST ...]. Ambos funcionan.
+- TIP: Si el proyecto existe, usá el formato [API: POST /api/admin/agents/create {"projectId":"ID_DEL_PROYECTO","name":"NombreAgente"}] — necesitás el projectId que está en la tabla de arriba.
+- Cuando crees un agente, recordá darle una orden con [@NombreAgente: "instrucción"] en la MISMA respuesta. No esperes a la próxima iteración.` ;
     return prompt;
 }
 
 window.stopAdminAgent = () => {
     state.adminIsStopped = true;
     state.adminIsThinking = false;
+    state.adminAbortController?.abort();
+    state.adminAbortController = null;
     if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
     adminLog(`🛑 Deteniendo Orquestador Administrativo`);
     renderAdminMessages();
@@ -3932,9 +5523,11 @@ async function triggerAdminAgentLogic(retryCount = 0) {
     state.adminIsThinking = true;
     state.adminIsStopped = false;
     state.adminNeedsRecheck = false;
+    state.adminThinkingText = ''; // Para streaming de pensamiento
     if (stopAdminBtn) stopAdminBtn.classList.remove('hidden');
     renderAdminMessages();
 
+    // ─── Build system prompt + history (igual que antes) ───
     const systemMsg = { role: 'system', content: buildAdminSystemPrompt() };
     const history = state.adminMessages.map(m => ({
         role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
@@ -3943,244 +5536,101 @@ async function triggerAdminAgentLogic(retryCount = 0) {
 
     const messages = [systemMsg, ...history];
 
+    // Obtener el último mensaje del usuario (el que disparó esta llamada)
+    const lastUserMsg = state.adminMessages.filter(m => m.role === 'user').pop();
+    const queryMessage = lastUserMsg ? lastUserMsg.content : '';
+
     try {
-        const response = await fetch(`${OLLAMA_BASE}/chat`, {
+        // Usar Hermes ADMIN vía API streaming (ndjson)
+        console.log(`[ADMIN-HERMES] Consultando a Hermes ADMIN (streaming): "${queryMessage.slice(0, 80)}..."`);
+
+        // Crear AbortController para poder cancelar la petición
+        state.adminAbortController = new AbortController();
+
+        const response = await fetch(`${API_BASE}/admin/hermes-chat/stream`, {
             method: 'POST',
-            body: JSON.stringify({
-                model: state.selectedAdminModel || modelSelect.value,
-                messages: messages,
-                stream: true
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: queryMessage, history }),
+            signal: state.adminAbortController.signal
         });
 
-        if (!response.ok) throw new Error(`Ollama Error: ${response.statusText}`);
+        if (!response.ok) {
+            let detail = response.statusText;
+            try {
+                const errBody = await response.json();
+                if (errBody.error) detail = errBody.error;
+                else if (errBody.response) detail = errBody.response;
+            } catch {}
+            throw new Error(`Hermes ADMIN API Error: ${detail}`);
+        }
 
-        // --- STREAMING PROCESSING for Admin ---
+        // ─── Leer el stream ndjson ───
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let assistantResponse = '';
+        let buffer = '';
+        let assistantResponse = '(sin respuesta)';
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // keep incomplete line in buffer
 
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
-                    const json = JSON.parse(line);
-                    if (json.done) break;
-                    if (json.message && json.message.content) {
-                        assistantResponse += json.message.content;
-                    }
-                } catch (e) { }
-            }
+                    const event = JSON.parse(line);
 
-            if (state.adminIsStopped) {
-                reader.cancel();
-                state.adminIsThinking = false;
-                if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
-                return;
+                    if (event.event === 'thinking') {
+                        // Actualizar pensamiento en tiempo real
+                        state.adminThinkingText = event.text;
+                        renderAdminMessages();
+                    } else if (event.event === 'done') {
+                        assistantResponse = event.response || '(sin respuesta)';
+                    } else if (event.event === 'error') {
+                        throw new Error(event.error);
+                    }
+                } catch (parseErr) {
+                    if (parseErr.message && !parseErr.message.includes('JSON')) {
+                        throw parseErr;
+                    }
+                    // Si falla el parseo de la línea, la ignoramos
+                }
             }
         }
-        // --- END STREAMING ---
 
+        // Si nunca llegó evento done pero el stream terminó, algo salió mal
+        if (!assistantResponse) {
+            throw new Error('La transmisión finalizó sin respuesta');
+        }
+        
+        // Mostrar la respuesta en el admin chat
         state.adminMessages.push({ role: 'agent', content: assistantResponse });
         renderAdminMessages();
         saveData();
 
-        // Parse Dispatches: [DELEGATE:target]...[/DELEGATE] OR [@target: "..."]
-        const robustRegex = /\[DELEGATE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/DELEGATE\]/gi;
-        const quickRegex = /\[@\s*([^:]+?)\s*:\s*"(.*?)"\s*\]/gi;
-
-        const dispatches = [];
-        let m;
-        while ((m = robustRegex.exec(assistantResponse)) !== null) {
-            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
-        }
-        while ((m = quickRegex.exec(assistantResponse)) !== null) {
-            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
-        }
-
-        // --- NEW ADMIN TOOLS ---
-        let anyFailed = false;
-        let failedTargets = [];
-        
-        const cleanStr = (str) => str.replace(/["'“”]/g, '').trim();
-
-        const createProjectRegex = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
-        const createAgentRegex = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
-        const deleteProjectRegex = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
-
-        while ((m = createProjectRegex.exec(assistantResponse)) !== null) {
-            const name = cleanStr(m[1]);
-            adminLog(`🛠️ Orquestador creando proyecto: <strong>${name}</strong>`);
-            try {
-                await createNewProject(name);
-            } catch (err) {
-                anyFailed = true;
-                failedTargets.push(`CREATE_PROJECT:${name}`);
-                state.adminMessages.push({ role: 'system', content: `❌ Error al crear proyecto "${name}": ${err.message}` });
-            }
-        }
-
-        while ((m = createAgentRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const aName = cleanStr(m[2]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                adminLog(`🛠️ Orquestador creando agente <strong>${aName}</strong> en proyecto <strong>${project.name}</strong>`);
-                // Implementación rápida de addChat con parámetros
-                const newChat = {
-                    id: 'chat-' + generateId(),
-                    name: aName,
-                    messages: [],
-                    isThinking: false,
-                    mode: 'auto',
-                    lastProgress: Date.now(),
-                    isStopped: false,
-                    model: project.model || modelSelect.value
-                };
-                newChat.isNew = true; // For visual animation
-                project.chats.push(newChat);
-                saveData();
-                renderProjectList();
-                renderTabs();
-                renderAdminMonitor();
-            } else {
-                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para crear el agente.`);
-                anyFailed = true;
-                failedTargets.push(`CREATE_AGENT:${pId}`);
-                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo crear el agente "${aName}" porque el proyecto "${pId}" NO EXISTE. Asegúrate de crear el proyecto primero o usar el nombre exacto de un proyecto existente.` });
-            }
-        }
-
-        while ((m = deleteProjectRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                if (confirm(`⚠️ El Orquestador solicita eliminar el proyecto "${project.name}". ¿Confirmar?`)) {
-                    adminLog(`🗑️ Orquestador eliminando proyecto: <strong>${project.name}</strong>`);
-                    await window.deleteProject(project.id);
-                } else {
-                    adminLog(`🛑 Acción cancelada por el usuario: Eliminar proyecto ${project.name}`);
-                }
-            } else {
-                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para eliminar.`);
-                anyFailed = true;
-                failedTargets.push(`DELETE_PROJECT:${pId}`);
-                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo eliminar el proyecto "${pId}" porque NO EXISTE.` });
-            }
-        }
-        // -----------------------
-
-
-
-        for (const dispatch of dispatches) {
-            let rawTarget = dispatch.rawTarget;
-            const instruction = dispatch.instruction;
-
-            // Limpieza ULTRA-robusta del identificador
-            let targetName = rawTarget.toLowerCase()
-                .replace(/["'“”]/g, '') // Quitar comillas de todo tipo
-                .split('|')[0]         // Si copió toda la línea con pipes, agarrar solo lo primero
-                .split('(')[0]         // Si puso el proyecto en paréntesis, quitarlo
-                .replace(/^(agente|nombre|id|proyecto|name|target|id_unico|destinatario|id \(usar este\)):/i, '')
-                .replace(/^(el agente|el proyecto|agente|proyecto)\s+/i, '')
-                .split('[')[0]         // Quitar posibles [ID: ...] finales si copió la línea entera
-                .trim();
-
-            let found = false;
-            // Primero buscar por ID exacto (prioridad)
-            for (const p of state.projects) {
-                for (const c of p.chats) {
-                    if ((c.id || '').toLowerCase() === targetName) {
-                        c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
-                        state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}**` });
-                        if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) break;
-            }
-
-            // Si no se encontró por ID, buscar por nombre o proyecto de forma flexible
-            if (!found && targetName) {
-                for (const p of state.projects) {
-                    for (const c of p.chats) {
-                        const agentNameLower = (c.name || '').toLowerCase();
-                        const projectNameLower = (p.name || '').toLowerCase();
-                        const compositeName = `${agentNameLower} (${projectNameLower})`.toLowerCase();
-
-                        // Coincidencias ultra-flexibles
-                        const isMatch =
-                            agentNameLower === targetName ||
-                            projectNameLower === targetName ||
-                            compositeName === targetName ||
-                            targetName === agentNameLower.replace(/\s+/g, '') ||
-                            targetName === projectNameLower.replace(/\s+/g, '') ||
-                            agentNameLower.includes(targetName) ||
-                            projectNameLower.includes(targetName) ||
-                            targetName.includes(agentNameLower);
-
-                        if (isMatch) {
-                            c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
-                            state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}** (vía coincidencia de nombre)` });
-                            if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
-                            found = true;
-                        }
-                    }
-                }
-            }
-            if (!found) {
-                const systemCommands = ['create_project', 'create_agent', 'delete_project'];
-                if (systemCommands.includes(targetName)) {
-                    state.adminMessages.push({ role: 'system', content: `❌ ERROR: No puedes usar [@${rawTarget}: ...] para comandos de sistema. Debes usar el formato directo: [${targetName.toUpperCase()}: Parámetros]` });
-                } else {
-                    state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${rawTarget}**` });
-                }
-                anyFailed = true;
-                failedTargets.push(rawTarget);
-            }
-        }
-
-        if (anyFailed && retryCount < 5) {
-            const agentList = state.projects.flatMap(p => p.chats.map(c => `- ${c.name} (Proyecto: ${p.name}) [ID: ${c.id}]`)).join('\n');
-            const projectList = state.projects.map(p => `- ${p.name} [ID: ${p.id}]`).join('\n');
-            const retryFeedback = `⚠️ Error de Orquestación: Algunas acciones fallaron o destinatarios no se encontraron: [${failedTargets.join(', ')}]. 
-            
-POR FAVOR CORRIGE TUS COMANDOS Y REINTENTA:
-1. Asegúrate de que el PROYECTO exista antes de crear un agente en él.
-2. Usa el formato [CREATE_AGENT: Nombre_Proyecto : Nombre_Agente].
-3. Revisa los IDs y nombres de esta lista oficial actualizada:
-
-PROYECTOS:
-${projectList}
-
-AGENTES:
-${agentList}
-
-REINTENTO AUTOMÁTICO ${retryCount + 1}/5...`;
-
-            state.adminMessages.push({ role: 'system', content: retryFeedback });
-            state.adminIsThinking = false;
-
-            // Re-trigger con feedback para que corrija
-            console.log(`🔄 Re-intentando orquestación (${retryCount + 1}/5) por error en comandos/destinatarios.`);
-            setTimeout(() => triggerAdminAgentLogic(retryCount + 1), 1500);
-            return;
-        }
-
+        // ─── Los comandos (CREATE_PROJECT, CREATE_AGENT, @AgentName, etc.)
+        // YA fueron ejecutados por el servidor en executeAdminCommands().
+        // El servidor también emite broadcasts WebSocket (sync:stateUpdated)
+        // para que la UI se entere de los cambios.
+        // Acá solo mostramos un resumen de lo que se ejecutó y refrescamos UI.
         renderAdminMessages();
         state.adminIsThinking = false;
         if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
 
         // If an agent finished while we were thinking, trigger again to process the latest news
+        // BUGFIX: Limit re-trigger depth to prevent infinite loops
         if (state.adminNeedsRecheck) {
-            triggerAdminAgentLogic();
+            if (retryCount < 2) {
+                triggerAdminAgentLogic(retryCount + 1);
+            } else {
+                console.warn('[ADMIN] ⚠️ adminNeedsRecheck limit reached (2). Deteniendo cascada.');
+                state.adminNeedsRecheck = false;
+                renderAdminMessages();
+                saveData();
+            }
         } else {
             renderAdminMessages();
             saveData();
@@ -4201,9 +5651,9 @@ function renderAdminMonitor() {
     state.projects.forEach(p => {
         p.chats.forEach(c => {
             const lastTime = new Date(c.lastProgress || Date.now()).toLocaleTimeString();
-            const statusClass = c.isThinking ? 'busy' : 'idle';
-            const statusText = c.isThinking ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
-            const stopBtnDisabled = !c.isThinking ? 'disabled' : '';
+            const statusClass = isAgentActive(c) ? 'busy' : 'idle';
+            const statusText = isAgentActive(c) ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
+            const stopBtnDisabled = !isAgentActive(c) ? 'disabled' : '';
 
             html += `
                 <tr>
@@ -4232,6 +5682,63 @@ function renderAdminMonitor() {
 
     monitorTbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--text-secondary);">No hay agentes activos.</td></tr>';
 }
+
+function updateAgentBadge() {
+    const badge = document.getElementById('agent-badge');
+    if (!badge) return;
+    // Intentar obtener la lista real de agentes desde el servidor
+    fetch(`${API_BASE}/admin/agents`)
+        .then(r => r.json())
+        .then(data => {
+            const agents = data.agents || [];
+            // Contar SOLO agentes que están EJECUTÁNDOSE (running/thinking), NO idle
+            // "idle" es el estado por defecto cuando un agente existe pero no está procesando
+            const running = agents.filter(a => a.status === 'thinking' || a.status === 'running').length;
+            badge.textContent = running;
+            // Siempre mostrar el badge — si es 0, mostrar 0 en gris oscuro
+            badge.style.display = 'inline-flex';
+            if (running === 0) {
+                badge.style.background = '#2a2a2a';
+                badge.style.color = '#666';
+                badge.style.opacity = '0.6';
+            } else {
+                badge.style.background = 'var(--primary-color)';
+                badge.style.color = '#fff';
+                badge.style.opacity = '1';
+            }
+        })
+        .catch(() => {
+            // Fallback: contar desde estado local — SOLO thinking
+            let running = 0;
+            for (const p of state.projects) {
+                for (const c of p.chats) {
+                    if (c.isThinking) running++;
+                }
+            }
+            badge.textContent = running;
+            badge.style.display = 'inline-flex';
+            if (running === 0) {
+                badge.style.background = '#2a2a2a';
+                badge.style.color = '#666';
+                badge.style.opacity = '0.6';
+            } else {
+                badge.style.background = 'var(--primary-color)';
+                badge.style.color = '#fff';
+                badge.style.opacity = '1';
+            }
+        });
+}
+
+// Badge update: ya no hay polling — se actualiza vía WS events
+function startBadgePolling() {
+    // Actualizar inmediatamente al arrancar
+    updateAgentBadge();
+}
+function stopBadgePolling() {
+    // No-op — polling eliminado, ahora es event-driven
+}
+// Actualizar badge al cargar la página
+startBadgePolling();
 
 // Función auxiliar para reparar JSON mal formado enviado por modelos de IA
 const repairJSONField = (jsonStr, fieldName) => {
@@ -4853,18 +6360,31 @@ function renderSessionSummary(changeStats, project) {
         return;
     }
 
-    const itemsHtml = changeStats.map(s => {
+    const itemsHtml = changeStats.map((s, idx) => {
         const fullPath = pathJoin(project.folder, s.fileName).replace(/\\/g, '/');
         const displayName = s.fileName.split(/[/\\]/).pop();
+        const diffId = 'diff-' + Date.now() + '-' + idx;
+        const hasDiff = s.diff && s.diff.trim().length > 0;
         return `
-            <div class="session-summary-item" onclick="window.openFile('${fullPath}')">
-                <span class="file-icon">📄</span>
-                <div class="stats">
-                    <span class="added" title="Líneas agregadas">+${s.added}</span>
-                    <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
+            <div class="session-summary-item">
+                <div class="session-summary-item-header" onclick="window.openFile('${fullPath}')">
+                    <span class="file-icon">📄</span>
+                    <div class="stats">
+                        <span class="added" title="Líneas agregadas">+${s.added}</span>
+                        <span class="removed" title="Líneas eliminadas">-${s.removed}</span>
+                    </div>
+                    <span class="file-name">${displayName}</span>
+                    <span class="file-path">${fullPath}</span>
+                    ${hasDiff ? `<span class="diff-toggle" onclick="event.stopPropagation(); window.toggleDiff('${diffId}', this)">🔍 Ver Diff</span>` : ''}
                 </div>
-                <span class="file-name">${displayName}</span>
-                <span class="file-path">${fullPath}</span>
+                ${hasDiff ? `
+                <div class="session-diff-content hidden" id="${diffId}">
+                    <div class="diff-actions">
+                        <button class="btn-small" onclick="window.openFile('${fullPath}')">📝 Editar</button>
+                        <button class="btn-small" onclick="window.toggleDiff('${diffId}', this.parentElement.parentElement.previousElementSibling.querySelector('.diff-toggle'))">✕ Cerrar</button>
+                    </div>
+                    <pre class="git-diff"><code>${highlightGitDiff(s.diff)}</code></pre>
+                </div>` : ''}
             </div>
         `;
     }).join('');
@@ -4886,6 +6406,16 @@ function renderSessionSummary(changeStats, project) {
     `;
     container.classList.remove('hidden');
 }
+
+window.toggleDiff = (id, toggleEl) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const isHidden = el.classList.contains('hidden');
+    el.classList.toggle('hidden');
+    if (toggleEl) {
+        toggleEl.textContent = isHidden ? '🔍 Ocultar Diff' : '🔍 Ver Diff';
+    }
+};
 
 window.clearSessionSummary = () => {
     const chat = getActiveChat();
@@ -5383,11 +6913,12 @@ window.saveActiveFile = async () => {
     }
 };
 
-window.openFile = async (path) => {
+window.openFile = async (path, options = {}) => {
+    const { setActive = true } = options;
     const p = getActiveProject();
     const san = path.replace(/\\/g, '/');
     const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
-    if (existing) { p.activeTabId = san; renderTabs(); return; }
+    if (existing) { if (setActive) { p.activeTabId = san; renderTabs(); } return; }
     try {
         const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
         if (!res.ok) {
@@ -5396,7 +6927,7 @@ window.openFile = async (path) => {
         }
         const data = await res.json();
         p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
-        p.activeTabId = san;
+        if (setActive) p.activeTabId = san;
         renderTabs();
         saveData();
     } catch (e) {
@@ -5408,20 +6939,47 @@ async function nativePickFolder() {
     const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
     btns.forEach(b => b.innerHTML = '⏳');
     try {
-        // No retries for folder picking, if it fails, it fails (user can click again)
-        const res = await fetchWithLog(`${API_BASE}/utils/pick-folder`, {}, 1, true);
+        // AbortController con timeout de 125s (servidor tiene 120s, damos 5s de margen)
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 125000);
+        const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
+        clearTimeout(timeoutId);
         if (res && res.ok) {
             const data = await res.json();
             if (data.path) {
                 folderPathInput.value = data.path;
                 window.scanFolder(data.path);
+            } else if (data.conflict) {
+                // Otro diálogo sigue abierto — feedback inmediato
+                console.warn('[nativePickFolder] Conflicto: otro selector sigue activo.');
+                if (typeof showToast === 'function') {
+                    showToast('⚠️ Ya hay un selector de carpeta abierto. Cerrá el diálogo anterior y probá de nuevo.', 'warning');
+                }
+                // No tiramos error — el usuario solo necesita saber qué pasó
+            } else if (data.error) {
+                // El servidor reportó un error explícito (stderr, timeout interno, etc.)
+                const msg = data.error + (data.details ? ': ' + data.details : '');
+                console.error('[nativePickFolder] Error del servidor:', msg);
+                throw new Error(msg);
             }
+            // Si no hay path, error, ni conflict → el usuario canceló el diálogo (OK)
         } else if (res) {
             const errorData = await res.json().catch(() => ({}));
-            console.error("No se pudo abrir el selector de carpetas:", errorData.error);
+            const msg = errorData.error || 'Error desconocido del servidor';
+            console.error("No se pudo abrir el selector de carpetas:", msg);
+            throw new Error(msg);
+        } else {
+            throw new Error('No se recibió respuesta del servidor');
         }
     } catch (e) {
-        console.error("Exception in nativePickFolder:", e);
+        if (e.name === 'AbortError') {
+            const msg = '⏰ Timeout: el selector tardó más de 125s. Reintentá.';
+            console.error(msg);
+            throw new Error(msg);
+        } else {
+            console.error("Exception in nativePickFolder:", e);
+            throw e; // Re-lanzar para que el caller pueda mostrar feedback
+        }
     }
     finally {
         btns.forEach(b => b.innerHTML = '📁');
@@ -5440,6 +6998,15 @@ function setupEventListeners() {
         updateViewVisibility();
     };
 
+    // Agents Room button — abre en nueva pestaña
+    const agentsRoomBtn = document.getElementById('agents-room-btn');
+    if (agentsRoomBtn) {
+        agentsRoomBtn.onclick = () => {
+            const url = `${window.location.origin}/static/agents-room.html?_=${Date.now()}`;
+            window.open(url, '_blank');
+        };
+    }
+
     // Sub-tab switching for Admin Monitor
     document.querySelectorAll('.admin-sub-tab').forEach(btn => {
         btn.onclick = (e) => {
@@ -5455,12 +7022,22 @@ function setupEventListeners() {
 
         const tableView = document.getElementById('admin-table-view');
         const chatView = document.getElementById('admin-chat-view');
+        const telegramView = document.getElementById('admin-telegram-view');
 
         if (subTab === 'table') {
             tableView.classList.remove('hidden');
             chatView.classList.add('hidden');
+            if (telegramView) telegramView.classList.add('hidden');
+        } else if (subTab === 'telegram') {
+            tableView.classList.add('hidden');
+            chatView.classList.add('hidden');
+            if (telegramView) {
+                telegramView.classList.remove('hidden');
+                renderTelegramMessages();
+            }
         } else {
             tableView.classList.add('hidden');
+            if (telegramView) telegramView.classList.add('hidden');
             chatView.classList.remove('hidden');
             renderAdminMessages();
         }
@@ -5502,9 +7079,664 @@ function setupEventListeners() {
 
     saveFileBtn.onclick = () => window.saveActiveFile();
     sendBtn.onclick = sendMessage;
-    chatInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
-    scanFolderBtn.onclick = nativePickFolder;
-    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = nativePickFolder;
+    
+    // ══════════════════════════════════════════════
+    //  SLASH COMMAND AUTOCOMPLETE SYSTEM
+    // ══════════════════════════════════════════════
+    const slashDropdown = document.getElementById('slash-dropdown');
+    let slashCommandsVisible = false;
+    let slashSelectedIndex = -1;
+
+    const SLASH_COMMANDS = [
+        { cmd: '/help', desc: 'Ver todos los comandos disponibles', action: 'help', icon: '❓' },
+        { cmd: '/new', desc: 'Crear nuevo proyecto/chat', action: 'new', icon: '✨' },
+        { cmd: '/clear', desc: 'Limpiar mensajes del chat actual', action: 'clear', icon: '🧹' },
+        { cmd: '/status', desc: 'Estado del agente Hermes', action: 'status', icon: '📊' },
+        { cmd: '/hermes', desc: 'Activar/desactivar agente Hermes', action: 'hermes', icon: '🤖' },
+        { cmd: '/mode', desc: 'Alternar modo Auto / Supervisado', action: 'mode', icon: '⚙️' },
+        { cmd: '/summary', desc: 'Ver resumen de la sesión actual', action: 'summary', icon: '📋' },
+        { cmd: '/scan', desc: 'Escanear carpeta del proyecto', action: 'scan', icon: '📂' },
+        { cmd: '/git', desc: 'Estado del repositorio Git', action: 'git', icon: '🔀' },
+        { cmd: '/export', desc: 'Exportar conversación actual', action: 'export', icon: '💾' },
+        { cmd: '/file', desc: 'Abrir archivo en el editor', action: 'file', icon: '📝' },
+        { cmd: '/skills', desc: 'Abrir panel de skills del proyecto', action: 'skills', icon: '🧩' }
+    ];
+
+    function showSlashDropdown(filter = '') {
+        const filtered = filter
+            ? SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().includes(filter.toLowerCase()))
+            : SLASH_COMMANDS;
+
+        if (filtered.length === 0) {
+            slashDropdown.classList.add('hidden');
+            slashCommandsVisible = false;
+            return;
+        }
+
+        slashDropdown.innerHTML = filtered.map((c, i) => 
+            `<div class="slash-item${i === 0 ? ' selected' : ''}" data-index="${i}" data-action="${c.action}">
+                <span class="slash-icon">${c.icon}</span>
+                <span class="slash-cmd">${c.cmd}</span>
+                <span class="slash-desc">${c.desc}</span>
+            </div>`
+        ).join('');
+
+        slashDropdown.classList.remove('hidden');
+        slashCommandsVisible = true;
+        slashSelectedIndex = 0;
+    }
+
+    function hideSlashDropdown() {
+        slashDropdown.classList.add('hidden');
+        slashCommandsVisible = false;
+        slashSelectedIndex = -1;
+    }
+
+    function executeSlashCommand(action) {
+        const chat = getActiveChat();
+        const project = getActiveProject();
+
+        switch (action) {
+            case 'help':
+                chat.messages.push({ role: 'system', content: formatHelpMessage() });
+                renderMessages();
+                break;
+            case 'new':
+                createNewProject();
+                break;
+            case 'clear':
+                if (chat && confirm('¿Limpiar todos los mensajes de este chat?')) {
+                    chat.messages = [];
+                    chat.sessionChanges = [];
+                    renderMessages();
+                    saveData();
+                    showToast('Chat limpiado ✨', 'success');
+                }
+                break;
+            case 'status':
+                if (project && chat) {
+                    updateHermesUI(project.id, chat.id).then(() => {
+                        const dot = document.getElementById('hermes-status-dot');
+                        const statusText = dot ? (dot.classList.contains('running') ? '🧠 Pensando...' : 
+                            dot.classList.contains('online') ? '🟢 Online' : '⚫ Offline') : 'Desconocido';
+                        showToast(`Hermes: ${statusText}`, 'info', 3000);
+                    });
+                }
+                break;
+            case 'hermes':
+                if (project && chat) {
+                    checkAgentStatus(project.id, chat.id).then(status => {
+                        if (status.alive && status.hasBridge) {
+                            stopHermesForTab();
+                        } else {
+                            startHermesForTab();
+                        }
+                    });
+                }
+                break;
+            case 'mode':
+                if (chat) {
+                    chat.mode = chat.mode === 'auto' ? 'supervised' : 'auto';
+                    syncModeUI(chat.mode);
+                    saveData();
+                    showToast(`Modo: ${chat.mode === 'auto' ? '🤖 Auto' : '👁️ Supervisado'}`, 'info');
+                }
+                break;
+            case 'summary':
+                if (project && chat) {
+                    const container = document.getElementById('session-summary-container');
+                    if (container) {
+                        const isHidden = container.classList.contains('hidden');
+                        if (isHidden) {
+                            fetchSessionSummary(project, chat);
+                        } else {
+                            container.classList.add('hidden');
+                            container.innerHTML = '';
+                        }
+                    }
+                }
+                break;
+            case 'scan':
+                if (project && project.folder) {
+                    window.scanFolder(project.folder, project.id);
+                    showToast('Escaneando carpeta... 📂', 'info');
+                } else {
+                    safePickFolder();
+                }
+                break;
+            case 'git':
+                window.switchTab('git');
+                if (typeof window.refreshGitTab === 'function') {
+                    setTimeout(() => window.refreshGitTab(), 300);
+                }
+                showToast('Pestaña Git abierta 🔀', 'info');
+                break;
+            case 'export':
+                if (chat && chat.messages.length > 0) {
+                    let exportText = `# JP Agents Chat - ${project?.name || 'Sin proyecto'} / ${chat.name || 'Chat'}\n`;
+                    exportText += `# Exportado: ${new Date().toLocaleString()}\n\n`;
+                    for (const msg of chat.messages) {
+                        const role = msg.role === 'user' ? '👤 Usuario' : msg.role === 'agent' ? '🤖 Agente' : '📋 Sistema';
+                        exportText += `## ${role}\n${msg.content}\n\n---\n\n`;
+                    }
+                    const blob = new Blob([exportText], { type: 'text/markdown' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `jp-agents-chat-${Date.now()}.md`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast('Chat exportado como Markdown 💾', 'success');
+                } else {
+                    showToast('No hay mensajes para exportar', 'warning');
+                }
+                break;
+            case 'file':
+                if (project && project.currentFiles?.length > 0) {
+                    const fileName = chatInput.value.replace(/^\/file\s*/, '').trim();
+                    const file = fileName 
+                        ? project.currentFiles.find(f => f.name.toLowerCase().includes(fileName.toLowerCase()))
+                        : project.currentFiles[0];
+                    if (file) {
+                        window.loadFileToEditor(file.path || file.name);
+                        window.switchTab('editor');
+                        showToast(`Abriendo: ${file.name} 📝`, 'success');
+                    } else {
+                        showToast(`Archivo no encontrado: ${fileName}`, 'warning');
+                    }
+                } else {
+                    showToast('No hay archivos en el proyecto actual', 'warning');
+                }
+                break;
+            case 'skills':
+                const skillsBtn = document.getElementById('project-skills-trigger');
+                if (skillsBtn) {
+                    skillsBtn.click();
+                    showToast('Panel de skills abierto 🧩', 'info');
+                } else {
+                    showToast('Panel de skills no disponible', 'warning');
+                }
+                break;
+        }
+        
+        chatInput.value = '';
+        hideSlashDropdown();
+        chatInput.focus();
+    }
+
+    function formatHelpMessage() {
+        let help = '## 📋 Comandos Disponibles (tecla `/`)\n\n';
+        for (const c of SLASH_COMMANDS) {
+            help += `- **${c.cmd}** ${c.icon} — ${c.desc}\n`;
+        }
+        help += '\n> 💡 *Tip: Escribí `/` en el chat para ver esta lista en cualquier momento.*';
+        return help;
+    }
+
+    function updateSlashSelection(delta) {
+        const items = slashDropdown.querySelectorAll('.slash-item');
+        if (items.length === 0) return;
+        
+        items.forEach(item => item.classList.remove('selected'));
+        slashSelectedIndex = (slashSelectedIndex + delta + items.length) % items.length;
+        items[slashSelectedIndex].classList.add('selected');
+        items[slashSelectedIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    function getSelectedSlashAction() {
+        const items = slashDropdown.querySelectorAll('.slash-item');
+        if (items.length === 0 || slashSelectedIndex < 0) return null;
+        return items[slashSelectedIndex]?.dataset.action || null;
+    }
+
+    chatInput.onkeydown = (e) => {
+        // ── Slash command navigation ──
+        if (slashCommandsVisible) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                updateSlashSelection(1);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                updateSlashSelection(-1);
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                const action = getSelectedSlashAction();
+                if (action) {
+                    executeSlashCommand(action);
+                }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                hideSlashDropdown();
+                return;
+            }
+        }
+
+        // ── Detect "/" to open dropdown ──
+        if (e.key === '/' && !slashCommandsVisible) {
+            // Pequeño delay para que el carácter se inserte primero
+            setTimeout(() => {
+                const val = chatInput.value;
+                if (val.startsWith('/')) {
+                    showSlashDropdown(val);
+                }
+            }, 10);
+            return; // No prevenimos default para que la "/" se escriba
+        }
+
+        // ── Normal Enter to send ──
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    };
+
+    // ── Filter dropdown as user types ──
+    chatInput.oninput = (e) => {
+        if (slashCommandsVisible) {
+            const val = chatInput.value;
+            if (val.startsWith('/')) {
+                showSlashDropdown(val);
+            } else {
+                hideSlashDropdown();
+            }
+        } else if (chatInput.value.startsWith('/')) {
+            showSlashDropdown(chatInput.value);
+        }
+    };
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  🎤 SPEECH-TO-TEXT — Web Speech API (robusto)
+    //  Usa continuous:false + reinicio manual para
+    //  evitar el bug de Chrome con silencio > 5s.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let isRecording = false;
+    let finalTranscript = '';
+    let restartTimeout = null;
+
+    function initSpeechRecognition() {
+        if (!SpeechRecognition) return null;
+        const rec = new SpeechRecognition();
+        rec.continuous = false;     // ← más confiable en Chrome
+        rec.interimResults = true;
+        rec.lang = 'es-AR';
+        return rec;
+    }
+
+    // Vincula los eventos a una instancia de recognition (reutilizable en reinicios)
+    function wireRecognition(rec) {
+        rec.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interim += transcript;
+                }
+            }
+            chatInput.value = (finalTranscript + interim).trim();
+            chatInput.dispatchEvent(new Event('input'));
+        };
+
+        rec.onerror = (event) => {
+            console.warn('[SPEECH] Error:', event.error, event.message);
+            if (event.error === 'not-allowed') {
+                showToast('\uD83C\uDFA4 Permiso de micr\u00F3fono denegado. Permit\u00ED el acceso en la configuraci\u00F3n del navegador.', 'error');
+                stopRecording(false); // solo frenar en error fatal
+            } else if (event.error === 'no-speech') {
+                // Silencio detectado — normal, el reinicio lo maneja
+            } else if (event.error !== 'aborted') {
+                showToast(`\uD83C\uDFA4 Error de voz: ${event.error}`, 'error');
+                // No frenar — dejar que onend reintente
+            }
+        };
+
+        rec.onspeechstart = () => {
+            micBtn.style.animation = 'mic-pulse 0.8s ease-in-out infinite';
+        };
+
+        rec.onspeechend = () => {
+            micBtn.style.animation = '';
+        };
+
+        rec.onend = () => {
+            if (!isRecording) return; // el usuario detuvo manualmente
+
+            // Chrome detuvo automáticamente → reiniciar con nueva instancia
+            recognition = null;
+            clearTimeout(restartTimeout);
+            restartTimeout = setTimeout(() => {
+                if (!isRecording) return;
+                try {
+                    const newRec = initSpeechRecognition();
+                    if (!newRec) return;
+                    recognition = newRec;
+                    wireRecognition(newRec);
+                    newRec.start();
+                } catch (e) {
+                    console.warn('[SPEECH] Reinicio fallido, reintentando:', e.message);
+                    // Un reintento más con más delay
+                    restartTimeout = setTimeout(() => {
+                        if (!isRecording) return;
+                        try {
+                            const retryRec = initSpeechRecognition();
+                            if (!retryRec) return;
+                            recognition = retryRec;
+                            wireRecognition(retryRec);
+                            retryRec.start();
+                        } catch (e2) {
+                            console.error('[SPEECH] Reintento final fallido:', e2.message);
+                            stopRecording(true);
+                        }
+                    }, 500);
+                }
+            }, 250);
+        };
+    }
+
+    function startRecording() {
+        if (!SpeechRecognition) {
+            showToast('\uD83C\uDFA4 Tu navegador no soporta reconocimiento de voz. Us\u00E1 Chrome o Edge.', 'warning');
+            return;
+        }
+        try {
+            // Limpiar cualquier instancia previa
+            if (recognition) {
+                try { recognition.abort(); } catch(e) {}
+                recognition = null;
+            }
+            clearTimeout(restartTimeout);
+
+            recognition = initSpeechRecognition();
+            if (!recognition) return;
+
+            isRecording = true;
+            // Preservar texto existente — no borrar lo que ya se dictó/escribió antes
+            const existingText = chatInput.value.trim();
+            finalTranscript = existingText ? existingText + ' ' : '';
+            micBtn.classList.add('mic-recording');
+            chatInput.closest('.input-wrapper')?.classList.add('mic-active');
+            micBtn.innerHTML = '\uD83D\uDD34';
+            micBtn.title = 'Grabando... click para detener';
+            chatInput.placeholder = '\uD83C\uDFA4 Te escucho... habl\u00E1 ahora...';
+            // NO limpiar chatInput.value — mantener el texto visible mientras se graba
+
+            wireRecognition(recognition);
+            recognition.start();
+
+            showToast('\uD83C\uDFA4 Escuchando... habl\u00E1 claro. Click en \uD83D\uDD34 para detener.', 'info', 2000);
+        } catch (e) {
+            console.error('[SPEECH] Start error:', e);
+            showToast('\uD83C\uDFA4 Error al iniciar el micr\u00F3fono.', 'error');
+            stopRecording(false);
+        }
+    }
+
+    function stopRecording(showFeedback = true) {
+        isRecording = false;
+        clearTimeout(restartTimeout);
+        restartTimeout = null;
+
+        if (recognition) {
+            try { recognition.abort(); } catch (e) {}
+            recognition = null;
+        }
+
+        micBtn.classList.remove('mic-recording');
+        chatInput.closest('.input-wrapper')?.classList.remove('mic-active');
+        micBtn.innerHTML = '\uD83C\uDFA4';
+        micBtn.title = 'Grabar mensaje de voz (Web Speech)';
+        micBtn.style.animation = '';
+        chatInput.placeholder = 'Escribe una instrucci\u00F3n para el agente...';
+
+        if (showFeedback && chatInput.value.trim()) {
+            showToast('\u2705 Texto transcrito. Edit\u00E1 si hace falta y envi\u00E1.', 'success', 3000);
+        }
+    }
+
+    micBtn.onclick = () => {
+        if (isRecording) {
+            stopRecording(true);
+        } else {
+            startRecording();
+        }
+    };
+
+    // ── Click handler for dropdown items ──
+    slashDropdown.onclick = (e) => {
+        const item = e.target.closest('.slash-item');
+        if (!item) return;
+        const action = item.dataset.action;
+        if (action) executeSlashCommand(action);
+    };
+
+    // ── Close dropdown on outside click ──
+    document.addEventListener('click', (e) => {
+        if (slashCommandsVisible && !slashDropdown.contains(e.target) && e.target !== chatInput) {
+            hideSlashDropdown();
+        }
+    });
+
+    // ─── HERMES TOGGLE + PLAY/STOP ───
+    const hermesToggleBtn = document.getElementById('hermes-toggle-btn');
+    const hermesPlayBtn = document.getElementById('hermes-play-btn');
+    const hermesStopChatBtn = document.getElementById('hermes-stop-btn-chat');
+    const hermesStatusDot = document.getElementById('hermes-status-dot');
+
+    // ─── HEALTH-CHECK: Status del agente Hermes para UNA ventana de chat ───
+    // Cada ventana de chat corre su propia rutina para saber si su agente está vivo o no.
+    async function checkAgentStatus(projectId, chatId) {
+        try {
+            const res = await fetch(`${API_BASE}/hermes/status/${encodeURIComponent(projectId)}/${encodeURIComponent(chatId)}`);
+            if (!res.ok) return { alive: false, status: 'off', hasBridge: false, pid: null };
+            return await res.json();
+        } catch {
+            return { alive: false, status: 'off', hasBridge: false, pid: null };
+        }
+    }
+
+    // Actualizar UI de botones Hermes según health-check
+    async function updateHermesUI(projectId, chatId) {
+        const status = await checkAgentStatus(projectId, chatId);
+        if (status.alive && status.hasBridge) {
+            // Bridge activo — mostrar stop, ocultar play
+            if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.remove('hidden');
+            if (hermesStatusDot) {
+                if (status.status === 'running' || status.status === 'thinking') {
+                    hermesStatusDot.className = 'hermes-status-dot running';
+                } else {
+                    hermesStatusDot.className = 'hermes-status-dot online';
+                }
+            }
+        } else if (status.alive && !status.hasBridge) {
+            // Proceso vivo pero sin bridge (ej: después de restart)
+            // Mostrar play para que el usuario lo re-inicie, pero avisar
+            if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+            if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot ghost';
+            if (hermesPlayBtn) hermesPlayBtn.title = '🔄 Agente detectado pero sin bridge — reiniciar';
+        } else {
+            // Off — mostrar play
+            if (hermesPlayBtn) hermesPlayBtn.classList.remove('hidden');
+            if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+            if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            if (hermesPlayBtn) hermesPlayBtn.title = 'Iniciar Hermes';
+        }
+    }
+
+    // Interval de health-check periódico — ELIMINADO: ahora se actualiza vía WS events
+    let healthCheckInterval = null;
+    function startHealthCheck(projectId, chatId) {
+        stopHealthCheck();
+        // Solo actualizar inmediatamente, sin intervalo
+        updateHermesUI(projectId, chatId);
+    }
+    function stopHealthCheck() {
+        if (healthCheckInterval) {
+            clearInterval(healthCheckInterval);
+            healthCheckInterval = null;
+        }
+    }
+    // Exponer para que updateViewVisibility() pueda llamarlas
+    window.startHealthCheck = startHealthCheck;
+    window.stopHealthCheck = stopHealthCheck;
+
+    // Función para iniciar Hermes (async, espera resultado)
+    async function startHermesForChat(projectId, chatId, workdir, model, agentName) {
+        if (hermesPlayBtn) hermesPlayBtn.disabled = true;
+        if (hermesPlayBtn) hermesPlayBtn.innerHTML = '⏳';
+        try {
+            const res = await fetch(`${API_BASE}/hermes/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, chatId, workdir, model, name: agentName })
+            });
+            const data = await res.json();
+            if (data.instance) {
+                await updateHermesUI(projectId, chatId);
+            } else {
+                console.warn('[HERMES] Error al iniciar:', data.error);
+            }
+        } catch(e) {
+            console.warn('[HERMES] Error al iniciar:', e.message);
+        } finally {
+            if (hermesPlayBtn) { hermesPlayBtn.disabled = false; hermesPlayBtn.innerHTML = '▶'; }
+        }
+    }
+
+    // Toggle Hermes / Local
+    if (hermesToggleBtn) {
+        hermesToggleBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!chat) return;
+
+            const isOn = hermesToggleBtn.classList.contains('on');
+            if (isOn) {
+                // Cambiar a Local
+                hermesToggleBtn.classList.remove('on');
+                hermesToggleBtn.classList.add('off');
+                hermesToggleBtn.querySelector('.toggle-label').textContent = 'Local';
+                chat.useHermes = false;
+                if (hermesPlayBtn) hermesPlayBtn.classList.add('hidden');
+                if (hermesStopChatBtn) hermesStopChatBtn.classList.add('hidden');
+                if (hermesStatusDot) hermesStatusDot.className = 'hermes-status-dot offline';
+            } else {
+                // Cambiar a Hermes
+                hermesToggleBtn.classList.add('on');
+                hermesToggleBtn.classList.remove('off');
+                hermesToggleBtn.querySelector('.toggle-label').textContent = 'Hermes';
+                chat.useHermes = true;
+
+                // Mostrar botón play y verificar estado
+                if (project && project.folder) {
+                    await updateHermesUI(project.id, chat.id);
+                }
+            }
+            saveData();
+        });
+    }
+
+    // Botón PLAY ▶ — inicia Hermes
+    if (hermesPlayBtn) {
+        hermesPlayBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!project || !chat || !project.folder) return;
+
+            const model = chat.model || project.model || '';
+            const agentName = chat.name || 'Hermes Agent';
+            await startHermesForChat(project.id, chat.id, project.folder, model, agentName);
+        });
+    }
+
+    // Botón STOP ⏹ — detiene Hermes
+    if (hermesStopChatBtn) {
+        hermesStopChatBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            const chat = getActiveChat();
+            if (!project || !chat) return;
+            try {
+                await fetch(`${API_BASE}/hermes/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectId: project.id, chatId: chat.id })
+                });
+                await updateHermesUI(project.id, chat.id);
+            } catch(e) {
+                console.warn('[HERMES] Error al detener:', e.message);
+            }
+        });
+    }
+
+    // ─── GEAR CONFIG BUTTON (toggle config panel) ───
+    // ─── CONFIG DROPDOWN (Modelo + Skill en ruedita) ───
+    const configTrigger = document.getElementById('agent-config-trigger');
+    const configMenu = document.getElementById('agent-config-menu');
+    if (configTrigger && configMenu) {
+        configTrigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isHidden = configMenu.classList.contains('hidden');
+            // Cerrar todos los demás dropdowns
+            document.querySelectorAll('.agent-config-menu').forEach(m => m.classList.add('hidden'));
+            configMenu.classList.toggle('hidden', !isHidden);
+            configTrigger.classList.toggle('active', isHidden);
+        });
+        // Cerrar al hacer clic afuera
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.agent-config-dropdown')) {
+                configMenu.classList.add('hidden');
+                configTrigger.classList.remove('active');
+            }
+        });
+        // Cerrar al cambiar de agente o proyecto
+        document.addEventListener('agentChanged', () => {
+            configMenu.classList.add('hidden');
+            configTrigger.classList.remove('active');
+        });
+    }
+
+    // ─── NOMBRE EDITABLE DEL AGENTE ───
+    const chatNameInput = document.getElementById('chat-agent-name-input');
+    if (chatNameInput) {
+        chatNameInput.addEventListener('input', () => {
+            const chat = getActiveChat();
+            if (chat) {
+                chatNameInput.setAttribute('data-manual', 'true');
+                chat.name = chatNameInput.value || 'Agente';
+                saveData();
+                // Actualizar nombre en sidebar, tabs y monitor
+                if (window.renderProjectList) window.renderProjectList();
+                renderTabs();
+                renderAdminMonitor();
+            }
+        });
+        chatNameInput.addEventListener('blur', () => {
+            chatNameInput.removeAttribute('data-manual');
+        });
+    }
+    // Wrapper para dar feedback visual si falla el selector de carpeta
+    const safePickFolder = async () => {
+        try { await nativePickFolder(); }
+        catch (e) {
+            alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
+                'Posibles causas:\n' +
+                '• El diálogo fue cancelado o cerrado\n' +
+                '• El servidor no respondió a tiempo\n' +
+                '• Intentá de nuevo — suele funcionar al segundo intento.');
+        }
+    };
+    scanFolderBtn.onclick = safePickFolder;
+    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = safePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
     const thinkingToggleChat = document.getElementById('deepseek-thinking-toggle-chat');
@@ -5547,6 +7779,23 @@ function setupEventListeners() {
             if (project) {
                 project.model = e.target.value;
                 saveData();
+                // Sync header select
+                const headerSelect = document.getElementById('project-model-select-header');
+                if (headerSelect) headerSelect.value = e.target.value;
+            }
+        };
+    }
+
+    const projectModelHeaderSelect = document.getElementById('project-model-select-header');
+    if (projectModelHeaderSelect) {
+        projectModelHeaderSelect.onchange = (e) => {
+            const project = getActiveProject();
+            if (project) {
+                project.model = e.target.value;
+                saveData();
+                // Sync dashboard select
+                const dashSelect = document.getElementById('project-model-select');
+                if (dashSelect) dashSelect.value = e.target.value;
             }
         };
     }
@@ -5619,48 +7868,28 @@ function setupEventListeners() {
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
 
-    // Run Project Button
-    runProjectBtn.onclick = async () => {
-        const p = getActiveProject();
-        if (!p || !p.folder) return;
+    // Git Tab Controls
+    if (gitPushBtn) {
+        gitPushBtn.onclick = window.handleGitPush;
+    }
+    if (gitCommitMsgInput) {
+        gitCommitMsgInput.onkeydown = (e) => {
+            if (e.key === 'Enter') window.handleGitPush();
+        };
+    }
+    if (gitResetOriginBtn) {
+        gitResetOriginBtn.onclick = window.handleGitResetOrigin;
+    }
+    if (gitRefreshBtn) {
+        gitRefreshBtn.onclick = () => { window.refreshGitTab(); };
+    }
 
-        const runBat = p.currentFiles.find(f => f.name.toLowerCase() === 'run.bat');
-        if (!runBat) return;
-
-        try {
-            const res = await fetchWithLog(`${API_BASE}/utils/run-script`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    scriptPath: runBat.path,
-                    cwd: p.folder
-                })
-            });
-            const data = await res.json();
-            if (!data.success) {
-                console.error("Error al iniciar servidor:", data.error);
-            }
-        } catch (e) {
-            console.error("Error de conexión:", e.message);
-        }
-    };
-
-    // Git Controls
-    gitBtn.onclick = () => {
-        gitCommitContainer.classList.toggle('hidden');
-        if (!gitCommitContainer.classList.contains('hidden')) {
-            gitCommitMessageInput.focus();
-        }
-    };
-
-    gitConfirmBtn.onclick = window.handleGitPush;
-    gitCommitMessageInput.onkeydown = (e) => {
-        if (e.key === 'Enter') {
-            window.handleGitPush();
-        }
-    };
-
-    // Modal Controls
+    // GIT detail panel close button
+    {
+        const closeBtn = document.getElementById('git-detail-close');
+        const panel = document.getElementById('git-detail-panel');
+        if (closeBtn && panel) { closeBtn.onclick = () => { panel.classList.add('hidden'); }; }
+    }
     const globalSettingsBtn = document.getElementById('global-settings-btn');
     const globalSettingsModal = document.getElementById('global-settings-modal');
     const closeModalBtn = document.querySelector('.close-modal');
@@ -5679,6 +7908,9 @@ function setupEventListeners() {
 
     const improveImproverBtn = document.getElementById('improve-improver-prompt-btn');
     if (improveImproverBtn) improveImproverBtn.onclick = (e) => improvePrompt('improver-prompt', e);
+
+    const improveNamingBtn = document.getElementById('improve-naming-prompt-btn');
+    if (improveNamingBtn) improveNamingBtn.onclick = (e) => improvePrompt('naming-prompt', e);
 
     // Tab Switching Logic for Modal
     const modalSideTabs = document.querySelectorAll('.modal-side-tab');
@@ -5714,6 +7946,8 @@ function setupEventListeners() {
 
     globalSettingsBtn.onclick = () => {
         if (userPromptTextarea) userPromptTextarea.value = state.userSystemPrompt || '';
+        const namingPromptTextarea = document.getElementById('naming-prompt');
+        if (namingPromptTextarea) namingPromptTextarea.value = state.namingPrompt || '';
         if (orchestratorPromptTextarea) orchestratorPromptTextarea.value = state.orchestratorPrompt || '';
         if (improverPromptTextarea) improverPromptTextarea.value = state.improverPrompt || promptsCache.improver_agent || '';
         if (internalAgentDisplay) internalAgentDisplay.textContent = getInternalAgentInstructions();
@@ -5722,6 +7956,21 @@ function setupEventListeners() {
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
         if (autoValToggle) autoValToggle.checked = state.autoValidation;
+
+        // ─── Second Agent fields ───
+        const saToggle = document.getElementById('second-agent-toggle');
+        const saModel = document.getElementById('second-agent-model');
+        const saTemp = document.getElementById('second-agent-temperature');
+        const saMaxTokens = document.getElementById('second-agent-max-tokens');
+        if (saToggle) saToggle.checked = state.secondAgentConfig.enabled;
+        if (saTemp) saTemp.value = state.secondAgentConfig.temperature;
+        if (saMaxTokens) saMaxTokens.value = state.secondAgentConfig.maxTokens;
+        // Poblar selector de modelos Ollama
+        populateSecondAgentModelSelect();
+        if (saModel && state.secondAgentConfig.model) saModel.value = state.secondAgentConfig.model;
+
+        // ─── Verificar estado de Ollama ───
+        checkSecondAgentHealth();
 
         const dsKeyInput = document.getElementById('deepseek-api-key');
         const oaKeyInput = document.getElementById('openai-api-key');
@@ -5755,6 +8004,8 @@ function setupEventListeners() {
 
     saveGlobalBtn.onclick = () => {
         if (userPromptTextarea) state.userSystemPrompt = userPromptTextarea.value;
+        const namingPromptTextarea = document.getElementById('naming-prompt');
+        if (namingPromptTextarea) state.namingPrompt = namingPromptTextarea.value;
         if (orchestratorPromptTextarea) state.orchestratorPrompt = orchestratorPromptTextarea.value;
         if (improverPromptTextarea) state.improverPrompt = improverPromptTextarea.value;
 
@@ -5772,6 +8023,16 @@ function setupEventListeners() {
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
         if (autoValToggle) state.autoValidation = autoValToggle.checked;
+
+        // ─── Save Second Agent config ───
+        const saToggle = document.getElementById('second-agent-toggle');
+        const saModel = document.getElementById('second-agent-model');
+        const saTemp = document.getElementById('second-agent-temperature');
+        const saMaxTokens = document.getElementById('second-agent-max-tokens');
+        if (saToggle) state.secondAgentConfig.enabled = saToggle.checked;
+        if (saModel) state.secondAgentConfig.model = saModel.value;
+        if (saTemp) state.secondAgentConfig.temperature = parseFloat(saTemp.value) || 0.7;
+        if (saMaxTokens) state.secondAgentConfig.maxTokens = parseInt(saMaxTokens.value) || 50;
 
         const dsKeyInput = document.getElementById('deepseek-api-key');
         const oaKeyInput = document.getElementById('openai-api-key');
@@ -5890,53 +8151,259 @@ function formatLogs(logs) {
 
 window.handleGitPush = async () => {
     const p = getActiveProject();
-    const chat = getActiveChat();
-    const message = gitCommitMessageInput.value.trim();
+    const msgInput = gitCommitMsgInput;
+    const btnEl = gitPushBtn;
+
+    if (!msgInput) return;
+    const message = (msgInput.value || '').trim();
 
     if (!message) {
-        console.log("No commit message provided");
+        if (typeof showGitFeedback === 'function') {
+            showGitFeedback('Escribi un mensaje de commit', 'error');
+        }
         return;
     }
 
     if (!p || !p.folder) return;
 
-    gitConfirmBtn.disabled = true;
-    gitConfirmBtn.textContent = "WAIT...";
-
-    updateThinking(chat, true, "GIT COMMIT & PUSH", "Añadiendo, comiteando y pusheando cambios...");
-
+    // ── Build files preview (async) ──
+    let filesPreview = '';
     try {
-        const res = await fetchWithLog(`${API_BASE}/utils/git-commit`, {
+        const statusRes = await fetch(`${API_BASE}/utils/git-status`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                folderPath: p.folder,
-                message: message
-            })
+            body: JSON.stringify({ folderPath: p.folder })
         });
-        const data = await res.json();
-
-        if (data.success) {
-            chat.messages.push({
-                role: 'agent',
-                content: `🚀 **Git Push Exitoso**\nLos cambios han sido subidos correctamente.\n\n\`\`\`\n${data.stdout || 'Sin salida'}\n\`\`\``
-            });
-            gitCommitContainer.classList.add('hidden');
-            gitCommitMessageInput.value = '';
-        } else {
-            chat.messages.push({
-                role: 'agent',
-                content: `❌ **Error en Git**\nHubo un problema al realizar la operación:\n\n\`\`\`\n${data.error}\n${data.stderr || ''}\n\`\`\``
-            });
+        const statusData = await statusRes.json();
+        if (statusData.files && statusData.files.length > 0) {
+            filesPreview = statusData.files.map(f => {
+                const icon = f.status === 'A' ? '+' : f.status === 'D' ? '-' : f.status === 'M' ? '~' : '?';
+                return `${icon} ${f.file}`;
+            }).join('\n');
         }
     } catch (e) {
-        chat.messages.push({ role: 'agent', content: `❌ **Error de conexión**\nNo se pudo contactar con el servidor: ${e.message}` });
-    } finally {
-        gitConfirmBtn.disabled = false;
-        gitConfirmBtn.textContent = "PUSH";
-        updateThinking(chat, false);
-        renderMessages();
+        // non-blocking — continue without preview
     }
+
+    // ── Execute directly — no confirmation overlay ──
+    _doGitPush(message, p, msgInput, btnEl, filesPreview);
+};
+
+async function _doGitPush(message, p, msgInput, btnEl, filesPreview) {
+    // ── Show mini terminal ──
+    const terminal = document.getElementById('git-process-terminal');
+    const outputEl = document.getElementById('git-process-output');
+    const statusEl = document.getElementById('git-process-status');
+
+    if (!terminal || !outputEl) return;
+
+    // Show terminal
+    terminal.classList.remove('hidden');
+    // Auto-scroll terminal into view with smooth animation
+    setTimeout(() => terminal.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+
+    // ── Progress indicator ──
+    const progressEl = document.getElementById('git-process-progress');
+    const steps = ['add', 'commit', 'push'];
+    const stepIcons = { add: '📦', commit: '💾', push: '🚀' };
+    const stepLabels = { add: 'add', commit: 'commit', push: 'push' };
+    function updateProgress(completedStep) {
+        if (!progressEl) return;
+        let html = '';
+        steps.forEach((s, i) => {
+            const done = steps.indexOf(completedStep) >= i;
+            const cls = done ? 'done' : 'pending';
+            const mark = done ? '✓' : '○';
+            html += `<span class="git-progress-step ${cls}">${stepIcons[s]} ${stepLabels[s]} ${mark}</span>`;
+            if (i < steps.length - 1) html += '<span class="git-progress-arrow">→</span>';
+        });
+        progressEl.innerHTML = html;
+    }
+    if (progressEl) {
+        progressEl.innerHTML = '<span class="git-progress-step pending">📦 add ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">💾 commit ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">🚀 push ○</span>';
+    }
+
+    // ── Header: message + files preview ──
+    if (statusEl) { statusEl.textContent = 'Conectando...'; statusEl.className = 'git-process-status running'; }
+    let initialHtml = `<div class="git-process-line commit-msg">💬 <strong>${escapeHtml(message)}</strong></div>`;
+    if (filesPreview) {
+        initialHtml += `<div class="git-process-line files-header">📁 Archivos:</div>`;
+        filesPreview.split('\n').forEach(line => {
+            if (line.trim()) initialHtml += `<div class="git-process-line file-item">  ${escapeHtml(line.trim())}</div>`;
+        });
+    } else {
+        initialHtml += `<div class="git-process-line dim">(escaneando archivos...)</div>`;
+    }
+    initialHtml += `<div class="git-process-separator"></div>`;
+    outputEl.innerHTML = initialHtml;
+
+    // Disable button
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...PUSHEANDO...'; }
+
+    try {
+        // ── POST to start the job ──
+        const startRes = await fetch(`${API_BASE}/utils/git-commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: p.folder, message })
+        });
+        const { jobId } = await startRes.json();
+
+        if (!jobId) throw new Error('No se recibio jobId del servidor');
+
+        if (statusEl) { statusEl.textContent = 'Ejecutando...'; statusEl.className = 'git-process-status running'; }
+
+        // ── Connect to SSE stream for real-time step updates ──
+        const eventSource = new EventSource(`${API_BASE}/utils/git-commit-stream/${jobId}`);
+
+        await new Promise((resolve, reject) => {
+            eventSource.addEventListener('step', (e) => {
+                try {
+                    const step = JSON.parse(e.data);
+
+                    // Update progress indicator
+                    updateProgress(step.step);
+
+                    if (outputEl) {
+                        const icons = { add: '📦', commit: '💾', push: '🚀' };
+                        const icon = icons[step.step] || '•';
+                        const stepLabel = step.step === 'add' ? 'Stage' : step.step === 'commit' ? 'Commit' : 'Push';
+                        let html = `<div class="git-process-line step-header">${icon} <strong>${stepLabel}</strong></div>`;
+                        html += `<div class="git-process-line command">$ ${escapeHtml(step.command)}</div>`;
+                        if (step.stdout) {
+                            const lines = step.stdout.trim().split('\n');
+                            lines.forEach(line => {
+                                html += `<div class="git-process-line output">${escapeHtml(line)}</div>`;
+                            });
+                        }
+                        if (step.success) {
+                            html += `<div class="git-process-line success-marker">✓ OK</div>`;
+                        } else {
+                            html += `<div class="git-process-line error-marker">✗ ERROR</div>`;
+                            if (step.stderr) {
+                                const errLines = step.stderr.trim().split('\n');
+                                errLines.forEach(line => {
+                                    html += `<div class="git-process-line output stderr">${escapeHtml(line)}</div>`;
+                                });
+                            }
+                        }
+                        outputEl.insertAdjacentHTML('beforeend', html);
+                        outputEl.scrollTop = outputEl.scrollHeight;
+                    }
+                } catch (parseErr) {
+                    // Ignore parse errors on individual steps
+                }
+            });
+
+            eventSource.addEventListener('done', (e) => {
+                eventSource.close();
+                try {
+                    const result = JSON.parse(e.data);
+                    if (result.success) {
+                        if (statusEl) { statusEl.textContent = '✅ Commit & Push EXITOSO'; statusEl.className = 'git-process-status success'; }
+                        if (outputEl) {
+                            outputEl.insertAdjacentHTML('beforeend',
+                                '<div class="git-process-separator"></div>' +
+                                '<div class="git-process-line done-banner">✅ COMMIT & PUSH COMPLETADO</div>');
+                            outputEl.scrollTop = outputEl.scrollHeight;
+                        }
+                        msgInput.value = '';
+                        resolve(true);
+                    } else {
+                        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
+                        if (outputEl) {
+                            outputEl.insertAdjacentHTML('beforeend',
+                                '<div class="git-process-separator"></div>' +
+                                `<div class="git-process-line error-banner">❌ ERROR: ${escapeHtml(result.error || 'Desconocido')}</div>`);
+                            outputEl.scrollTop = outputEl.scrollHeight;
+                        }
+                        resolve(false);
+                    }
+                } catch (parseErr) {
+                    resolve(false);
+                }
+            });
+
+            eventSource.addEventListener('error', (e) => {
+                if (eventSource.readyState === EventSource.CLOSED) return;
+                eventSource.close();
+                if (statusEl) { statusEl.textContent = '❌ Error de conexión'; statusEl.className = 'git-process-status error'; }
+                if (outputEl) {
+                    outputEl.insertAdjacentHTML('beforeend',
+                        '<div class="git-process-line error-banner">❌ Error de conexion con el servidor</div>');
+                    outputEl.scrollTop = outputEl.scrollHeight;
+                }
+                resolve(false);
+            });
+        });
+
+        // Refresh git log on success
+        const isSuccess = statusEl && statusEl.classList.contains('success');
+        if (isSuccess && typeof loadGitLog === 'function') await loadGitLog();
+
+    } catch (e) {
+        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
+        if (outputEl) {
+            outputEl.insertAdjacentHTML('beforeend',
+                `<div class="git-process-line error-banner">❌ ${escapeHtml(e.message)}</div>`);
+            outputEl.scrollTop = outputEl.scrollHeight;
+        }
+    } finally {
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = `<svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg> COMMIT & PUSH`;
+        }
+
+        // ── Sticky terminal — NO auto-hide ──
+        // Only add click-to-dismiss on the header
+        const header = terminal ? terminal.querySelector('.git-process-header') : null;
+        if (header) {
+            header.style.cursor = 'pointer';
+            header.title = 'Click para cerrar';
+            header.onclick = () => {
+                terminal.classList.add('hidden');
+            };
+        }
+    }
+}
+
+// ── Git Push Result Overlay (success / error) ──
+
+window.showGitPushResult = (ok, details, commitMsg) => {
+    const overlay = document.getElementById('git-push-result-overlay');
+    const icon = document.getElementById('git-push-result-icon');
+    const title = document.getElementById('git-push-result-title');
+    const msg = document.getElementById('git-push-result-msg');
+    const detailsEl = document.getElementById('git-push-result-details');
+    const dismissBtn = document.getElementById('git-push-result-dismiss');
+
+    if (!overlay) return;
+
+    if (ok) {
+        icon.textContent = '✅';
+        title.textContent = 'Commit & Push exitoso';
+        msg.textContent = `"${commitMsg}"`;
+        detailsEl.textContent = details;
+        detailsEl.style.color = 'var(--text-secondary)';
+        dismissBtn.className = 'git-push-result-dismiss success';
+    } else {
+        icon.textContent = '❌';
+        title.textContent = 'Error en Git';
+        msg.textContent = `"${commitMsg}"`;
+        detailsEl.textContent = details;
+        detailsEl.style.color = '#f85149';
+        dismissBtn.className = 'git-push-result-dismiss error';
+    }
+
+    overlay.classList.remove('hidden');
+    // Auto-dismiss after 5 seconds on success, 10 on error
+    clearTimeout(window._gitPushTimeout);
+    window._gitPushTimeout = setTimeout(() => overlay.classList.add('hidden'), ok ? 5000 : 10000);
+
+    dismissBtn.onclick = () => {
+        overlay.classList.add('hidden');
+        clearTimeout(window._gitPushTimeout);
+    };
 };
 
 window.addModelToSelect = (modelName) => {
@@ -5951,3 +8418,2354 @@ window.addModelToSelect = (modelName) => {
 };
 
 init();
+
+// ──────────────────────────────────────────────
+// HERMES CONTROL PANEL MODULE
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:4699/api';
+    const panelBtn = document.getElementById('hermes-panel-btn');
+    const panelModal = document.getElementById('hermes-panel-modal');
+    const panelClose = document.getElementById('hermes-panel-close');
+    const refreshBtn = document.getElementById('hermes-refresh-btn');
+    const stopAllBtn = document.getElementById('hermes-stop-all-btn');
+    const instancesContainer = document.getElementById('hermes-instances-container');
+    const broadcastInput = document.getElementById('hermes-broadcast-input');
+    const broadcastBtn = document.getElementById('hermes-broadcast-btn');
+    const hermesStartBtn = document.getElementById('hermes-start-btn');
+
+    // WebSocket connection for live logs
+    let ws = null;
+
+    function connectWS() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        const wsHost = window.location.hostname;
+        try {
+            ws = new WebSocket(`ws://${wsHost}:4699/ws/hermes`);
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.event === 'hermes:log' || data.event === 'hermes:status') {
+                        refreshInstances();
+                    }
+                    if (data.event === 'god:sync') {
+                        // Sincronizar mensaje del HERMES GOD al admin chat
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: data.role === 'user' ? 'user' : 'system',
+                                content: `👑 GOD ${data.role === 'user' ? '📤' : '📥'}: ${data.content}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                    }
+                    if (data.event === 'hermes:admin-sync' || data.event === 'god:sync') {
+                        // Sincronizar mensaje del Hermes ADMIN Bot al admin chat
+                        if (typeof renderAdminMessages === 'function') {
+                            state.adminMessages.push({
+                                role: data.role === 'user' ? 'user' : 'system',
+                                content: `📡 ${data.source === 'telegram' ? 'Telegram' : 'Sistema'}: ${data.content}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                        }
+                    }
+                    if (data.event === 'system:restart') {
+                        console.log('[SYSTEM] Recibido evento de reinicio:', data.reason);
+                        // Refresh console to show restart event
+                        setTimeout(() => refreshConsoleUI(), 500);
+                    }
+                    if (data.event === 'hermes:admin:delegation-complete') {
+                        // Una delegación asincrónica terminó — mostrar en admin chat
+                        console.log(`[DELEGATION] ✅ ${data.agentName} completó tarea`);
+                        if (typeof renderAdminMessages === 'function') {
+                            const icon = data.status === 'completed' ? '✅' : '❌';
+                            state.adminMessages.push({
+                                role: 'system',
+                                content: `${icon} *Delegación Completada* — 🤖 **${data.agentName}** (${data.projectName})\n📋 ${data.task}\n\n📝 Resultado:\n${(data.result || '').slice(0, 1000)}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                            saveData();
+                        }
+                        // Re-trigger admin agent para que procese el resultado
+                        if (!state.adminIsThinking && !state.adminIsStopped) {
+                            state.adminNeedsRecheck = true;
+                            setTimeout(() => {
+                                if (state.adminNeedsRecheck && !state.adminIsThinking) {
+                                    triggerAdminAgentLogic();
+                                }
+                            }, 1000);
+                        } else {
+                            state.adminNeedsRecheck = true;
+                        }
+                    }
+                } catch {}
+            };
+            ws.onclose = () => {
+                setTimeout(connectWS, 3000);
+            };
+        } catch {}
+    }
+
+    if (panelBtn) {
+        panelBtn.addEventListener('click', () => {
+            panelModal.classList.remove('hidden');
+            connectWS();
+            refreshInstances();
+        });
+    }
+    if (panelClose) {
+        panelClose.addEventListener('click', () => {
+            panelModal.classList.add('hidden');
+        });
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', refreshInstances);
+    }
+
+    if (stopAllBtn) {
+        stopAllBtn.addEventListener('click', async () => {
+            if (!confirm('¿Detener TODAS las instancias de Hermes?')) return;
+            try {
+                const res = await fetch(`${API}/hermes/stop/all`, { method: 'POST' });
+                await res.json();
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        });
+    }
+
+    // Botón para limpiar identity files huérfanos
+    const purgeBtn = document.getElementById('hermes-purge-btn');
+    if (purgeBtn) {
+        purgeBtn.addEventListener('click', async () => {
+            if (!confirm('¿Eliminar identidades huérfanas (chats que ya no existen)? Esto no afecta agentes activos.')) return;
+            purgeBtn.disabled = true;
+            purgeBtn.textContent = '🧹 Limpiando...';
+            try {
+                const res = await fetch(`${API}/hermes/purge-identities`, { method: 'POST' });
+                const data = await res.json();
+                alert(`🧹 Limpieza completada:\n- ${data.purged} identidades huérfanas eliminadas\n- ${data.kept} identidades válidas conservadas\n- ${data.bridgeCleaned} instancias del bridge limpiadas`);
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                purgeBtn.disabled = false;
+                purgeBtn.textContent = '🧹 Limpiar Huérfanos';
+            }
+        });
+    }
+
+    if (broadcastBtn && broadcastInput) {
+        broadcastBtn.addEventListener('click', async () => {
+            const message = broadcastInput.value.trim();
+            if (!message) return;
+            broadcastBtn.disabled = true;
+            broadcastBtn.textContent = 'Enviando...';
+            try {
+                await fetch(`${API}/hermes/broadcast`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                broadcastInput.value = '';
+                refreshInstances();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                broadcastBtn.disabled = false;
+                broadcastBtn.textContent = 'Enviar';
+            }
+        });
+        broadcastInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') broadcastBtn.click();
+        });
+    }
+
+    if (hermesStartBtn) {
+        hermesStartBtn.addEventListener('click', async () => {
+            const project = getActiveProject();
+            if (!project) {
+                alert('Seleccioná un proyecto primero');
+                return;
+            }
+            const projectId = project.id || project.name || 'proyecto-' + Date.now();
+            const workdir = project.folder || '';
+            if (!workdir) {
+                alert('El proyecto no tiene directorio asignado');
+                return;
+            }
+            // Tomar el modelo del proyecto si eligió uno, sino el global
+            const model = project.model || state.selectedModel || '';
+            // Mostrar el tab Hermes (lo inicia si no está corriendo)
+            if (window.showHermesTab) {
+                window.showHermesTab(projectId);
+            }
+        });
+    }
+
+    window.stopHermesInstance = async function(projectId) {
+        if (!confirm(`¿Detener instancia ${projectId}?`)) return;
+        try {
+            await fetch(`${API}/hermes/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId })
+            });
+            refreshInstances();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    window.sendHermesMessage = async function(projectId) {
+        const message = prompt(`Mensaje para ${projectId}:`);
+        if (!message) return;
+        try {
+            const res = await fetch(`${API}/hermes/message`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, message })
+            });
+            const data = await res.json();
+            if (data.response) {
+                alert(`Respuesta de ${projectId}:\n\n${data.response.slice(0, 500)}`);
+                refreshInstances();
+            }
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    async function refreshInstances() {
+        if (!instancesContainer) return;
+        try {
+            const res = await fetch(`${API}/hermes/instances`);
+            const data = await res.json();
+            renderInstances(data.instances || []);
+        } catch (e) {
+            instancesContainer.innerHTML = `
+                <p class="empty-state" style="text-align: center; padding: 20px; color: #ef4444;">
+                    ❌ Error de conexión<br>
+                    <span style="font-size: 0.8rem;">Backend en ${window.location.hostname}:4699</span>
+                </p>
+            `;
+        }
+    }
+    // Exponer globalmente para sincronización multi-pestaña
+    window.refreshHermesInstances = refreshInstances;
+
+    function renderInstances(instances) {
+        if (!instances || instances.length === 0) {
+            instancesContainer.innerHTML = `
+                <p class="empty-state" style="text-align: center; padding: 40px 0; color: var(--text-muted);">
+                    ⚡ No hay instancias de Hermes activas.<br>
+                    <span style="font-size: 0.8rem;">Seleccioná un proyecto y toca ⚡ en la cabecera.</span>
+                </p>
+            `;
+            return;
+        }
+
+        let html = '';
+        for (const inst of instances) {
+            const statusColor = inst.status === 'running' ? '#22d3ee' :
+                               inst.status === 'starting' ? '#fbbf24' :
+                               inst.status === 'error' ? '#ef4444' : '#64748b';
+            const statusLabel = inst.status === 'running' ? '● Activo' :
+                               inst.status === 'starting' ? '◐ Iniciando' :
+                               inst.status === 'exited' ? '○ Detenido' :
+                               inst.status === 'error' ? '● Error' : '○ ' + inst.status;
+            const recentLogs = (inst.logs || []).slice(-5).map(l =>
+                `<div style="color: ${l.type === 'stderr' ? '#ef4444' : '#94a3b8'};">${escapeHtml(l.text)}</div>`
+            ).join('');
+
+            html += `
+                <div style="margin-bottom: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.02);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div>
+                            <strong style="color: var(--text-primary);">${escapeHtml(inst.id)}</strong>
+                            <span style="margin-left: 8px; font-size: 0.7rem; color: ${statusColor};">${statusLabel}</span>
+                        </div>
+                        <div style="display: flex; gap: 6px;">
+                            <button onclick="sendHermesMessage('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer;">💬</button>
+                            <button onclick="stopHermesInstance('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid #ef4444; border-radius: 4px; background: transparent; color: #ef4444; cursor: pointer;">⏹</button>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">📁 ${escapeHtml(inst.workdir || '—')}</div>
+                    <div style="font-size: 0.65rem; color: var(--text-muted);">🕐 ${new Date(inst.createdAt).toLocaleString()}</div>
+                    ${recentLogs ? `<div style="margin-top: 6px; padding: 6px; background: rgba(0,0,0,0.3); border-radius: 4px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 0.6rem; line-height: 1.4;">${recentLogs}</div>` : ''}
+                </div>
+            `;
+        }
+        instancesContainer.innerHTML = html;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    console.log('[HERMES] Panel de control cargado.');
+})();
+
+// ──────────────────────────────────────────────
+// HERMES TAB MODULE — Pestaña interactiva de Hermes
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:4699/api';
+    const hermesOutput = document.getElementById('hermes-output');
+    const hermesInput = document.getElementById('hermes-input');
+    const hermesInputArea = document.getElementById('hermes-input-area');
+    const hermesStatus = document.getElementById('hermes-status');
+    const hermesStartBtn = document.getElementById('hermes-start-btn-tab');
+    const hermesStopBtn = document.getElementById('hermes-stop-btn-tab');
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+
+    let currentProjectId = null;
+    let pollInterval = null;
+    let lastLogCount = 0;
+    let isRunning = false;
+
+    function appendHermesLine(text, type = 'stdout') {
+        if (!hermesOutput) return;
+        const div = document.createElement('div');
+        div.className = `hermes-line ${type}`;
+        // Convertir ANSI a HTML con colores (en vez de eliminarlos)
+        div.innerHTML = ansiToHtml(text);
+        hermesOutput.appendChild(div);
+        hermesOutput.scrollTop = hermesOutput.scrollHeight;
+    }
+
+    function setHermesStatus(label, cls) {
+        if (hermesStatus) {
+            hermesStatus.textContent = label;
+            hermesStatus.className = 'hermes-status' + (cls ? ' ' + cls : '');
+        }
+    }
+
+    function showHermesInTab(projectId) {
+        currentProjectId = projectId;
+        // En vez de mostrar el tab Hermes, inicia y va al chat común
+        startHermesForTab();
+    }
+
+    async function checkRunningInstance(projectId, chatId) {
+        try {
+            const res = await fetch(`${API}/hermes/instances`);
+            const data = await res.json();
+            const key = `${projectId}:${chatId}`;
+            const inst = (data.instances || []).find(i => i.id === key);
+            if (inst && (inst.status === 'running' || inst.status === 'starting')) {
+                isRunning = true;
+                setHermesStatus('● Activo', 'running');
+                hermesStartBtn.classList.add('hidden');
+                hermesStopBtn.classList.remove('hidden');
+                hermesInputArea.style.display = '';
+                hermesInput.disabled = false;
+                hermesOutput.innerHTML = '<div class="hermes-line system">Conectado a Hermes. Escribí tu mensaje abajo.</div>';
+                startPolling(projectId);
+            } else {
+                isRunning = false;
+                setHermesStatus('○ Detenido', '');
+                hermesStartBtn.classList.remove('hidden');
+                hermesStopBtn.classList.add('hidden');
+                hermesInputArea.style.display = 'none';
+                hermesInput.disabled = true;
+                hermesOutput.innerHTML = '<div class="hermes-line system">Hermes no está corriendo. Presioná ▶ Iniciar.</div>';
+            }
+        } catch {}
+    }
+
+    function startPolling(projectId) {
+        if (pollInterval) clearInterval(pollInterval);
+        lastLogCount = 0;
+        pollInterval = setInterval(async () => {
+            if (!projectId) return;
+            try {
+                const res = await fetch(`${API}/hermes/logs/${projectId}?limit=200`);
+                const data = await res.json();
+                const logs = data.logs || [];
+                if (logs.length > lastLogCount) {
+                    const newLogs = logs.slice(lastLogCount);
+                    for (const log of newLogs) {
+                        appendHermesLine(log.text, log.type === 'stderr' ? 'stderr' : 'stdout');
+                    }
+                    lastLogCount = logs.length;
+                }
+            } catch {}
+        }, 500);
+    }
+
+    function stopPolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+
+    async function startHermesForTab() {
+        const project = getActiveProject();
+        if (!project) {
+            appendHermesLine('❌ No hay proyecto activo.', 'stderr');
+            return;
+        }
+        const projectId = project.id;
+        const workdir = project.folder || '';
+        if (!workdir) {
+            appendHermesLine('❌ El proyecto no tiene directorio.', 'stderr');
+            return;
+        }
+        const model = project.model || state.selectedModel || '';
+        // Obtener nombre personalizado del agente
+        const hermesNameInput = document.getElementById('hermes-agent-name');
+        const agentName = hermesNameInput ? hermesNameInput.value.trim() || 'Hermes Agent' : 'Hermes Agent';
+
+        // Generar o reusar un chatId fijo para este proyecto (evita crear nuevos cada vez)
+        if (!project._hermesChatId) {
+            // Buscar si ya existe un chat Hermes en este proyecto
+            const existingHermesChat = project.chats?.find(c => c.id === 'hermes-' + projectId);
+            if (existingHermesChat) {
+                project._hermesChatId = existingHermesChat.id;
+            } else {
+                project._hermesChatId = 'hermes-' + projectId;
+            }
+        }
+        const chatId = project._hermesChatId;
+
+        setHermesStatus('◐ Iniciando...', '');
+        hermesStartBtn.disabled = true;
+        hermesStartBtn.textContent = 'Iniciando...';
+        hermesOutput.innerHTML = '<div class="hermes-line system">Iniciando Hermes...</div>';
+        lastLogCount = 0;
+
+        try {
+            const res = await fetch(`${API}/hermes/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId, chatId, workdir, model, name: agentName })
+            });
+            const data = await res.json();
+            if (data.instance) {
+                isRunning = true;
+                setHermesStatus('● Activo', 'running');
+                hermesStartBtn.classList.add('hidden');
+                hermesStopBtn.classList.remove('hidden');
+                hermesInputArea.style.display = '';
+                hermesInput.disabled = false;
+                hermesInput.focus();
+                appendHermesLine('✅ Hermes iniciado correctamente.', 'system');
+                startPolling(projectId);
+                currentProjectId = projectId;
+
+                // Crear un chat en el proyecto para Hermes y switchear al chat-view común
+                if (project && !project.chats) project.chats = [];
+                const existingChat = project ? project.chats.find(c => c.id === 'hermes-' + projectId) : null;
+                if (!existingChat && project) {
+                    const hermesChat = {
+                        id: 'hermes-' + projectId,
+                        name: agentName,
+                        model: model || 'deepseek-chat',
+                        messages: [{ role: 'assistant', content: '✅ Hermes iniciado. Escribí tu mensaje abajo.' }],
+                        createdAt: Date.now(),
+                        isHermes: true
+                    };
+                    project.chats.push(hermesChat);
+                    // Switchear al tab de chat común con este agente
+                    setTimeout(() => {
+                        if (window.switchToChat) {
+                            window.switchToChat(projectId, hermesChat.id);
+                        } else {
+                            // Fallback: seleccionar manualmente
+                            project.activeChatId = hermesChat.id;
+                            project.activeTabId = 'chat';
+                            if (window.renderTabs) window.renderTabs();
+                            if (window.updateViewVisibility) window.updateViewVisibility();
+                        }
+                    }, 100);
+                } else if (existingChat) {
+                    // Switchear al chat existente
+                    setTimeout(() => {
+                        if (window.switchToChat) {
+                            window.switchToChat(projectId, existingChat.id);
+                        }
+                    }, 100);
+                }
+            } else {
+                appendHermesLine('❌ Error: ' + (data.error || 'No se pudo iniciar'), 'stderr');
+                setHermesStatus('○ Error', 'error');
+            }
+        } catch (e) {
+            appendHermesLine('❌ Error de conexión: ' + e.message, 'stderr');
+            setHermesStatus('○ Error', 'error');
+        } finally {
+            hermesStartBtn.disabled = false;
+            hermesStartBtn.textContent = '▶ Iniciar';
+        }
+    }
+
+    async function stopHermesForTab() {
+        if (!currentProjectId) return;
+        stopPolling();
+        // Obtener el chatId asociado a este proyecto en el tab Hermes
+        const project = getActiveProject();
+        const chatId = project?._hermesChatId || ('hermes-' + currentProjectId);
+        try {
+            await fetch(`${API}/hermes/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: currentProjectId, chatId })
+            });
+        } catch {}
+        isRunning = false;
+        setHermesStatus('○ Detenido', '');
+        hermesStartBtn.classList.remove('hidden');
+        hermesStopBtn.classList.add('hidden');
+        hermesInputArea.style.display = 'none';
+        hermesInput.disabled = true;
+        appendHermesLine('⏹ Hermes detenido.', 'system');
+    }
+
+    async function sendHermesMessage() {
+        const message = hermesInput.value.trim();
+        if (!message || !currentProjectId || !isRunning) return;
+        hermesInput.value = '';
+        appendHermesLine('>>> ' + message, 'hermes-prompt');
+        try {
+            const res = await fetch(`${API}/hermes/message`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: currentProjectId, message })
+            });
+            const data = await res.json();
+            if (data.response) {
+                appendHermesLine(data.response, 'stdout');
+            }
+        } catch (e) {
+            appendHermesLine('❌ Error: ' + e.message, 'stderr');
+        }
+    }
+
+    // Event listeners
+    if (hermesStartBtn) {
+        hermesStartBtn.addEventListener('click', startHermesForTab);
+    }
+    if (hermesStopBtn) {
+        hermesStopBtn.addEventListener('click', stopHermesForTab);
+    }
+    if (hermesInput) {
+        hermesInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendHermesMessage();
+        });
+    }
+
+    // Exponer para que otros módulos puedan mostrar Hermes
+    window.showHermesTab = showHermesInTab;
+
+    // Nav click para el tab Hermes
+    if (hermesTabNav) {
+        hermesTabNav.addEventListener('click', () => {
+            // Redirigir al chat común en vez de mostrar el tab Hermes
+            if (currentProjectId) {
+                startHermesForTab();
+            }
+        });
+    }
+
+    console.log('[HERMES-TAB] Módulo de pestaña Hermes cargado.');
+})();
+
+// ──────────────────────────────────────────────
+// HERMES LOGIC — Maneja mensajes de chat común → Hermes Bridge
+// ──────────────────────────────────────────────
+async function triggerHermesLogic(project, chat, origin = 'user') {
+    if (chat.isThinking) return;
+
+    updateThinking(chat, true, "Esperando respuesta", "Procesando...");
+    chat.isStopped = false;
+    renderMessages();
+
+    const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
+    if (!lastUserMsg) {
+        updateThinking(chat, false);
+        return;
+    }
+    let message = lastUserMsg.content;
+    const images = lastUserMsg.images || [];
+
+    // ─── Auto-naming para agentes Hermes: nombrar desde el prompt (ASINCRÓNICO) ───
+    if (/^Agente \d+$/.test(chat.name)) {
+        // 🔥 No bloquea a Hermes, el nombre llega después
+        generateChatNameFromPrompt(message).then(generatedName => {
+            if (generatedName) {
+                console.log(`[HERMES-NAMING] Auto-nombrando agente Hermes desde prompt: "${generatedName}"`);
+                chat.name = generatedName;
+                const agentNameInput = document.getElementById('chat-agent-name-input');
+                if (agentNameInput && !agentNameInput.hasAttribute('data-manual')) {
+                    agentNameInput.value = generatedName;
+                }
+                renderTabs();
+                renderAdminMonitor();
+                saveData();
+            }
+        });
+    }
+    // ─── Fin auto-naming Hermes ───
+
+    const instanceKey = project.id + ':' + chat.id;
+
+    // Crear un bloque de progreso como mensaje "system" en el chat
+    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const progressMsg = {
+        role: 'system',
+        id: progressMsgId,
+        content: '⚡ Invocando Hermes...\n',
+        timestamp: Date.now(),
+        isProgress: true,
+        minimized: false // mientras genera, maximizado
+    };
+    chat.messages.push(progressMsg);
+    renderMessages();
+    saveData();
+
+    // Conectar WebSocket para recibir progreso en vivo
+    let progressWs = null;
+    try {
+        progressWs = new WebSocket(`ws://${window.location.hostname}:4699/ws/hermes`);
+        // Throttle para evitar re-renders excesivos durante progreso rápido
+        let progressRenderTimer = null;
+        progressWs.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
+                    if (data.type === 'progress' || data.type === 'stdout') {
+                        // Agregar línea al mensaje de progreso (solo en data, no en DOM)
+                        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+                        if (progressChatMsg) {
+                                // Replace literal \n (backslash + n) with actual newlines for cleaner formatting of multiline arguments/diffs
+                                const processedText = data.text.replace(/\\n/g, '\n');
+                                // Strip full ANSI (not just SGR) — handle OSC, CSI, etc.
+                                const rawText = processedText.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b./g, '');
+                                const lines = rawText.split('\n').filter(l => l.trim());
+                                for (const line of lines) {
+                                    const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+                                    if (clean) {
+                                        // Detectar tipo de línea y formatear sin truncar
+                                        let formatted = '';
+                                        // Check for diff additions/deletions first to preserve diff formatting
+                                        if (clean.startsWith('+')) {
+                                            formatted = line; // Preserve original line with indentation
+                                        } else if (clean.startsWith('-')) {
+                                            formatted = line; // Preserve original line with indentation
+                                        }
+                                        // Tool calls
+                                        else if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
+                                            const detail = clean.replace(/.*(?:tool_call|handle_function_call)[^:]*:\s*/i, '').trim();
+                                            formatted = '🛠️ ' + (detail.length > 120 ? detail.slice(0, 117) + '...' : detail);
+                                        }
+                                        // File reads/writes
+                                        else if (clean.match(/read_file|write_file|patch|search_files|execute_code/) && clean.match(/['"][^'"]+['"]/)) {
+                                            const fileMatch = clean.match(/['"]([^'"]+)['"]/);
+                                            const action = clean.match(/read_file|write_file|patch|search_files|execute_code/)[0];
+                                            const file = fileMatch ? fileMatch[1].split('/').pop().split('\\').pop() : '';
+                                            formatted = (action === 'read_file' ? '📖' : action === 'write_file' ? '📝' : action === 'patch' ? '🔧' : action === 'search_files' ? '🔍' : '⚙️') + ' ' + (file || clean.slice(0, 60));
+                                        }
+                                        // Tool results / status
+                                        else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
+                                            formatted = '✅ ' + clean.slice(0, 150);
+                                        }
+                                        // Thinking/processing steps — handle both [thinking] prefixed and plain
+                                        const thinkingMatch = clean.match(/\[thinking\]\s*(.*)/i);
+                                        const thinkContent = thinkingMatch ? thinkingMatch[1].trim() : null;
+                                        const isThinkingLine = thinkContent && thinkContent.length > 3;
+
+                                        if (isThinkingLine) {
+                                            formatted = '🤔 ' + thinkContent.slice(0, 150);
+                                            // Update thinking-subtext DATA on the chat object (always)
+                                            chat.thinkingSubtext = thinkContent.slice(0, 150);
+                                        } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
+                                            formatted = '🤔 ' + clean.slice(0, 150);
+                                            // Update thinking-subtext DATA on the chat object (always)
+                                            chat.thinkingSubtext = clean.slice(0, 150);
+                                        }
+                                        // Error-like lines
+                                        else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
+                                            formatted = '❌ ' + clean.slice(0, 150);
+                                        }
+                                        // Plain lines — show verbatim (no truncation)
+                                        else {
+                                            formatted = line.slice(0, 200);
+                                        }
+                                        if (formatted) {
+                                            progressChatMsg.content += formatted + '\n';
+                                        }
+                                    }
+                                }
+                            // Limitar líneas de progreso para no saturar
+                            const lineCount = progressChatMsg.content.split('\n').length;
+                            if (lineCount > 120) {
+                                const lines_arr = progressChatMsg.content.split('\n');
+                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-100).join('\n');
+                            }
+
+                            // --- UPDATE DOM DIRECTLY: only if this chat is the currently active chat ---
+                            const activeChat = getActiveChat();
+                            if (activeChat && activeChat.id === chat.id) {
+                                // Buscar el elemento del progreso por ID específico en el DOM actual
+                                const progressEl = chatMessages.querySelector(`#${progressMsgId}`);
+                                if (progressEl) {
+                                    const summaryEl = progressEl.querySelector('.progress-summary');
+                                    const detailPre = progressEl.querySelector('.hermes-progress-detail pre');
+                                    if (summaryEl) {
+                                        const firstLine = progressChatMsg.content.split('\n').find(l => l.trim()) || '⚡ Procesando...';
+                                        summaryEl.textContent = firstLine;
+                                    }
+                                    if (detailPre) {
+                                        const progressLines = progressChatMsg.content.split('\n').filter(l => l.trim());
+                                        const detailContent = progressLines.slice(1).join('\n');
+                                        detailPre.innerHTML = formatProgressLines(detailContent);
+                                    }
+                                } else {
+                                    // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
+                                    if (!progressRenderTimer) {
+                                        progressRenderTimer = setTimeout(() => {
+                                            progressRenderTimer = null;
+                                            
+                                            // Verificar de nuevo si sigue activo este chat
+                                            const currentActiveChat = getActiveChat();
+                                            if (currentActiveChat && currentActiveChat.id === chat.id) {
+                                                chatMessages.innerHTML = '';
+                                                chat.messages.forEach(m => {
+                                                    if (m.isProgress && m.finished && m._hidden) return;
+                                                    const div = document.createElement('div');
+                                                    div.className = `message ${m.role}`;
+                                                    if (m.isProgress) {
+                                                        div.id = m.id;
+                                                        const isFinished = m.finished === true;
+                                                        const progressLines = m.content.split('\n').filter(l => l.trim());
+                                                        const summary = progressLines[0] || '⚡ Procesando...';
+                                                        const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+                                                        const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+                                                        const displaySummary = errorLine || doneLine || summary;
+                                                        const detailContent = progressLines.slice(1).join('\n');
+                                                        const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+                                                        div.className = `message system hermes-progress ${stateClass}`;
+                                                        div.innerHTML = `
+                                                            <div class="hermes-progress-toggle maximized">
+                                                                <span class="progress-arrow">▼</span>
+                                                                <span class="progress-summary">${escapeHtml(displaySummary)}</span>
+                                                            </div>
+                                                            <div class="hermes-progress-detail">
+                                                                <pre>${formatProgressLines(detailContent)}</pre>
+                                                            </div>
+                                                        `;
+                                                    } else {
+                                                        div.innerHTML = formatMarkdown(m.content);
+                                                    }
+                                                    chatMessages.appendChild(div);
+                                                });
+                                                // ─── RE-INSERT thinking bubble if chat is still active and thinking ───
+                                                if (chat.isThinking) {
+                                                    const thinkingDiv = document.createElement('div');
+                                                    thinkingDiv.className = 'message agent thinking';
+                                                    thinkingDiv.innerHTML = `
+                                                        <div class="thinking-bubble-content">
+                                                            <div class="spinner"></div>
+                                                            <div class="thinking-text-wrapper">
+                                                                <div class="thinking-status">${escapeHtml(chat.thinkingStatus || 'El agente está pensando...')}</div>
+                                                                <div class="thinking-subtext">${escapeHtml(chat.thinkingSubtext || 'Procesando...')}</div>
+                                                            </div>
+                                                        </div>
+                                                    `;
+                                                    chatMessages.appendChild(thinkingDiv);
+                                                }
+                                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                                            }
+                                        }, 200);
+                                    }
+                                }
+
+                                // ─── UPDATE thinking-subtext DOM (only for active chat) ───
+                                const activeThinkingSub = chatMessages.querySelector('.thinking-subtext');
+                                if (activeThinkingSub && chat.thinkingSubtext) {
+                                    activeThinkingSub.textContent = chat.thinkingSubtext;
+                                }
+
+                                // ─── UPDATE thinking indicator in header (only for active chat) ───
+                                const statusEl = document.getElementById('chat-thinking-status');
+                                if (statusEl) {
+                                    const lastClean = lines.filter(l => l.trim()).pop() || '';
+                                    const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
+                                    if (short) statusEl.textContent = '⚡ ' + short;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch(e) {}
+        };
+        progressWs.onerror = () => {};
+    } catch(e) {}
+
+    try {
+        const controller = new AbortController();
+        chat.abortController = controller;
+
+        chat.isStreaming = true;
+        
+        // Incluir historial de conversación para que Hermes mantenga contexto
+        const historyMessages = chat.messages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .filter(m => !m.isProgress || !m.finished)
+            .slice(-20) // últimas 20 interacciones para no saturar
+            .map(m => ({ role: m.role, content: m.content }));
+
+        // ─── Auto-transformación: Inyectar conciencia del sistema ───
+        const serverDir = project.folder || '';
+        const isJPAgentsProject = serverDir && (
+            serverDir.includes('jpagents') || serverDir.includes('JPagents') || serverDir.includes('jp-agents')
+        );
+        let autoTransformBlock = '';
+        if (isJPAgentsProject) {
+            autoTransformBlock = `\n\n=== AUTO-TRANSFORMACIÓN ===
+Eres Hermes Agent ejecutándose dentro del sistema JP Agents.
+Tienes la capacidad de AUTOMODIFICARTE — puedes cambiar los archivos del servidor (server.js, hermes-bridge.js, agent_graph.js, main.js, index.html, style.css, etc.) para mejorar el sistema.
+REGLAS DE AUTO-TRANSFORMACIÓN:
+1. Si modificas archivos del servidor (server.js, hermes-bridge.js, .js en la raíz del proyecto), el servidor DEBE reiniciarse para que los cambios surtan efecto.
+2. Después de hacer cambios estructurales, INCLUYE en tu respuesta: 🔄AUTO-RESTART:razón del reinicio
+3. No reinventes ruedas — usa los endpoints existentes (/api/skills/*, /api/hermes/skills/*, etc.)
+4. Los cambios se reflejan en la consola de JP Agents automáticamente.
+5. El directorio del proyecto es: ${serverDir}
+=== FIN AUTO-TRANSFORMACIÓN ===\n\n`;
+        }
+
+        // ─── Colectar skills activos (locales + Hermes) ───
+        const activeSkills = [];
+        // Skills del chat
+        if (chat.skills && chat.skills.length > 0) {
+            for (const s of chat.skills) {
+                // s puede ser string (local) u objeto { name, source, category }
+                if (typeof s === 'object' && s.source === 'hermes') {
+                    activeSkills.push({ name: s.name, source: 'hermes', category: s.category || '' });
+                } else {
+                    activeSkills.push({ name: typeof s === 'string' ? s : s.name, source: 'local' });
+                }
+            }
+        }
+        // Skills del proyecto (si el chat no tiene skills propios o además)
+        if (project.skills && project.skills.length > 0) {
+            for (const s of project.skills) {
+                const sName = typeof s === 'string' ? s : s.name;
+                if (!activeSkills.find(a => a.name === sName)) {
+                    activeSkills.push({ name: sName, source: 'local' });
+                }
+            }
+        }
+
+        // ─── Construir mensaje final con skills + auto-transformación ───
+        let finalMessage = message;
+        if (autoTransformBlock) {
+            finalMessage = autoTransformBlock + message;
+        }
+
+        const res = await fetch(`${API_BASE}/hermes/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                projectId: project.id,
+                chatId: chat.id,
+                message: finalMessage,
+                images,
+                history: historyMessages,
+                skills: activeSkills.length > 0 ? activeSkills : undefined
+            }),
+            signal: controller.signal
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            // Reemplazar mensaje de progreso con error
+            const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+            if (progressChatMsg) {
+                progressChatMsg.content = '❌ Error: ' + (errData.error || res.statusText);
+                progressChatMsg.isProgress = false;
+            } else {
+                chat.messages.push({
+                    role: 'assistant',
+                    content: '❌ Error: ' + (errData.error || res.statusText),
+                    timestamp: Date.now()
+                });
+            }
+            renderMessages();
+            updateThinking(chat, false);
+            if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            return;
+        }
+
+        const data = await res.json();
+        // ─── AUTO-NAMING: Si el backend o Hermes devolvió un nombre de agente, actualizarlo ───
+        if (data.agentName && chat.name && /^Agente\s+\d+$/.test(chat.name)) {
+            chat.name = data.agentName;
+            renderTabs();
+            renderAdminMonitor();
+            console.log(`[AUTO-NAME] 🏷️ Agente Hermes renombrado a "${data.agentName}"`);
+        }
+        // Strip ANSI escape codes
+        const rawResponse = data.response;
+        const response = rawResponse ? stripAnsi(rawResponse) : '(El agente completó pero no devolvió respuesta de texto)';
+        // ─── Extraer NOMBRE_AGENTE del texto de respuesta (si el nombre sigue siendo genérico) ───
+        if (/^Agente\s+\d+$/.test(chat.name)) {
+            const nameMatch = rawResponse.match(/NOMBRE_AGENTE\s*:\s*(.+?)(?:\n|$)/i);
+            if (nameMatch && nameMatch[1]) {
+                const extracted = nameMatch[1].trim().replace(/['"]/g, '').slice(0, 40);
+                if (extracted && extracted.length > 2) {
+                    chat.name = extracted;
+                    renderTabs();
+                    renderAdminMonitor();
+                    console.log(`[AUTO-NAME] 🏷️ Agente Hermes renombrado desde respuesta: "${extracted}"`);
+                }
+            }
+        }
+        const backendChanges = data.changes || [];
+        const tokenUsage = data.usage || null;
+
+        // ─── Actualizar progreso a estado finalizado pero visible ───
+        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        if (progressChatMsg) {
+            // Marcar como finalizado pero NO oculto: queda minimizado y visible
+            progressChatMsg.finished = true;
+            progressChatMsg.minimized = true;
+            // Agregar línea de finalización al contenido del progreso
+            const doneTime = new Date().toLocaleTimeString();
+            progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime;
+
+            // 🔊 Notification sound on successful completion
+            try { playAgentCompleteSound(); } catch(e) {}
+
+            // ─── Token counter ───
+            if (tokenUsage && tokenUsage.total_tokens > 0) {
+                // Track cumulative tokens per chat
+                chat.totalTokens = (chat.totalTokens || 0) + tokenUsage.total_tokens;
+                chat.totalInputTokens = (chat.totalInputTokens || 0) + tokenUsage.input_tokens;
+                chat.totalOutputTokens = (chat.totalOutputTokens || 0) + tokenUsage.output_tokens;
+                chat.totalApiCalls = (chat.totalApiCalls || 0) + (tokenUsage.api_call_count || 0);
+
+                const parts = [];
+                parts.push(`🔢 ${tokenUsage.total_tokens.toLocaleString()} tokens`);
+                parts.push(`${tokenUsage.input_tokens.toLocaleString()} in / ${tokenUsage.output_tokens.toLocaleString()} out`);
+                if (tokenUsage.reasoning_tokens > 0) {
+                    parts.push(`${tokenUsage.reasoning_tokens.toLocaleString()} reasoning`);
+                }
+                if (tokenUsage.cache_read_tokens > 0) {
+                    parts.push(`${tokenUsage.cache_read_tokens.toLocaleString()} cache`);
+                }
+                if (tokenUsage.estimated_cost_usd > 0) {
+                    parts.push(`≈ $${tokenUsage.estimated_cost_usd.toFixed(4)}`);
+                }
+                progressChatMsg.content += ` | ${parts.join(' · ')}`;
+
+                // Mostrar acumulado de la conversación
+                if (chat.totalTokens > tokenUsage.total_tokens) {
+                    progressChatMsg.content += `\n📊 Conversación acumulada: ${chat.totalTokens.toLocaleString()} tokens (${chat.totalApiCalls} llamadas API)`;
+                }
+            }
+
+            progressChatMsg.content += '\n';
+            // Agregar info de archivos modificados con mini diff inline
+            if (backendChanges.length > 0) {
+                progressChatMsg.content += '\n📂 Archivos modificados:\n';
+                for (const c of backendChanges) {
+                    const shortName = c.fileName.split(/[/\\]/).pop();
+                    progressChatMsg.content += `  📄 ${shortName} (+${c.added}/-${c.removed})\n`;
+                    // Mostrar mini preview del git diff (primeras líneas cambiadas)
+                    if (c.diff && c.diff.trim()) {
+                        const diffLines = c.diff.split('\n');
+                        const changedLines = diffLines.filter(l =>
+                            (l.startsWith('+') && !l.startsWith('+++')) ||
+                            (l.startsWith('-') && !l.startsWith('---'))
+                        );
+                        // Mostrar hasta 5 líneas de preview por archivo
+                        const preview = changedLines.slice(0, 5);
+                        for (const dl of preview) {
+                            const prefix = dl.charAt(0);
+                            const content = dl.slice(1).substring(0, 100);
+                            const icon = prefix === '+' ? '➕' : '➖';
+                            progressChatMsg.content += `    ${icon} ${content}\n`;
+                        }
+                        if (changedLines.length > 5) {
+                            progressChatMsg.content += `    ... y ${changedLines.length - 5} líneas más\n`;
+                        }
+                    }
+                }
+                if (backendChanges.some(c => c.diff)) {
+                    progressChatMsg.content += '\n🔍 El diff completo está en el panel "Cambios Realizados".\n';
+                }
+            }
+            // Agregar el mensaje de respuesta del asistente
+            chat.messages.push({
+                role: 'assistant',
+                content: response,
+                timestamp: Date.now()
+            });
+        } else {
+            chat.messages.push({
+                role: 'assistant',
+                content: response,
+                timestamp: Date.now()
+            });
+        }
+
+        chat.isStreaming = false;
+        renderMessages();
+        updateThinking(chat, false);
+        saveData();
+
+        // ─── Procesar cambios y actualizar UI solo si este proyecto está activo ───
+        if (backendChanges.length > 0) {
+            // Guardar cambios en el chat (siempre — no es DOM)
+            chat.sessionChanges = backendChanges.map(c => ({
+                fileName: c.fileName,
+                added: c.added,
+                removed: c.removed,
+                diff: c.diff || null
+            }));
+
+            // Actualizaciones DOM solo si este es el proyecto activo
+            const activeProj = getActiveProject();
+            if (activeProj && activeProj.id === project.id) {
+                renderSessionSummary(chat.sessionChanges, project);
+
+                // Auto-abrir archivos modificados en tabs del proyecto (sin robar foco)
+                for (const change of backendChanges) {
+                    if (!change.fileName) continue;
+                    const fullPath = pathJoin(project.folder, change.fileName).replace(/\\/g, '/');
+                    const alreadyOpen = project.openFiles.some(f => f.path.replace(/\\/g, '/') === fullPath);
+                    if (!alreadyOpen) {
+                        try {
+                            await window.openFile(fullPath, { setActive: false });
+                        } catch (e) {
+                            console.error('Error auto-opening file:', fullPath, e);
+                        }
+                    }
+                }
+                // Re-escanear carpeta para actualizar file list
+                if (project.folder) window.scanFolder(project.folder, project.id);
+            }
+        }
+
+        if (progressWs) { try { progressWs.close(); } catch(e) {}
+        }
+        
+        // ─── Auto-transformación: Detectar solicitud de reinicio ───
+        if (isJPAgentsProject && response) {
+            const restartMatch = response.match(/🔄AUTO-RESTART\s*:\s*(.+)/i);
+            if (restartMatch) {
+                const reason = restartMatch[1].trim();
+                console.log('[AUTO-TRANSFORM] 🔄 Reinicio automático solicitado:', reason);
+                
+                // Log restart in console
+                try {
+                    await fetch(`${API_BASE}/utils/client-logs`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            type: 'system',
+                            messages: [`🔄 Auto-transformación: ${reason}`],
+                            timestamp: new Date().toISOString(),
+                            url: '/auto-restart'
+                        })
+                    });
+                } catch(e) {}
+                
+                // Clear the restart marker from the displayed response
+                const cleanResponse = response.replace(/🔄AUTO-RESTART\s*:\s*.+/i, '').trim();
+                const lastMsg = chat.messages[chat.messages.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = cleanResponse || response;
+                }
+                
+                renderMessages();
+                
+                // Trigger restart after a short delay so user can see the message
+                setTimeout(async () => {
+                    try {
+                        await fetch(`${API_BASE}/system/restart`, { method: 'POST' });
+                    } catch(e) {
+                        console.warn('[AUTO-TRANSFORM] Error al reiniciar:', e.message);
+                    }
+                }, 2000);
+            }
+        }
+        
+        // Broadcast a otras pestañas (Agents Room) que el estado cambió
+        try {
+            const bc = new BroadcastChannel('jp-agents-room');
+            bc.postMessage({ type: 'agents-updated', timestamp: Date.now() });
+            bc.close();
+        } catch(e) {}
+
+    } catch (e) {
+        // ─── Si el usuario ya solicitó STOP (isStopped true), no duplicar mensajes ───
+        if (chat.isStopped) {
+            // stopAgent ya se encargó de todo: marcó progress como finished,
+            // pusheó "🛑 Solicitud de detención", llamó renderMessages() y saveData()
+            // Solo asegurarse de cerrar el WS si sigue abierto
+            if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            chat.isStreaming = false;
+            saveData();
+            return;
+        }
+        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        if (progressChatMsg) {
+            const errTime = new Date().toLocaleTimeString();
+            progressChatMsg.content += '\n❌ Error: ' + e.message + ' (' + errTime + ')\n';
+            progressChatMsg.finished = true;
+            progressChatMsg.minimized = false; // dejar visible para que se vea el error
+        }
+        // 🔊 Error notification sound
+        try { playAgentErrorSound(); } catch(e) {}
+        // Mark chat as errored so Agents Room shows the cross
+        chat._errored = true;
+        chat._errorMessage = e.message || 'Error desconocido';
+        if (e.name === 'AbortError' && !chat.isStopped) {
+            chat.messages.push({
+                role: 'system',
+                content: '⏹️ Consulta cancelada (timeout de 120s).',
+                timestamp: Date.now()
+            });
+        } else {
+            chat.messages.push({
+                role: 'assistant',
+                content: '❌ Error de conexión: ' + e.message,
+                timestamp: Date.now()
+            });
+        }
+        chat.isStreaming = false;
+        renderMessages();
+        updateThinking(chat, false);
+        if (progressWs) { try { progressWs.close(); } catch(e) {} }
+    }
+}
+
+// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// LISTA DE AGENTES — Tabla limpia
+// ──────────────────────────────────────────────
+(function() {
+    const API = window.API_BASE || 'http://localhost:4699/api';
+    const tbody = document.getElementById('monitor-tbody');
+    const magicCount = document.getElementById('magic-count');
+    const refreshBtn = document.getElementById('magic-refresh-btn');
+
+    function getStatusLabel(status) {
+        switch(status) {
+            case 'idle': return 'Inactivo';
+            case 'thinking': return 'Pensando...';
+            case 'running': return 'Trabajando';
+            case 'error': return 'Error';
+            default: return status;
+        }
+    }
+
+    async function refreshAgentList() {
+        if (!tbody) return;
+        try {
+            const res = await fetch(`${API}/admin/agents`);
+            const data = await res.json();
+            const agents = data.agents || [];
+
+            if (magicCount) magicCount.textContent = `${agents.length} agente${agents.length !== 1 ? 's' : ''}`;
+
+            if (agents.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-secondary);">No hay agentes activos. Creá un proyecto e iniciá un chat para ver agentes aquí.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = '';
+            agents.forEach(agent => {
+                const displayName = agent.name || agent.id.slice(0, 8);
+                const tr = document.createElement('tr');
+                tr.style.cursor = 'pointer';
+                const statusClass = agent.status === 'idle' ? 'idle' :
+                    agent.status === 'thinking' ? 'thinking' :
+                    agent.status === 'running' ? 'running' : 'error';
+                tr.innerHTML = `
+                    <td><strong>${escapeHtml(displayName)}</strong>${agent.isHermes ? ' <span style="color:#22d3ee;font-size:0.7rem;">⚡</span>' : ''}</td>
+                    <td>${escapeHtml(agent.projectName || '—')}</td>
+                    <td><span class="monitor-status-dot ${statusClass}"></span> ${getStatusLabel(agent.status)}</td>
+                    <td style="font-size:0.8rem;color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${agent.lastMessage ? escapeHtml(agent.lastMessage.content || '').slice(0, 60) : '—'}</td>
+                    <td><button class="btn-monitor-goto" data-project="${escapeHtml(agent.projectId || '')}" data-agent="${escapeHtml(agent.id)}">Ir al Chat</button></td>
+                `;
+                const gotoBtn = tr.querySelector('.btn-monitor-goto');
+                if (gotoBtn) {
+                    gotoBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (window.switchToChat && agent.projectId) {
+                            window.switchToChat(agent.projectId, agent.id);
+                        }
+                    });
+                }
+                tr.addEventListener('click', () => {
+                    if (window.switchToChat && agent.projectId) {
+                        window.switchToChat(agent.projectId, agent.id);
+                    }
+                });
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            console.error('[AGENT-LIST] Error:', e);
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#ff4444;">❌ Error: ' + e.message + '</td></tr>';
+        }
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Init
+    if (refreshBtn) refreshBtn.addEventListener('click', refreshAgentList);
+
+    // Auto-refresh cada 5s si el admin tab está visible
+    let listInterval = null;
+    function startAutoRefresh() {
+        if (listInterval) return;
+        listInterval = setInterval(() => {
+            const adminTab = document.getElementById('admin-tab-content');
+            if (adminTab && !adminTab.classList.contains('hidden')) {
+                refreshAgentList();
+            }
+        }, 5000);
+    }
+    function stopAutoRefresh() {
+        if (listInterval) { clearInterval(listInterval); listInterval = null; }
+    }
+
+    // Observar visibilidad
+    const adminContent = document.getElementById('admin-tab-content');
+    if (adminContent) {
+        const observer = new MutationObserver(() => {
+            if (!adminContent.classList.contains('hidden')) {
+                refreshAgentList();
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+        observer.observe(adminContent, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Refresh al cambiar sub-tab a table
+    document.querySelectorAll('.admin-sub-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            if (tab.dataset.subTab === 'table') {
+                setTimeout(refreshAgentList, 100);
+            }
+        });
+    });
+
+    // Refresh inicial
+    refreshAgentList();
+
+    console.log('[AGENT-LIST] Monitor de agentes cargado.');
+})();
+
+// ═══════════════════════════════════════════════════════════════
+//  DRAG & DROP — Reordenar Proyectos (Sidebar)
+// ═══════════════════════════════════════════════════════════════
+let draggedProjectId = null;
+
+window.onProjectDragStart = (e, projectId) => {
+    draggedProjectId = projectId;
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', projectId);
+};
+
+window.onProjectDragEnd = (e) => {
+    e.target.classList.remove('dragging');
+    document.querySelectorAll('.chat-item').forEach(el => el.classList.remove('drag-over'));
+    draggedProjectId = null;
+};
+
+window.onProjectDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = e.currentTarget;
+    if (target.dataset.id !== draggedProjectId) {
+        target.classList.add('drag-over');
+    }
+};
+
+window.onProjectDragLeave = (e) => {
+    e.currentTarget.classList.remove('drag-over');
+};
+
+window.onProjectDrop = (e, targetId) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    
+    if (!draggedProjectId || draggedProjectId === targetId) return;
+    
+    const fromIdx = state.projects.findIndex(p => p.id === draggedProjectId);
+    const toIdx = state.projects.findIndex(p => p.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    
+    // Reorder
+    const [moved] = state.projects.splice(fromIdx, 1);
+    state.projects.splice(toIdx, 0, moved);
+    
+    renderProjectList();
+    saveData();
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  DRAG & DROP — Reordenar Tabs
+// ═══════════════════════════════════════════════════════════════
+let draggedTabId = null;
+let draggedTabType = null;
+
+window.onTabDragStart = (e, tabId, tabType) => {
+    draggedTabId = tabId;
+    draggedTabType = tabType;
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', tabId);
+};
+
+window.onTabDragEnd = (e) => {
+    e.target.classList.remove('dragging');
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('drag-over'));
+    draggedTabId = null;
+    draggedTabType = null;
+};
+
+window.onTabDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = e.currentTarget;
+    if (target.dataset.tabId !== draggedTabId) {
+        target.classList.add('drag-over');
+    }
+};
+
+window.onTabDragLeave = (e) => {
+    e.currentTarget.classList.remove('drag-over');
+};
+
+window.onTabDrop = (e, targetTabId, targetTabType) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    
+    const p = getActiveProject();
+    if (!p || !draggedTabId || draggedTabId === targetTabId) return;
+    if (draggedTabType !== targetTabType) return; // No mezclar chats con files
+    
+    if (draggedTabType === 'chat') {
+        const fromIdx = (p.chats || []).findIndex(c => c.id === draggedTabId);
+        const toIdx = (p.chats || []).findIndex(c => c.id === targetTabId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const [moved] = p.chats.splice(fromIdx, 1);
+        p.chats.splice(toIdx, 0, moved);
+    } else if (draggedTabType === 'file') {
+        const fromIdx = (p.openFiles || []).findIndex(f => f.path.replace(/\\/g, '/') === draggedTabId);
+        const toIdx = (p.openFiles || []).findIndex(f => f.path.replace(/\\/g, '/') === targetTabId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const [moved] = p.openFiles.splice(fromIdx, 1);
+        p.openFiles.splice(toIdx, 0, moved);
+    }
+    
+    renderTabs();
+    saveData();
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  MINI BUSCADOR — Proyectos Activos + Archivados
+// ═══════════════════════════════════════════════════════════════
+let searchTimeout = null;
+let searchDropdownVisible = false;
+
+window.searchProjects = async (query) => {
+    const q = (query || '').trim();
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (!dropdown) return;
+    
+    if (!q || q.length < 1) {
+        dropdown.classList.add('hidden');
+        searchDropdownVisible = false;
+        chatList.style.display = '';
+        return;
+    }
+    
+    // Debounce
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        try {
+            const res = await fetch(`${API_BASE}/sessions/search?q=${encodeURIComponent(q)}`);
+            const data = await res.json();
+            
+            const active = data.active || [];
+            const archived = data.archived || [];
+            
+            let html = '';
+            
+            if (active.length === 0 && archived.length === 0) {
+                html = '<div class="search-result-empty">🔍 No se encontraron proyectos</div>';
+            } else {
+                if (active.length > 0) {
+                    html += '<div class="search-section-label">📌 Activos</div>';
+                    active.forEach(p => {
+                        const chatCount = (p.chats || []).length;
+                        html += `
+                            <div class="search-result-item active-result" 
+                                 onclick="window.gotoSearchResult('${p.id}', 'active')">
+                                <span class="search-result-name">📁 ${escapeHtml(p.name)}</span>
+                                <span class="search-result-meta">${chatCount} agentes | ${escapeHtml(p.folder || 'Sin carpeta')}</span>
+                            </div>
+                        `;
+                    });
+                }
+                
+                if (archived.length > 0) {
+                    html += '<div class="search-section-label">🗄️ Archivados</div>';
+                    archived.forEach(p => {
+                        const date = p.archivedAt ? new Date(p.archivedAt).toLocaleDateString() : '—';
+                        html += `
+                            <div class="search-result-item archived-result" 
+                                 onclick="window.restoreProject('${p.projectId}')">
+                                <span class="search-result-name">📦 ${escapeHtml(p.name)}</span>
+                                <span class="search-result-meta">Archivado: ${date} | ${escapeHtml(p.folder || 'Sin carpeta')}</span>
+                                <span class="search-restore-hint">↩ Click para restaurar</span>
+                            </div>
+                        `;
+                    });
+                }
+            }
+            
+            dropdown.innerHTML = html;
+            dropdown.classList.remove('hidden');
+            searchDropdownVisible = true;
+            chatList.style.display = 'none';
+        } catch (e) {
+            console.error('[SEARCH] Error:', e);
+            dropdown.innerHTML = '<div class="search-result-empty error">Error al buscar</div>';
+            dropdown.classList.remove('hidden');
+        }
+    }, 250);
+};
+
+window.gotoSearchResult = (projectId) => {
+    window.switchProject(projectId);
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (dropdown) dropdown.classList.add('hidden');
+    searchDropdownVisible = false;
+    chatList.style.display = '';
+    const searchInput = document.getElementById('project-search');
+    if (searchInput) searchInput.value = '';
+};
+
+// ──────────────────────────────────────────────
+// GIT TAB FUNCTIONS
+// ──────────────────────────────────────────────
+
+// Show feedback message in the git actions bar area
+function showGitFeedback(msg, type = 'info') {
+    const bar = document.querySelector('.git-actions-bar');
+    if (!bar) return;
+    // Remove any existing feedback
+    const existing = bar.querySelector('.git-feedback');
+    if (existing) existing.remove();
+
+    const el = document.createElement('div');
+    el.className = `git-feedback git-feedback-${type}`;
+    el.textContent = msg;
+    bar.appendChild(el);
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => {
+        if (el.parentNode) el.remove();
+    }, 4000);
+}
+
+// Refresh the git tab view
+window.refreshGitTab = () => {
+    loadGitLog();
+};
+
+// Load git log from the backend
+async function loadGitLog() {
+    const project = getActiveProject();
+    if (!project || !project.folder) {
+        const graph = document.getElementById('git-branch-graph');
+        if (graph) graph.innerHTML = '<div class="git-empty-state">No hay proyecto activo con carpeta</div>';
+        return;
+    }
+
+    const branchBadge = document.getElementById('git-current-branch');
+    const graphContainer = document.getElementById('git-branch-graph');
+    const legendContainer = document.getElementById('git-legend');
+
+    if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state">Cargando historial...</div>';
+    if (legendContainer) legendContainer.style.display = 'none';
+
+    try {
+        const res = await fetchWithLog(`${API_BASE}/utils/git-log`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder })
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            if (graphContainer) graphContainer.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
+            return;
+        }
+
+        const commits = data.commits || [];
+        const currentBranch = data.currentBranch || 'main';
+
+        // Update branch badge
+        if (branchBadge) branchBadge.textContent = currentBranch;
+
+        // Render
+        renderCommitTree(commits, currentBranch);
+
+    } catch (e) {
+        console.error('[GIT] Error loading log:', e);
+        if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state error">Error al cargar el historial</div>';
+    }
+}
+
+// ── Git Zoom + Pan Controls (wheel zoom, click-drag pan) ──
+window._gitZoomLevel = 1.0;
+window._gitPanX = 0;
+window._gitPanY = 0;
+window._gitDragging = false;
+window._gitDragStartX = 0;
+window._gitDragStartY = 0;
+window._gitDragPanStartX = 0;
+window._gitDragPanStartY = 0;
+window._gitZoomListenersSetup = false;
+
+window.applyGitZoom = () => {
+    const wrapper = document.getElementById('git-graph-wrapper');
+    const levelEl = document.getElementById('git-zoom-level');
+    if (!wrapper) return;
+    const scale = window._gitZoomLevel;
+    const tx = window._gitPanX || 0;
+    const ty = window._gitPanY || 0;
+    wrapper.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    if (levelEl) levelEl.textContent = Math.round(scale * 100) + '%';
+};
+
+window.setupGitZoomListeners = () => {
+    if (window._gitZoomListenersSetup) return;
+    window._gitZoomListenersSetup = true;
+
+    const wrapper = document.getElementById('git-graph-wrapper');
+    if (!wrapper) return;
+
+    // Wheel → Zoom
+    wrapper.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.08 : 0.08;
+        window._gitZoomLevel = Math.max(0.3, Math.min(3.0, window._gitZoomLevel + delta));
+        window.applyGitZoom();
+    }, { passive: false });
+
+    // Mousedown → Start pan (only on background, NOT on commit nodes)
+    wrapper.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.git-node-group')) return; // don't steal node clicks
+        window._gitDragging = true;
+        window._gitDragStartX = e.clientX;
+        window._gitDragStartY = e.clientY;
+        window._gitDragPanStartX = window._gitPanX || 0;
+        window._gitDragPanStartY = window._gitPanY || 0;
+        wrapper.style.cursor = 'grabbing';
+        e.preventDefault();
+    });
+
+    // Mousemove → Pan
+    window.addEventListener('mousemove', (e) => {
+        if (!window._gitDragging) return;
+        window._gitPanX = window._gitDragPanStartX + (e.clientX - window._gitDragStartX);
+        window._gitPanY = window._gitDragPanStartY + (e.clientY - window._gitDragStartY);
+        window.applyGitZoom();
+    });
+
+    // Mouseup → Stop pan
+    window.addEventListener('mouseup', () => {
+        if (window._gitDragging) {
+            window._gitDragging = false;
+            wrapper.style.cursor = 'grab';
+        }
+    });
+
+    // Mouseleave on wrapper → Stop pan
+    wrapper.addEventListener('mouseleave', () => {
+        if (window._gitDragging) {
+            window._gitDragging = false;
+            wrapper.style.cursor = 'grab';
+        }
+    });
+
+    // Set initial cursor
+    wrapper.style.cursor = 'grab';
+};
+
+// Button-based zoom controls (fallback, also linked to HTML buttons)
+window.gitZoomIn = () => {
+    window._gitZoomLevel = Math.min(3.0, window._gitZoomLevel + 0.2);
+    window.applyGitZoom();
+};
+
+window.gitZoomOut = () => {
+    window._gitZoomLevel = Math.max(0.3, window._gitZoomLevel - 0.2);
+    window.applyGitZoom();
+};
+
+window.gitZoomReset = () => {
+    window._gitZoomLevel = 1.0;
+    window._gitPanX = 0;
+    window._gitPanY = 0;
+    window.applyGitZoom();
+};
+
+// SVG Branch Graph Renderer — unified view (no separate commit list)
+function renderBranchGraph(commits) {
+    // ── Helper: build colored SVG tspans from stats string like "+123 -45 3 archivos" ──
+    const buildStatsSvg = (stats) => {
+        // Parse: +N, -N, and the rest (files count)
+        const match = stats.match(/^(\+[\d,]+)\s+(-[\d,]+)\s+(.*)/);
+        if (!match) return svgEscape(stats); // fallback
+        const [, additions, deletions, rest] = match;
+        // Green +N, red -N, gray rest
+        return `<tspan fill="#3fb950">${additions}</tspan> <tspan fill="#f85149">${deletions}</tspan> <tspan fill="#888">${rest}</tspan>`;
+    };
+    if (!commits || commits.length < 2) return null;
+
+    const LANE_COLORS = ['#f87171','#60a5fa','#34d399','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c'];
+    const ROW_H = 48;       // taller rows for stats + author, prevents text overlap
+    const LANE_W = 28;
+    const NODE_R = 5;
+    const LX = 24;          // left margin
+    const TY = 16;          // top Y for first node
+    const TEXT_AREA_W = 480;
+
+    // Build lookup: hash -> commit object (index by short AND full hash)
+    const commitMap = {};
+    const fullToShort = {};
+    commits.forEach(c => {
+        commitMap[c.hash] = c;
+        if (c.fullHash) {
+            commitMap[c.fullHash] = c;
+            fullToShort[c.fullHash] = c.hash;
+        }
+    });
+
+    // Helper: resolve any hash (short or full) to short hash used in commits array
+    const resolveHash = (h) => fullToShort[h] || h;
+
+    // Identify branch refs and their tip commits
+    const branchTips = [];
+    let colorIdx = 0;
+    const seenTips = new Set();
+    commits.forEach(c => {
+        if (c.refs && c.refs.length > 0) {
+            c.refs.forEach(ref => {
+                if (ref === 'HEAD') return;
+                if (ref.startsWith('tag: ')) return;
+                const displayName = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/origin\//, 'origin/');
+                const key = displayName + '::' + c.hash;
+                if (!seenTips.has(key)) {
+                    seenTips.add(key);
+                    branchTips.push({
+                        name: displayName,
+                        hash: c.hash,
+                        color: LANE_COLORS[colorIdx % LANE_COLORS.length]
+                    });
+                    colorIdx++;
+                }
+            });
+        }
+    });
+
+    if (branchTips.length === 0) {
+        branchTips.push({ name: 'main', hash: commits[0].hash, color: LANE_COLORS[0] });
+    }
+
+    // Assign lanes: BFS from branch tips
+    const laneAssignments = {};
+    branchTips.forEach((tip, idx) => {
+        const visited = new Set();
+        const queue = [tip.hash];
+        while (queue.length > 0) {
+            const hash = queue.shift();
+            if (visited.has(hash)) continue;
+            visited.add(hash);
+            const commit = commitMap[hash];
+            if (!commit) continue;
+
+            if (!laneAssignments[hash]) {
+                laneAssignments[hash] = { lane: idx, color: tip.color };
+            }
+            if (commit.parents && commit.parents.length > 0) {
+                commit.parents.forEach(ph => {
+                    const shortPH = resolveHash(ph);
+                    if (commitMap[shortPH] && !visited.has(shortPH)) {
+                        queue.push(shortPH);
+                    }
+                });
+            }
+        }
+    });
+
+    // Assign unassigned commits from parents
+    commits.forEach(c => {
+        if (!laneAssignments[c.hash]) {
+            let assigned = false;
+            if (c.parents && c.parents.length > 0) {
+                for (const ph of c.parents) {
+                    const shortPH = resolveHash(ph);
+                    if (laneAssignments[shortPH]) {
+                        laneAssignments[c.hash] = { ...laneAssignments[shortPH] };
+                        assigned = true;
+                        break;
+                    }
+                }
+            }
+            if (!assigned) {
+                laneAssignments[c.hash] = { lane: 0, color: LANE_COLORS[0] };
+            }
+        }
+    });
+
+    // Determine max lane
+    let maxLane = 0;
+    Object.values(laneAssignments).forEach(a => { if (a.lane > maxLane) maxLane = a.lane; });
+
+    const totalWidth = LX + (maxLane + 1) * LANE_W + TEXT_AREA_W;
+    const totalHeight = TY + commits.length * ROW_H + 12;
+
+    const svgEscape = (str) => {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    };
+
+    let svgLines = '';
+    let legendItems = '';
+
+    // ── Draw connecting lines (behind nodes) ──
+    // First pass: collect merge points (commits with >1 parent from different lanes)
+    const mergePoints = new Set();
+    commits.forEach(commit => {
+        if (!commit.parents || commit.parents.length < 2) return;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        let hasMultiLane = false;
+        for (const ph of commit.parents) {
+            const shortPH = resolveHash(ph);
+            const pla = laneAssignments[shortPH];
+            if (pla && pla.lane !== la.lane) { hasMultiLane = true; break; }
+        }
+        if (hasMultiLane) mergePoints.add(commit.hash);
+    });
+
+    commits.forEach((commit, i) => {
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+
+        if (!commit.parents || commit.parents.length === 0) return;
+
+        commit.parents.forEach(parentHash => {
+            const shortPH = resolveHash(parentHash);
+            const parentIdx = commits.findIndex(c => c.hash === shortPH);
+            if (parentIdx === -1) return;
+            const parentLa = laneAssignments[shortPH];
+            if (!parentLa) return;
+            const py = TY + parentIdx * ROW_H;
+            const pcx = LX + parentLa.lane * LANE_W + LANE_W / 2;
+
+            if (la.lane === parentLa.lane) {
+                // Same lane: vertical line
+                svgLines += `<line x1="${cx}" y1="${y}" x2="${pcx}" y2="${py}" stroke="${la.color}" stroke-width="2.5" opacity="0.7"/>`;
+            } else {
+                // Different lane: bezier curve (merge/branch)
+                const midY = (y + py) / 2;
+                const isMerge = parentIdx > i; // parent is earlier (higher up in display)
+                const fromColor = isMerge ? parentLa.color : la.color;
+                svgLines += `<path d="M${cx},${y} C${cx},${midY} ${pcx},${midY} ${pcx},${py}" stroke="${fromColor}" stroke-width="2" fill="none" opacity="0.6"/>`;
+            }
+        });
+    });
+
+    // ── Draw merge indicator dots ──
+    let mergeDotsSvg = '';
+    mergePoints.forEach(hash => {
+        const commit = commitMap[hash];
+        if (!commit) return;
+        const i = commits.findIndex(c => c.hash === hash);
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+        mergeDotsSvg += `<circle cx="${cx}" cy="${y}" r="${NODE_R + 3}" fill="none" stroke="${la.color}" stroke-width="2" stroke-dasharray="3,2" opacity="0.5"/>`;
+    });
+
+    // ── Draw nodes with stats ──
+    let nodesSvg = '';
+    commits.forEach((commit, i) => {
+        const y = TY + i * ROW_H;
+        const la = laneAssignments[commit.hash];
+        if (!la) return;
+        const cx = LX + la.lane * LANE_W + LANE_W / 2;
+
+        const shortHash = svgEscape(commit.hash || '');
+        const escapedHash = svgEscape(commit.fullHash || commit.hash || '');
+        const escapedSubject = svgEscape((commit.subject || '').substring(0, 72));
+        const statsStr = commit.stats || '';
+        const escapedAuthor = svgEscape((commit.author || '').split('<')[0].trim());
+        const escapedDate = svgEscape((commit.date || '').substring(0, 10));
+
+        const isHead = i === 0;
+        const nodeColor = isHead ? '#34d399' : la.color;
+        const nodeStrokeWidth = isHead ? 2.5 : 1.5;
+        const nodeR = isHead ? 6 : NODE_R;
+
+        // Build refs badge
+        const refsLabel = (commit.refs && commit.refs.length > 0)
+            ? commit.refs.filter(r => r !== 'HEAD' && !r.startsWith('tag: ')).join(', ')
+            : '';
+
+        // Hover tooltip
+        let tooltip = `${shortHash} — ${svgEscape(commit.subject || '')}`;
+        if (statsStr) tooltip += ` | ${svgEscape(statsStr)}`;
+        if (refsLabel) tooltip += ` [${svgEscape(refsLabel)}]`;
+        tooltip += ` | ${escapedAuthor} | Doble click: restaurar`;
+
+        nodesSvg += `
+        <g class="git-node-group" data-hash="${escapedHash}" onclick="window.showCommitDetail('${escapedHash}')" ondblclick="window.handleGitCheckout('${escapedHash}')" style="cursor:pointer">
+            <!-- Invisible hit area -->
+            <circle cx="${cx}" cy="${y}" r="${LANE_W/2}" fill="transparent" stroke="none"/>
+            <!-- Visible node -->
+            <circle cx="${cx}" cy="${y}" r="${nodeR}" fill="${nodeColor}" stroke="#1e1e2e" stroke-width="${nodeStrokeWidth}"/>
+            <title>${tooltip}</title>
+            <!-- Row 1: hash + subject -->
+            <text x="${cx + nodeR + 6}" y="${y + 6}" font-family="'JetBrains Mono',monospace" font-size="10" fill="${nodeColor}" font-weight="${isHead ? 'bold' : 'normal'}">${shortHash}</text>
+            <text x="${cx + nodeR + 72}" y="${y + 6}" font-family="sans-serif" font-size="10" fill="#ccc">${escapedSubject}</text>
+            <!-- Row 2: stats with colored +N / -N -->
+            ${statsStr ? `<text x="${cx + nodeR + 6}" y="${y + 22}" font-family="'JetBrains Mono',monospace" font-size="9">${buildStatsSvg(statsStr)}</text>` : ''}
+            <text x="${cx + nodeR + 6}" y="${y + 38}" font-family="sans-serif" font-size="8.5" fill="#666">${escapedAuthor} · ${escapedDate}</text>
+        </g>`;
+    });
+
+    // Build legend
+    branchTips.forEach(tip => {
+        const isActive = tip.name === (window._currentBranch || '');
+        const dotExtra = isActive ? 'box-shadow:0 0 6px currentColor;' : '';
+        legendItems += `<span class="git-legend-item ${isActive ? 'active' : ''}"><span class="git-legend-dot" style="background:${tip.color};${dotExtra}"></span> ${escapeHtml(tip.name)}${isActive ? ' <span style="opacity:0.5;font-size:0.6rem">(actual)</span>' : ''}</span>`;
+    });
+
+    const svg = `<svg class="git-branch-graph-svg" viewBox="0 0 ${totalWidth} ${totalHeight}" width="100%" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
+        ${mergeDotsSvg}
+        ${svgLines}
+        ${nodesSvg}
+    </svg>`;
+
+    return { svg, legend: legendItems };
+}
+
+// Render the full commit tree — SVG graph + legend only (no separate commit list)
+function renderCommitTree(commits, currentBranch) {
+    const graphContainer = document.getElementById('git-branch-graph');
+    const legendContainer = document.getElementById('git-legend');
+    const zoomControls = document.getElementById('git-zoom-controls');
+
+    // Store current branch for legend highlighting
+    window._currentBranch = currentBranch;
+
+    // Render branch graph
+    const graphResult = renderBranchGraph(commits);
+    if (graphResult) {
+        if (graphContainer) {
+            graphContainer.innerHTML = graphResult.svg;
+            graphContainer.style.display = 'block';
+        }
+        if (legendContainer) {
+            legendContainer.innerHTML = graphResult.legend;
+            legendContainer.style.display = 'flex';
+        }
+        // Show zoom controls and apply current zoom level
+        if (zoomControls) {
+            zoomControls.style.display = 'flex';
+        }
+        // Set up wheel zoom + click-drag pan (one-time)
+        window.setupGitZoomListeners();
+        window.applyGitZoom();
+    } else {
+        if (graphContainer) {
+            graphContainer.innerHTML = '<div class="git-empty-state">No hay suficientes commits para mostrar el grafo</div>';
+            graphContainer.style.display = 'block';
+        }
+        if (legendContainer) legendContainer.style.display = 'none';
+        if (zoomControls) zoomControls.style.display = 'none';
+    }
+}
+
+// Show commit detail panel with diff — files are clickable for per-file diff
+window.showCommitDetail = async (hash) => {
+    const project = getActiveProject();
+    if (!project || !project.folder) return;
+
+    const panel = document.getElementById('git-detail-panel');
+    const content = document.getElementById('git-detail-content');
+    const title = document.getElementById('git-detail-title');
+
+    if (!panel || !content) return;
+
+    panel.classList.remove('hidden');
+    if (title) title.textContent = `Detalle del Commit — ${hash.substring(0, 7)}`;
+    content.innerHTML = '<div class="loading-small">Cargando diff...</div>';
+
+    try {
+        const res = await fetch(`${API_BASE}/utils/git-show`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder, commitHash: hash })
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            content.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
+            return;
+        }
+
+        const commit = data.commit || {};
+        const diff = data.diff || '';
+
+        // Store full diff for per-file filtering (escaped version)
+        const encodedDiff = btoa(unescape(encodeURIComponent(diff)));
+
+        let html = '';
+
+        // ── Commit info ──
+        html += `<div class="git-detail-info">`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Hash</span><code>${escapeHtml(commit.hash || hash)}</code></div>`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Autor</span>${escapeHtml(commit.author || '')}</div>`;
+        html += `<div class="git-detail-row"><span class="git-detail-label">Fecha</span>${escapeHtml(commit.date || '')}</div>`;
+        if (commit.subject) {
+            html += `<div class="git-detail-row"><span class="git-detail-label">Mensaje</span><span class="git-detail-msg">${escapeHtml(commit.subject)}</span></div>`;
+        }
+        if (commit.body) {
+            html += `<div class="git-detail-body"><pre>${escapeHtml(commit.body)}</pre></div>`;
+        }
+
+        // Files bar with clickable tags
+        if (commit.files && commit.files.length > 0) {
+            html += `<div class="git-detail-files-bar"><span class="git-detail-label">Archivos</span><div class="git-detail-files-list">`;
+            commit.files.forEach((f, fi) => {
+                const escapedFile = escapeHtml(f);
+                html += `<span class="git-file-tag git-file-clickable" data-file="${escapedFile}" data-idx="${fi}" title="Click: ver diff de este archivo">${escapedFile}</span>`;
+            });
+            html += `</div></div>`;
+        }
+
+        // ── Diff stats (colored additions/deletions) ──
+        if (diff) {
+            const { additions, deletions } = countDiffStats(diff);
+            html += `<div class="git-detail-row"><span class="git-detail-label">Cambios</span>`;
+            html += `<span class="git-stats-add">+${additions}</span> `;
+            html += `<span class="git-stats-del">-${deletions}</span>`;
+            html += `</div>`;
+        }
+
+        html += `</div>`; // close git-detail-info
+
+        // ── Restore button (moved up, BEFORE diff) ──
+        html += `<div class="git-detail-actions git-detail-actions-top">
+            <button class="git-detail-checkout-btn" onclick="window.handleGitCheckout('${escapeHtml(hash)}')">↩ Restaurar a este commit</button>
+        </div>`;
+
+        // ── Diff container (full diff, or per-file after click) ──
+        html += `<div class="git-detail-diff-container" id="git-detail-diff-area">`;
+
+        if (diff) {
+            const escapedDiff = escapeHtml(diff);
+            // Simple diff highlighting
+            const highlightedDiff = escapedDiff
+                .replace(/\r\n/g, '\n')
+                .split('\n')
+                .map(line => {
+                    if (line.startsWith('+') && !line.startsWith('+++')) {
+                        return `<span class="git-diff-add">${line}</span>`;
+                    } else if (line.startsWith('-') && !line.startsWith('---')) {
+                        return `<span class="git-diff-rem">${line}</span>`;
+                    } else if (line.startsWith('@@')) {
+                        return `<span class="git-diff-hunk">${line}</span>`;
+                    }
+                    return line;
+                })
+                .join('\n');
+            html += `<div class="git-detail-diff" id="git-full-diff"><pre><code>${highlightedDiff}</code></pre></div>`;
+            // Per-file diff area (hidden initially) — header + diff separate
+            html += `<div id="git-file-diff-area" class="hidden">
+              <div class="git-file-diff-header" id="git-file-diff-header"></div>
+              <div class="git-detail-diff"><pre><code id="git-file-diff-code"></code></pre></div>
+            </div>`;
+        } else {
+            html += `<div class="git-empty-state">Sin cambios en este commit (commit inicial)</div>`;
+        }
+
+        html += `</div>`; // close git-detail-diff-container
+
+        content.innerHTML = html;
+
+        // ── Attach click handlers to file tags ──
+        const fileTags = content.querySelectorAll('.git-file-clickable');
+        fileTags.forEach(tag => {
+            tag.addEventListener('click', () => {
+                const fileName = tag.getAttribute('data-file');
+                const fullDiffEl = document.getElementById('git-full-diff');
+                const fileDiffArea = document.getElementById('git-file-diff-area');
+                const fileDiffHeader = document.getElementById('git-file-diff-header');
+                const fileDiffCode = document.getElementById('git-file-diff-code');
+
+                if (!fileName || !fullDiffEl || !fileDiffArea) return;
+
+                // Toggle: if already showing this file's diff, go back to full
+                if (!fileDiffArea.classList.contains('hidden') && fileDiffArea.getAttribute('data-current-file') === fileName) {
+                    // Back to full diff
+                    fileDiffArea.classList.add('hidden');
+                    fullDiffEl.classList.remove('hidden');
+                    fileDiffArea.removeAttribute('data-current-file');
+                    fileTags.forEach(t => t.classList.remove('active'));
+                    return;
+                }
+
+                // Extract per-file diff from the stored full diff
+                const fullDiff = decodeURIComponent(escape(atob(encodedDiff)));
+                const fileSection = extractFileDiff(fullDiff, fileName);
+
+                // Highlight active file tag
+                fileTags.forEach(t => t.classList.remove('active'));
+                tag.classList.add('active');
+
+                fullDiffEl.classList.add('hidden');
+                fileDiffArea.classList.remove('hidden');
+                fileDiffArea.setAttribute('data-current-file', fileName);
+
+                // Render header
+                if (fileDiffHeader) {
+                    fileDiffHeader.innerHTML = `📄 ${escapeHtml(fileName)} <span class="git-file-diff-back" title="Volver al diff completo">← Ver diff completo</span>`;
+                }
+
+                // Render the per-file diff
+                if (fileDiffCode) {
+                    const escapedSection = escapeHtml(fileSection);
+                    const highlighted = escapedSection
+                        .replace(/\r\n/g, '\n')
+                        .split('\n')
+                        .map(line => {
+                            if (line.startsWith('+') && !line.startsWith('+++')) {
+                                return `<span class="git-diff-add">${line}</span>`;
+                            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                                return `<span class="git-diff-rem">${line}</span>`;
+                            } else if (line.startsWith('@@')) {
+                                return `<span class="git-diff-hunk">${line}</span>`;
+                            }
+                            return line;
+                        })
+                        .join('\n');
+                    fileDiffCode.innerHTML = highlighted;
+                }
+
+                // Click on "back" text to return to full diff
+                const backLink = fileDiffArea.querySelector('.git-file-diff-back');
+                if (backLink) {
+                    backLink.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        fileDiffArea.classList.add('hidden');
+                        fullDiffEl.classList.remove('hidden');
+                        fileDiffArea.removeAttribute('data-current-file');
+                        fileTags.forEach(t => t.classList.remove('active'));
+                    });
+                }
+            });
+        });
+
+    } catch (e) {
+        console.error('[GIT] Error showing commit detail:', e);
+        content.innerHTML = '<div class="git-empty-state error">Error al cargar el detalle</div>';
+    }
+};
+
+// Count additions/deletions from a diff string
+function countDiffStats(diff) {
+    let additions = 0;
+    let deletions = 0;
+    const normalized = diff.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+    for (const line of lines) {
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+            additions++;
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+            deletions++;
+        }
+    }
+    return { additions, deletions };
+}
+
+// Extract diff for a single file from a full git diff
+function extractFileDiff(fullDiff, fileName) {
+    // Normalize line endings
+    const normalized = fullDiff.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+
+    let sectionStart = -1;
+    let sectionEnd = lines.length;
+
+    // Find the section for this file
+    // git diff format: "diff --git a/<path> b/<path>"
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git ')) {
+            if (sectionStart !== -1) {
+                // End of previous section
+                sectionEnd = i;
+                break;
+            }
+            // Check if this section is for our file
+            // Format: "diff --git a/file.txt b/file.txt" or "diff --git "a/path with spaces" "b/path with spaces""
+            const aIdx = line.indexOf(' a/');
+            const bIdx = line.indexOf(' b/');
+            if (aIdx !== -1 && bIdx !== -1 && bIdx > aIdx) {
+                let aFile = line.substring(aIdx + 3, bIdx).trim();
+                let bFile = line.substring(bIdx + 3).trim();
+                // Strip surrounding quotes
+                aFile = aFile.replace(/^"|"$/g, '');
+                bFile = bFile.replace(/^"|"$/g, '');
+                if (aFile === fileName || bFile === fileName || aFile.endsWith('/' + fileName) || bFile.endsWith('/' + fileName)) {
+                    sectionStart = i;
+                }
+            }
+        }
+    }
+
+    if (sectionStart === -1) {
+        // Try alternative: look for "--- a/file" or "+++ b/file"
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line === `--- a/${fileName}` || line === `+++ b/${fileName}`) {
+                // Walk back to find the "diff --git" header
+                for (let j = i - 1; j >= 0; j--) {
+                    if (lines[j].startsWith('diff --git ')) {
+                        sectionStart = j;
+                        break;
+                    }
+                }
+                if (sectionStart !== -1) break;
+            }
+        }
+    }
+
+    if (sectionStart === -1) {
+        return `No se encontró diff para: ${fileName}`;
+    }
+
+    // Find the end of this section (next "diff --git" or end of file)
+    for (let i = sectionStart + 1; i < lines.length; i++) {
+        if (lines[i].startsWith('diff --git ')) {
+            sectionEnd = i;
+            break;
+        }
+    }
+
+    return lines.slice(sectionStart, sectionEnd).join('\n');
+}
+
+// Handle git checkout confirmation
+window.handleGitCheckout = (hash) => {
+    const overlay = document.getElementById('git-checkout-confirm');
+    const msg = document.getElementById('git-confirm-msg');
+    const cancelBtn = document.getElementById('git-confirm-cancel');
+    const confirmBtn = document.getElementById('git-confirm-checkout');
+
+    if (!overlay) return;
+
+    if (msg) {
+        msg.innerHTML = `Esto hará un <code>git checkout</code> al commit <code>${escapeHtml(hash.substring(0, 7))}</code>. Los cambios sin commitear se guardarán en el stash.`;
+    }
+
+    overlay.classList.remove('hidden');
+
+    // Store hash for confirm
+    overlay.setAttribute('data-checkout-hash', hash);
+
+    // Cancel handler
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            overlay.classList.add('hidden');
+        };
+    }
+
+    // Confirm handler
+    if (confirmBtn) {
+        confirmBtn.onclick = async () => {
+            overlay.classList.add('hidden');
+            const project = getActiveProject();
+            if (!project || !project.folder) return;
+
+            const targetHash = overlay.getAttribute('data-checkout-hash');
+            if (!targetHash) return;
+
+            showGitFeedback('Restaurando commit...', 'info');
+
+            try {
+                const res = await fetch(`${API_BASE}/utils/git-checkout`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath: project.folder, target: targetHash })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showGitFeedback('Commit restaurado exitosamente', 'success');
+                    // Refresh git log
+                    setTimeout(() => loadGitLog(), 500);
+                } else {
+                    showGitFeedback(`Error: ${data.error || 'Error al restaurar'}`, 'error');
+                }
+            } catch (e) {
+                console.error('[GIT] Checkout error:', e);
+                showGitFeedback('Error de conexión al restaurar commit', 'error');
+            }
+        };
+    }
+};
+
+// Reset hard to origin
+window.handleGitResetOrigin = async () => {
+    const project = getActiveProject();
+    if (!project || !project.folder) return;
+
+    // Use checkout confirm overlay for consistency (reuse the existing overlay)
+    const overlay = document.getElementById('git-checkout-confirm');
+    const msgEl = document.getElementById('git-confirm-msg');
+    const cancelBtn = document.getElementById('git-confirm-cancel');
+    const checkoutBtn = document.getElementById('git-confirm-checkout');
+
+    if (!overlay) {
+        // Fallback: browser confirm
+        if (!confirm('⚠️ ¿Estás seguro? Esto hará un reset --hard al origen (origin/master o origin/main). Todos los cambios locales no commiteados se perderán.')) return;
+        return doGitResetOrigin(project);
+    }
+
+    // Configure overlay for reset
+    const icon = overlay.querySelector('.git-confirm-icon');
+    const title = overlay.querySelector('h3');
+    if (icon) icon.textContent = '⚠️';
+    if (title) title.textContent = '¿Resetear al origen?';
+    msgEl.innerHTML = 'Esto hará un <code>git reset --hard origin</code>. <strong style="color:#f85149">Todos los cambios locales sin commitear se perderán permanentemente.</strong>';
+    checkoutBtn.textContent = 'Sí, resetear';
+    checkoutBtn.className = 'git-confirm-checkout-btn danger';
+    overlay.classList.remove('hidden');
+
+    const doReset = async () => {
+        overlay.classList.add('hidden');
+        cleanup();
+        await doGitResetOrigin(project);
+    };
+
+    const cancel = () => {
+        overlay.classList.add('hidden');
+        cleanup();
+    };
+
+    const cleanup = () => {
+        checkoutBtn.removeEventListener('click', doReset);
+        cancelBtn.removeEventListener('click', cancel);
+        // Restore original overlay state
+        if (icon) icon.textContent = '⚠️';
+        if (title) title.textContent = '¿Restaurar a este commit?';
+        msgEl.innerHTML = 'Esto hará un <code>git checkout</code> al commit seleccionado. Los cambios sin commitear se guardarán en el stash.';
+        checkoutBtn.textContent = 'Sí, restaurar';
+        checkoutBtn.className = 'git-confirm-checkout-btn';
+    };
+
+    checkoutBtn.addEventListener('click', doReset);
+    cancelBtn.addEventListener('click', cancel);
+};
+
+async function doGitResetOrigin(project) {
+    showGitFeedback('Reseteando al origen...', 'info');
+
+    try {
+        const res = await fetch(`${API_BASE}/utils/git-reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: project.folder })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showGitFeedback('Reset al origen exitoso', 'success');
+            setTimeout(() => loadGitLog(), 500);
+        } else {
+            showGitFeedback(`Error: ${data.error || 'Error al resetear'}`, 'error');
+        }
+    } catch (e) {
+        console.error('[GIT] Reset error:', e);
+        showGitFeedback('Error de conexión o remoto no disponible', 'error');
+    }
+}
+
+// Initialize search input when DOM is ready
+(function initSearchBar() {
+    const searchInput = document.getElementById('project-search');
+    const dropdown = document.getElementById('search-results-dropdown');
+    if (!searchInput) return;
+    
+    searchInput.addEventListener('input', (e) => {
+        window.searchProjects(e.target.value);
+    });
+    
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            searchInput.value = '';
+            window.searchProjects('');
+        }
+    });
+    
+    // Close dropdown on click outside
+    document.addEventListener('click', (e) => {
+        if (dropdown && searchDropdownVisible) {
+            if (!dropdown.contains(e.target) && e.target !== searchInput) {
+                dropdown.classList.add('hidden');
+                searchDropdownVisible = false;
+                chatList.style.display = '';
+                searchInput.value = '';
+            }
+        }
+    });
+    
+    // Clear search on focus loss
+    searchInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            if (searchDropdownVisible && !dropdown.contains(document.activeElement)) {
+                dropdown.classList.add('hidden');
+                searchDropdownVisible = false;
+                chatList.style.display = '';
+                searchInput.value = '';
+            }
+        }, 200);
+    });
+})();
