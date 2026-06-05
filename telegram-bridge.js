@@ -60,6 +60,10 @@ const AUTHORIZED_USERS = (process.env.TELEGRAM_AUTHORIZED_USERS || '')
 let pendingQueue = [];
 let processingCount = 0;
 
+// ─── Tracking de thinking edits ───
+// Evita "message is not modified" y entity.parse.failed
+const _lastThinkingText = {};
+
 // ─── Helpers ───
 function formatUptime(seconds) {
     if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
@@ -208,13 +212,35 @@ function processWorkerEvent(msg) {
 
         case 'thinking':
             // Worker quiere editar un mensaje de Telegram con el progreso
+            // NOTA: NO usamos parse_mode aquí porque el stderr de Hermes contiene
+            // caracteres que Telegram interpreta como Markdown malformado,
+            // causando 'entity.parse.failed'. Los thinking son temporales —
+            // el resultado final usa sendFinalResponseToTelegram con formato.
             if (msg.chatId && msg.messageId && msg.text) {
+                // Trackear último texto para evitar "message is not modified"
+                const msgKey = `${msg.chatId}:${msg.messageId}`;
+                if (_lastThinkingText[msgKey] === msg.text) return; // mismo texto, skip
+                _lastThinkingText[msgKey] = msg.text;
+
+                // Limpiar _lastThinkingText viejos (más de 50 entradas)
+                const keys = Object.keys(_lastThinkingText);
+                if (keys.length > 50) {
+                    const toDelete = keys.slice(0, keys.length - 50);
+                    for (const k of toDelete) delete _lastThinkingText[k];
+                }
+
                 getBot().api.editMessageText(
                     msg.chatId, msg.messageId,
-                    msg.text,
-                    msg.options || {}
-                ).catch(() => {
-                    // Si falla la edición, no es crítico
+                    msg.text
+                    // SIN parse_mode — evita entity.parse.failed
+                ).catch(err => {
+                    // "message is not modified" es normal cuando el worker re-envía
+                    // el mismo texto de thinking. Ignorar silenciosamente.
+                    if (err && err.message && err.message.includes('message is not modified')) return;
+                    // Otros errores (timeout, flood) — log suave
+                    if (err && err.message && !err.message.includes('ETELEGRAM')) {
+                        console.log(`[BRIDGE] ⚠️ thinking edit: ${err.message.slice(0, 80)}`);
+                    }
                 });
             }
             break;
@@ -264,6 +290,21 @@ function processWorkerEvent(msg) {
             }
             break;
 
+        case 'notification':
+            // Notificación del sistema (agente completó tarea, etc.)
+            // Se envía al owner del bot
+            if (msg.text && ownerChatId) {
+                getBot().api.sendMessage(ownerChatId, msg.text, { parse_mode: 'Markdown' }).catch(e => {
+                    // Si falla Markdown, reintentar sin formato
+                    if (e.message && (e.message.includes('parse') || e.message.includes('entity'))) {
+                        getBot().api.sendMessage(ownerChatId, msg.text).catch(() => {});
+                    } else {
+                        console.log('[BRIDGE] Error notificación:', e.message?.slice(0, 80));
+                    }
+                });
+            }
+            break;
+
         default:
             console.log('[BRIDGE] Evento desconocido del worker:', msg.event);
     }
@@ -291,14 +332,14 @@ function getBot() {
 }
 
 async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorText) {
-    // Safety net: solo filtrar [thinking] residual — NO filtrar 📊 ✅ ⚙️ 📝 📋
+    // ─── Limpiar y formatear la respuesta ───
     if (resultText) {
         resultText = resultText.split('\n')
             .map(l => l.trim())
             .filter(l => {
                 if (!l) return false;
                 if (l.startsWith('[thinking]')) return false;
-                // Filtrar líneas que empiezan con marcadores técnicos residuales
+                // Filtrar líneas técnicas residuales
                 if (l.match(/^\d+ messages?,/) || l.startsWith('Session') ||
                     l.startsWith('Tip:') || l.startsWith('Generated') ||
                     l.startsWith('Running ')) return false;
@@ -306,6 +347,23 @@ async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorT
             })
             .join('\n')
             .trim();
+    }
+
+    // ─── Extraer SOLO el resultado final ───
+    // El skill BOTADMIN devuelve secciones: 📋 ⚙️ 📝 📊
+    // El usuario quiere SOLO el resultado, no todo el proceso.
+    // Tomamos la última sección (📊 ESTADO ACTUAL) o el último párrafo.
+    if (resultText && !errorText) {
+        const sections = resultText.split(/\n(?=📋|⚙️|📝|📊)/);
+        if (sections.length > 1) {
+            // Tomar la última sección (📊 ESTADO ACTUAL) como resumen
+            let finalSection = sections[sections.length - 1].trim();
+            // Si la última sección es muy corta, tomar la penúltima también
+            if (finalSection.length < 50 && sections.length > 2) {
+                finalSection = sections[sections.length - 2].trim() + '\n\n' + finalSection;
+            }
+            resultText = finalSection;
+        }
     }
 
     let finalText;
@@ -322,40 +380,70 @@ async function sendFinalResponseToTelegram(chatId, messageId, resultText, errorT
         }
     }
 
-    // Estrategia 1: editar mensaje existente — parse_mode vacio evita
-    // que Telegram herede el Markdown del mensaje "pensando..." original.
-    // En texto plano, caracteres como _, *, ` no rompen nada.
+    // ─── Escapar caracteres especiales de Telegram Markdown ───
+    // Telegram Markdown usa: _ * ` [ ] ( ) ~ > # + - = | { } . !
+    // Pero Hermes usa **bold** y *italic* que queremos PRESERVAR.
+    // Solo escapamos _ ` [ ] ( ) ~ > # + - = | { } . ! fuera de bloques ** **
+    function escapeTelegram(str) {
+        // Preservar ** ** y * * para bold/italic
+        return str
+            .replace(/_/g, '\\_')
+            .replace(/~/g, '\\~')
+            .replace(/`/g, '\\`');
+    }
+
+    // ─── Estrategia 1: editar mensaje existente con Markdown ───
     try {
-        await getBot().api.editMessageText(chatId, messageId, finalText, { parse_mode: '' });
+        await getBot().api.editMessageText(chatId, messageId, finalText, { parse_mode: 'Markdown' });
         return;
     } catch (e) {
         const errMsg = (e && e.message) || String(e);
-        console.log('[BRIDGE] editMessageText fallo: ' + errMsg.slice(0, 100));
-        // Si falla por longitud o parseo de entidades, intentar recortar
-        if (finalText.length > 4000 || errMsg.includes('too long') || errMsg.includes('entity')) {
+        console.log('[BRIDGE] editMessageText Markdown fallo: ' + errMsg.slice(0, 100));
+        
+        // Si falló por Markdown malformado, reintentar sin parse_mode
+        if (errMsg.includes('can\'t parse') || errMsg.includes('entity')) {
+            try {
+                await getBot().api.editMessageText(chatId, messageId, 
+                    escapeTelegram(finalText), 
+                    { parse_mode: 'Markdown' });
+                return;
+            } catch (e2) {
+                console.log('[BRIDGE] edit escape fallo: ' + ((e2 && e2.message) || '').slice(0, 100));
+            }
+        }
+        
+        // Si falla por longitud, recortar
+        if (finalText.length > 4000 || errMsg.includes('too long')) {
             try {
                 await getBot().api.editMessageText(chatId, messageId,
                     finalText.slice(0, 3950) + '\n\n...',
-                    { parse_mode: '' }
+                    { parse_mode: 'Markdown' }
                 );
                 const rest = finalText.slice(3950);
                 for (let i = 0; i < rest.length; i += 4000) {
-                    await getBot().api.sendMessage(chatId, rest.slice(i, i + 4000));
+                    await getBot().api.sendMessage(chatId, rest.slice(i, i + 4000), { parse_mode: 'Markdown' });
                 }
                 return;
             } catch (e2) {
-                console.log('[BRIDGE] Edit truncado tambien fallo: ' + ((e2 && e2.message) || '').slice(0, 100));
+                console.log('[BRIDGE] Edit truncado fallo: ' + ((e2 && e2.message) || '').slice(0, 100));
             }
         }
     }
-    // Estrategia 2: enviar como mensaje nuevo SIN parse_mode (texto plano)
+    
+    // ─── Estrategia 2: enviar como mensaje nuevo con Markdown ───
     try {
-        await getBot().api.sendMessage(chatId, finalText, { parse_mode: '' });
+        await getBot().api.sendMessage(chatId, finalText, { parse_mode: 'Markdown' });
         return;
     } catch (e) {
-        console.log('[BRIDGE] sendMessage fallo: ' + ((e && e.message) || '').slice(0, 100));
+        console.log('[BRIDGE] sendMessage Markdown fallo: ' + ((e && e.message) || '').slice(0, 100));
+        // Fallback: texto plano escapado
+        try {
+            await getBot().api.sendMessage(chatId, escapeTelegram(finalText), { parse_mode: 'Markdown' });
+            return;
+        } catch {}
     }
-    // Estrategia 3: strip caracteres problematicos como ultimo recurso
+    
+    // ─── Estrategia 3: texto plano como último recurso ───
     try {
         await getBot().api.sendMessage(chatId, finalText.replace(/[*_`]/g, ''));
     } catch (e) {

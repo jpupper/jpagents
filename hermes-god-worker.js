@@ -23,12 +23,13 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import WebSocket from 'ws';
+import { stripAnsi } from './ansi-utils.js';
 
 // ─── Config ───
 const HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
-const JPAGENTS_WS = 'ws://localhost:3001/ws/admin';
+const JPAGENTS_WS = 'ws://localhost:4699/ws/admin';
 const JPAGENTS_DIR = 'D:/Programacion/jpagents';
-const JPAGENTS_API = 'http://localhost:3001/api';
+const JPAGENTS_API = 'http://localhost:4699/api';
 const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 const HISTORY_FILE = path.join(HERMES_HOME, 'god-bot-history.json');
 const SESSION_FILE = path.join(HERMES_HOME, 'god-bot-sessions.json');
@@ -80,7 +81,9 @@ function connectGodWS() {
                 }
                 if (msg.event === 'god:pong') return;
                 if (msg.event === 'god:notification') {
-                    console.log(`[WORKER] 📩 ${msg.message?.slice(0, 100)}`);
+                    console.log(`[WORKER] 📩 Notificación: ${msg.message?.slice(0, 100)}`);
+                    // Forwardear al Telegram bridge para que lo envíe al owner
+                    sendEvent('notification', { text: msg.message });
                     return;
                 }
             } catch (e) {
@@ -218,12 +221,6 @@ async function syncPendingHistory() {
 }
 
 // ─── Streaming de pensamiento ───
-function stripAnsi(str) {
-    return str.replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
-              .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-              .replace(/\r\n/g, '\n')
-              .replace(/\r/g, '\n');
-}
 
 function extractThinkingLines(stderr) {
     const clean = stripAnsi(stderr);
@@ -267,6 +264,14 @@ function formatThinkingText(lines, maxLen = MAX_THINKING_LENGTH) {
 
     const display = [];
     for (const line of lines) {
+        // ─── Log lines del nuevo logger de Hermes ───
+        // Formato: "agent.conversation_loop - INFO [session_id] - message"
+        // Se dividen en chunks y las líneas parciales NO tienen el `[`
+        // por eso filtramos también por " - INFO", " - ERROR", etc.
+        if (line.includes(' - INFO') || line.includes(' - ERROR') || line.includes(' - WARNING')) continue;
+        if (line.match(/^\[\d{8}_\d{6}_[a-f0-9]+\]/)) continue; // session_id standalone
+        
+        // ─── Filtros existentes ───
         if (line.includes('Enabled toolset') || line.includes('Tool unavailable')) continue;
         if (line.includes('Final tool selection') || line.includes('Loaded')) continue;
         if (line.includes('DEBUG') || line.includes('INFO [')) continue;
@@ -334,10 +339,9 @@ function formatThinkingText(lines, maxLen = MAX_THINKING_LENGTH) {
     const recent = display.slice(-8);
     if (recent.length === 0) return null;
 
-    let text = '💭 *Procesando...*\n';
+    let text = '💭 Procesando...\n';
     for (const item of recent) {
-        const escaped = item.replace(/_/g, '\\_').replace(/\*/g, '\\*').replace(/`/g, '\\`');
-        text += escaped + '\n';
+        text += item + '\n';
     }
     if (display.length > 8) {
         text += '\n_... y ' + (display.length - 8) + ' pasos más_';
@@ -435,9 +439,9 @@ function askHermesWithThinking(message, statusMsgChatId, statusMsgId, chatId) {
         let proc;
         try {
             proc = spawn(HERMES_PATH, args, {
-                cwd: JPAGENTS_DIR, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
-                env: { ...process.env, HERMES_WORKDIR: JPAGENTS_DIR }, timeout: 3600000
-            });
+                    cwd: JPAGENTS_DIR, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+                    env: { ...process.env, HERMES_WORKDIR: JPAGENTS_DIR, PYTHONIOENCODING: 'utf-8' }, timeout: 3600000
+                });
         } catch (e) {
             resolve({ error: `Error Hermes: ${e.message}` });
             return;
@@ -951,6 +955,9 @@ async function processMessage(payload) {
                     executions = execResult.executions;
                     console.log(`[WORKER] ⚙️ ${executions.length} comandos ejecutados de la respuesta`);
                 }
+            } else {
+                const errText = await res.text().catch(() => 'sin cuerpo');
+                console.log(`[WORKER] ⚠️ execute-commands HTTP ${res.status}: ${errText.slice(0, 200)}`);
             }
         } catch (e) {
             console.log(`[WORKER] ⚠️ Error ejecutando comandos admin: ${e.message}`);

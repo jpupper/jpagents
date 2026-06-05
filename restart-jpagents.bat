@@ -29,8 +29,8 @@ for %%s in (server.js main.js mcp_server concurrently vite) do (
 if !node_killed! equ 0 echo    [!] No se encontro el servidor corriendo
 
 :: --- 2) Clean JP Agents ports ---
-echo [2/4] Limpiando puertos (3000, 3001)...
-for %%p in (3000 3001) do (
+echo [2/4] Limpiando puertos (4699)...
+for %%p in (4699) do (
     for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%%p " ^| findstr LISTENING 2^>nul') do (
         taskkill /f /pid %%a >nul 2>&1
         echo    [-] Puerto %%p liberado

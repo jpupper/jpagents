@@ -431,8 +431,7 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/exampl
 import { CSS2DRenderer, CSS2DObject } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/renderers/CSS2DRenderer.js';
 
 // ─── CONFIG ───
-const API_HOST = window.location.hostname;
-const API = `http://${API_HOST}:3001/api`;
+const API = 'http://localhost:4699/api';
 let agents = [];
 let allAgentsWithData = [];
 let mageGroup = new THREE.Group();
@@ -2898,9 +2897,12 @@ window.addEventListener('beforeunload', () => bc.close());
 
 function connectWebSocket() {
   try {
-    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws/hermes`);
+    const ws = new WebSocket(`ws://localhost:4699/ws/hermes`);
     ws.onopen = () => {
       console.log('[AGENTS-ROOM] Conectado a WebSocket Server de Sincronización.');
+      // Recuperar estado al reconectar
+      refreshAgents();
+      fetchProjectData();
     };
     ws.onmessage = (event) => {
       try {
@@ -2925,7 +2927,17 @@ function connectWebSocket() {
     console.error('[AGENTS-ROOM] Error conectando WebSocket:', e);
   }
 }
+// --- START ---
+// Refrescar texto del loading
+const loadingEl = document.getElementById('loading');
+if (loadingEl) loadingEl.textContent = '✦ CONJURING ✦';
+
 connectWebSocket();
+
+// Carga inicial y arranque del loop de render
+refreshAgents();
+fetchProjectData();
+animate();
 
 // ─── CLICK RAYCASTER ───
 renderer.domElement.addEventListener('click', (event) => {

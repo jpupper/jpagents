@@ -15,17 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import sqlite3 from 'sqlite3';
 import os from 'os';
-
-function stripAnsi(text) {
-    if (typeof text !== 'string') return text;
-    return text
-        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
-        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
-        .replace(/\x1b[\[\(].{0,3}/g, '')
-        .replace(/\x1b./g, '')
-        .replace(/\r\n/g, '\n');
-}
+import { stripAnsi } from './ansi-utils.js';
 
 function stripPanelIndentation(lines) {
     let minIndent = Infinity;
@@ -613,7 +603,11 @@ class HermesBridge extends EventEmitter {
         };
 
         this.instances.set(instanceKey, instance);
-        this._broadcastStatus(instanceKey, 'idle');
+        // NO broadcastear 'idle' aquí — el `/api/hermes/start` handler emite
+        // 'hermes:agent:started' con status 'running' justo después.
+        // El broadcast de 'idle' causa una race condition: si llega al frontend
+        // DESPUÉS de que triggerHermesLogic() setea chat.isThinking=true,
+        // el WS handler lo interpreta como "el agente terminó" y lo apaga.
         return this._sanitizeInstance(instance);
     }
 
@@ -702,6 +696,15 @@ class HermesBridge extends EventEmitter {
         instance.status = 'running';
         this._broadcastStatus(instanceKey, 'running');
 
+        // ─── Broadcast hermes:agent:started para que el frontend sepa que arrancó ───
+        this.broadcastToAll('hermes:agent:started', {
+            instanceKey,
+            projectId,
+            chatId,
+            status: 'running',
+            name: instance.name || chatId
+        });
+
         try {
             const result = await this._runHermesQuery(instanceKey, projectId, instance.workdir, message, instance.model);
 
@@ -748,55 +751,69 @@ class HermesBridge extends EventEmitter {
                 console.log('[HERMES-BRIDGE] No se pudo extraer session ID de stdout/stderr');
             }
 
-            // ─── Si hay error, devolver objeto de error ───
+            // ─── Si hay error, devolver objeto de error (también notificamos) ───
             if (result.exitCode !== 0) {
-                return {
+                const errorResult = {
                     text: `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`,
                     usage: tokenUsage,
                     sessionId
                 };
+                this._emitAgentComplete(instanceKey, projectId, instance, errorResult.text, tokenUsage);
+                return errorResult;
             }
 
-            // ─── Path 1: Intentar extraer de state.db ───
+            // ─── Resolver respuesta por prioridad: state.db → stdout → raw → fallback ───
+            let finalText = null;
+
+            // Path 1: Intentar extraer de state.db
             if (sessionId) {
                 try {
                     const cleanContent = await getLastAssistantMessage(sessionId);
                     if (cleanContent) {
                         console.log('[HERMES-BRIDGE] ✅ Respuesta obtenida de state.db (' + cleanContent.length + ' chars)');
-                        return { text: cleanContent, usage: tokenUsage, sessionId };
+                        finalText = cleanContent;
+                    } else {
+                        console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
                     }
-                    console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
                 } catch (dbErr) {
                     console.warn('[HERMES-BRIDGE] Error leyendo state.db, fallback a stdout:', dbErr.message);
                 }
             }
 
-            // ─── Path 2: Extraer de stdout ───
-            try {
-                const parsed = extractCleanResponseFromStdout(result.stdout || '');
-                if (parsed) {
-                    console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
-                    return { text: parsed, usage: tokenUsage, sessionId };
+            // Path 2: Extraer de stdout
+            if (!finalText) {
+                try {
+                    const parsed = extractCleanResponseFromStdout(result.stdout || '');
+                    if (parsed) {
+                        console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
+                        finalText = parsed;
+                    } else {
+                        console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, usando stdout raw');
+                    }
+                } catch (parseErr) {
+                    console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
                 }
-                console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, usando stdout raw');
-            } catch (parseErr) {
-                console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
             }
 
-        // ─── Path 3: Raw stdout como último recurso ───
-        const raw = result.stdout || '';
-        if (raw.trim()) {
-            console.log('[HERMES-BRIDGE] ⚠️  Usando stdout raw (' + raw.length + ' chars)');
-            return { text: raw.trim(), usage: tokenUsage, sessionId };
-        }
+            // Path 3: Raw stdout
+            if (!finalText) {
+                const raw = result.stdout || '';
+                if (raw.trim()) {
+                    console.log('[HERMES-BRIDGE] ⚠️  Usando stdout raw (' + raw.length + ' chars)');
+                    finalText = raw.trim();
+                }
+            }
 
-        // ─── Path 4: Nada disponible ───
-        console.warn('[HERMES-BRIDGE] ❌ Sin respuesta disponible (stdout vacío, sin session en DB). stderr length:', (result.stderr || '').length);
-        return {
-            text: '(El agente completó pero no se pudo extraer la respuesta — revisa la consola del servidor para ver el output crudo)',
-            usage: tokenUsage,
-            sessionId
-        };
+            // Path 4: Fallback
+            if (!finalText) {
+                console.warn('[HERMES-BRIDGE] ❌ Sin respuesta disponible (stdout vacío, sin session en DB). stderr length:', (result.stderr || '').length);
+                finalText = '(El agente completó pero no se pudo extraer la respuesta — revisa la consola del servidor para ver el output crudo)';
+            }
+
+            // ─── EMITIR evento de completación para TODOS los agentes ───
+            this._emitAgentComplete(instanceKey, projectId, instance, finalText, tokenUsage);
+
+            return { text: finalText, usage: tokenUsage, sessionId };
         } catch (runErr) {
             // BUGFIX: Si _runHermesQuery lanza error, NO dejar status colgado en 'running'
             // Pero si la instancia fue detenida explícitamente, no sobrescribir 'stopped'
@@ -808,6 +825,43 @@ class HermesBridge extends EventEmitter {
                 this._broadcastStatus(instanceKey, 'error');
             }
             throw runErr;
+        }
+    }
+
+    /**
+     * Emite evento 'agent:complete' cuando cualquier agente termina.
+     * Esto permite que server.js reciba la notificación y la forwardee a Telegram.
+     */
+    _emitAgentComplete(instanceKey, projectId, instance, responseText, tokenUsage) {
+        try {
+            const [pid, cid] = instanceKey.split(':');
+            const agentName = instance?.name || cid?.slice(0, 8) || 'Desconocido';
+            this.emit('agent:complete', {
+                projectId: projectId || pid,
+                chatId: cid,
+                name: agentName,
+                responseText,
+                tokenUsage
+            });
+
+            // ─── Broadcast WS: notificar a TODOS los clientes que el agente completó ───
+            // Antes solo se emitía internamente (EventEmitter), pero los WS clients
+            // del frontend no recibían este evento crucial para el summary.
+            this.broadcastToAll('hermes:agent:completed', {
+                instanceKey,
+                projectId: projectId || pid,
+                chatId: cid,
+                status: 'idle',
+                name: agentName,
+                responsePreview: (responseText || '').slice(0, 200),
+                tokenUsage: tokenUsage ? {
+                    total_tokens: tokenUsage.total_tokens,
+                    estimated_cost_usd: tokenUsage.estimated_cost_usd
+                } : null
+            });
+        } catch (e) {
+            // Non-critical — no interrumpir sendMessage
+            console.warn('[HERMES-BRIDGE] Error emitiendo agent:complete:', e.message);
         }
     }
 
@@ -949,6 +1003,24 @@ class HermesBridge extends EventEmitter {
     registerWSClient(ws) {
         this._wsClients.add(ws);
         ws.on('close', () => this._wsClients.delete(ws));
+
+        // ─── RESYNC: Re-enviar estado actual de TODAS las instancias al cliente recién conectado ───
+        // Esto evita que tras una reconexion WS, el frontend muestre todos los agentes como idle
+        // cuando en realidad hay agentes corriendo (bug de "lucecita naranja").
+        try {
+            for (const [instanceKey, instance] of this.instances) {
+                const statusMsg = JSON.stringify({
+                    event: 'hermes:status',
+                    instanceKey,
+                    status: instance.status,
+                    timestamp: Date.now(),
+                    resync: true // flag para que el frontend sepa que es un resync
+                });
+                try { ws.send(statusMsg); } catch {}
+            }
+        } catch (resyncErr) {
+            console.warn('[HERMES-BRIDGE] Error en resync de WS:', resyncErr.message);
+        }
     }
 
     _broadcastLog(instanceKey, projectId, type, text) {

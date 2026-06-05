@@ -7,6 +7,9 @@
     "dev": "concurrently --restart-tries 3 --restart-after 2000 \"npm run server\" \"npm run mcp-server\" \"vite\"",
     "server": "node server.js",
     "mcp-server": "node mcp_server.js",
+    "telegram-bridge": "node telegram-bridge.js",
+    "god-worker": "node hermes-god-worker.js",
+    "hot-reload": "node hot-reload.js",
     "build": "vite build",
     "preview": "vite preview"
   },

@@ -1,6 +1,8 @@
 import './style.css'
 import { marked } from 'marked'
 import { initMatrix } from './matrix.js'
+import { stripAnsi } from './ansi-utils.js'
+import { createChat, isAgentActive, getAgentStatusLabel, getAgentStatusClass } from './agent-utils.js'
 
 let activeMatrix = null;
 
@@ -8,7 +10,7 @@ let activeMatrix = null;
 (function () {
     const API_BASE = (() => {
         const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-        return `http://${host}:3001/api`;
+        return `http://${host}:4699/api`;
     })();
     const originalConsole = {
         log: console.log,
@@ -106,23 +108,7 @@ marked.setOptions({
 
 // ── ANSI Escape Code Stripper (comprehensive) ──
 // Hermes emite secuencias ANSI (colores, cursor, erase, scroll) que se ven como basura en HTML.
-function stripAnsi(text) {
-    if (typeof text !== 'string') return text;
-    // Order matters: strip OSC first (they contain [ chars that could confuse CSI)
-    return text
-        // OSC sequences: ESC ] <n> ; <text> BEL/ST
-        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-        // Other escape sequences (APC, SOS, etc.)
-        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
-        // CSI sequences: ESC [ <params> <final> — SGR, cursor, erase, scroll, etc.
-        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
-        // Remaining stray escape chars
-        .replace(/\x1b[\[\(].{0,3}/g, '')
-        .replace(/\x1b./g, '')
-        // Carriage returns
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n');
-}
+// Ahora importado desde ansi-utils.js
 window.stripAnsi = stripAnsi;
 
 // ── ANSI to HTML Converter ──
@@ -199,7 +185,7 @@ window.ansiToHtml = ansiToHtml;
 
 const API_BASE = (() => {
     const host = window.location.hostname;
-    const port = 3001; // Backend siempre en 3001
+    const port = 4699; // Backend siempre en 4699
     return `http://${host}:${port}/api`;
 })();
 window.API_BASE = API_BASE;
@@ -294,7 +280,18 @@ class MCPClient {
             console.log("[MCP-CLIENT] Connecting to:", `${this.baseUrl}/sse`);
             this.eventSource = new EventSource(`${this.baseUrl}/sse`);
 
+            // Timeout: si después de 5s no se conectó, resolver igual (sin MCP)
+            const timeout = setTimeout(() => {
+                if (!this._mcpConnected) {
+                    console.warn("[MCP-CLIENT] Timeout conectando a MCP server — modo sin MCP.");
+                    this._mcpWarned = true;
+                    resolve(false);
+                }
+            }, 5000);
+
             this.eventSource.onopen = () => {
+                this._mcpConnected = true;
+                clearTimeout(timeout);
                 this.log('connect', 'received', 'SSE connection opened');
             };
 
@@ -318,13 +315,20 @@ class MCPClient {
             };
 
             this.eventSource.onerror = (error) => {
-                console.error("[MCP-CLIENT] SSE Error:", error);
+                // BUGFIX: El EventSource reconecta automáticamente cada ~3-5s cuando
+                // el MCP server no está corriendo. El "error" con isTrusted=true es normal
+                // y no hay que loguearlo como error del frontend cada vez.
+                // Solo mostrar warning la primera vez.
+                if (!this._mcpWarned) {
+                    console.warn("[MCP-CLIENT] MCP Server no disponible en", this.baseUrl, "- conectá el MCP server para usar herramientas.");
+                    this._mcpWarned = true;
+                }
                 const dot = document.getElementById('mcp-status-dot');
                 if (dot) {
                     dot.classList.remove('live');
                     dot.classList.add('dead');
                 }
-                reject(error);
+                // No reject para evitar que el error se propague cada 5s
             };
         });
     }
@@ -430,7 +434,9 @@ class MCPClient {
 }
 
 const mcpClient = new MCPClient('http://127.0.0.1:2998');
-mcpClient.connect().catch(e => console.error("MCP Connection failed:", e));
+mcpClient.connect().then(ok => {
+    if (ok) console.log("[MCP-CLIENT] ✅ Conectado a MCP Server");
+});
 
 // Helper for logging API errors with auto-retry for transient failures
 
@@ -1177,7 +1183,7 @@ async function init() {
     // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
     function connectGlobalWS() {
         const wsHost = window.location.hostname;
-        const wsPort = 3001;
+        const wsPort = 4699;
         try {
             const sysWs = new WebSocket(`ws://${wsHost}:${wsPort}/ws/hermes`);
             syncWs = sysWs;
@@ -1225,7 +1231,51 @@ async function init() {
                         }
                     } else if (data.event === 'hermes:status' || data.event === 'hermes:agent:started' || data.event === 'hermes:agent:completed' || data.event === 'hermes:agent:stopped') {
                         // ─── Evento WS: estado de agente Hermes cambió ───
-                        console.log(`[WS-HERMES] Evento ${data.event}: ${data.instanceKey} → ${data.status || 'N/A'}`);
+                        console.log(`[WS-HERMES] Evento ${data.event}${data.resync?' (RESYNC)':''}: ${data.instanceKey} → ${data.status || 'N/A'}`);
+
+                        // BUGFIX: Actualizar chat.isThinking según el estado real del bridge
+                        // El bridge es la FUENTE DE VERDAD. Siempre actualizar isThinking
+                        // sin importar el valor actual (para que resync funcione correctamente).
+                        if (data.instanceKey && data.instanceKey !== '*') {
+                            const [wsProjId, wsChatId] = data.instanceKey.split(':');
+                            if (wsProjId && wsChatId) {
+                                for (const proj of state.projects) {
+                                    if (proj.id === wsProjId || proj.id === `proj-${wsProjId}`) {
+                                        const chat = proj.chats?.find(c => c.id === wsChatId);
+                                        if (chat) {
+                                            const isRunning = data.status === 'running' || data.status === 'starting';
+                                            const isStopped = data.status === 'stopped' || data.status === 'idle' || data.status === 'error' || data.status === 'off';
+                                            if (isRunning) {
+                                                // Siempre marcar como pensando si el bridge dice running
+                                                if (!chat.isThinking) {
+                                                    updateThinking(chat, true, 'Procesando...', 'Hermes trabajando');
+                                                } else {
+                                                    // Actualizar subtext aunque ya esté pensando (resync)
+                                                    chat.thinkingStatus = 'Procesando...';
+                                                    chat.thinkingSubtext = 'Hermes trabajando (resync)';
+                                                }
+                                            } else if (isStopped && chat.isThinking) {
+                                                // 🐛 BUGFIX: Resync 'idle' NO debe overridear el estado local
+                                                // Cuando el frontend arranca un agente via triggerHermesLogic(),
+                                                // setea chat.isThinking=true ANTES de conectar el WS.
+                                                // Al conectarse, el bridge hace resync y manda 'idle' (status inicial)
+                                                // porque el bridge aún no recibió el mensaje.
+                                                // Ese 'idle' de resync NO debe borrar el flag de pensando
+                                                // porque el agente YA arrancó del lado del frontend.
+                                                if (data.resync) {
+                                                    console.log(`[WS-HERMES] Resync 'idle' ignorado para ${data.instanceKey} — agente marcado como activo localmente`);
+                                                } else {
+                                                    updateThinking(chat, false);
+                                                }
+                                            }
+                                            // Si el bridge dice idle/stopped y isThinking es false → no hacer nada (correcto)
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
                         updateAgentBadge();
                         refreshConsoleUI();
                         // Refrescar panel Hermes si está abierto
@@ -1849,7 +1899,7 @@ window.addEventListener('touchstart', claimMaster);
 function isTabBusy() {
     if (isSaving) return true;
     if (state.adminIsThinking) return true;
-    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => c.isThinking || c.isRunning || c.isStreaming))) {
+    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => isAgentActive(c)))) {
         return true;
     }
     return false;
@@ -2672,7 +2722,7 @@ async function checkSecondAgentHealth() {
 
 function renderProjectList() {
     chatList.innerHTML = state.projects.map((p, idx) => {
-        const isThinking = p.chats && p.chats.some(c => c.isThinking);
+        const isThinking = p.chats && p.chats.some(c => isAgentActive(c));
         const corruptedClass = p.isCorrupted ? 'corrupted' : '';
         const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
         const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
@@ -2772,7 +2822,7 @@ function renderTabs() {
                  ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
                  onclick="window.switchTab('${chat.id}')">
                 <span>🤖 ${escapeHtml(chat.name)}</span>
-                <div class="dot ${chat.isThinking ? 'busy' : ''}"></div>
+                <div class="dot ${isAgentActive(chat) ? 'busy' : ''}"></div>
                 <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
             </div>
         `;
@@ -3530,17 +3580,11 @@ window.addChat = async () => {
         .filter(n => !isNaN(n));
     const nextNum = agentNumbers.length > 0 ? Math.max(...agentNumbers) + 1 : 1;
 
-    const newChat = {
-        id: 'chat-' + generateId(),
+    const newChat = createChat(p, {
         name: 'Agente ' + nextNum,
-        messages: [],
-        isThinking: false,
-        mode: 'auto',
-        lastProgress: Date.now(),
-        isStopped: false,
-        useHermes: true, // Por defecto crea agente Hermes
-        skills: [...(p.skills || [])] // Inherit project skills
-    };
+        useHermes: true,
+        skills: p.skills ? [...p.skills] : undefined
+    });
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
     renderTabs();
@@ -4239,7 +4283,15 @@ async function improvePrompt(targetElementId, e) {
         let apiKey = null;
         let baseUrl = null;
         
-        if (targetElementId === 'chat-input') {
+        // BUGFIX: Usar el SECOND AGENT (Ollama local) para mejorar prompts,
+        // no el modelo del chat principal. El second agent es más rápido
+        // y está diseñado para tareas auxiliares como esta.
+        if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
+            selectedModel = state.secondAgentConfig.model;
+            // Second agent siempre usa Ollama local
+            apiKey = null;
+            baseUrl = null;
+        } else if (targetElementId === 'chat-input') {
             const chat = getActiveChat();
             const project = getActiveProject();
             const agentModelSelect = document.getElementById('agent-model-select');
@@ -5412,12 +5464,23 @@ ESTADO ACTUAL DE LA RED DE AGENTES:
 ${agentsTable}
 
 INSTRUCCIONES ADICIONALES:
+- **DELEGACIÓN ASINCRÓNICA**: Ahora cuando usás [@Agente: "instrucción"], el sistema NO espera la respuesta. Delega la tarea en background y te responde INMEDIATAMENTE. Recibirás el resultado automáticamente cuando el agente termine.
 - Si un agente está "OCIOSO", evalúa su último mensaje. Si ha terminado exitosamente, revisa si el objetivo general del usuario se ha cumplido.
 - NO des por finalizada la tarea global hasta que TODOS los subagentes asignados hayan completado sus partes exitosamente. Si alguno falló o está atascado, envíale instrucciones correctivas con [@Agente: "Tu instrucción..."].
 - Si el usuario pide algo complejo, puedes encadenar comandos: [CREATE_PROJECT] [CREATE_AGENT] [@Agente: "Instrucción"] todo en una sola respuesta.
-- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro.
+- No esperes a que el usuario te diga "ahora dale la orden", hazlo tú mismo si el objetivo está claro. Pero recordá que las delegaciones son ASINCRÓNICAS — respondé inmediatamente después de delegar, no esperes resultados.
 - **ARRIBA TENÉS LA TABLA COMPLETA DE AGENTES con su estado actualizado.** No necesitas pedir el status porque ya lo tenés acá en cada llamada.
-- Cuando un agente termine una tarea, el sistema te notificará automáticamente con un mensaje como: ✅ AGENTE "Nombre" DEL PROYECTO "Proyecto" terminó el objetivo: ... Si el objetivo general del usuario se cumplió, informalo. Si no, podés enviar nuevas instrucciones.` ;
+- Cuando un agente termine una tarea, el sistema te notificará automáticamente con un mensaje como: ✅ *Delegación Completada* — 🤖 **Nombre** (Proyecto). Si el objetivo general del usuario se cumplió, informalo. Si no, podés enviar nuevas instrucciones.
+- **USO DE LA API**: Podés llamar a las APIs de JP Agents directamente usando el formato [API: METHOD /endpoint {body}] en tu respuesta. El sistema ejecutará la llamada y te devolverá el resultado.
+  Ejemplos:
+  - [API: GET /api/admin/agents] → lista todos los agentes con su estado
+  - [API: POST /api/admin/projects/create {"name":"MiProyecto"}] → crea un proyecto
+  - [API: POST /api/admin/agents/create {"projectId":"MiProyecto","name":"MiAgente"}] → crea un agente
+  - [API: POST /api/admin/agents/create {"projectId":"nombre-del-proyecto","name":"Agente1","model":"deepseek-v4-flash"}] → crear con modelo específico
+  - [API: DELETE /api/admin/agents/projectId/chatId] → eliminar un agente
+- **CREAR PROYECTOS Y AGENTES**: Podés usar los comandos tradicionales [CREATE_PROJECT: nombre], [CREATE_AGENT: proyecto : nombre] o el nuevo formato [API: POST ...]. Ambos funcionan.
+- TIP: Si el proyecto existe, usá el formato [API: POST /api/admin/agents/create {"projectId":"ID_DEL_PROYECTO","name":"NombreAgente"}] — necesitás el projectId que está en la tabla de arriba.
+- Cuando crees un agente, recordá darle una orden con [@NombreAgente: "instrucción"] en la MISMA respuesta. No esperes a la próxima iteración.` ;
     return prompt;
 }
 
@@ -5530,228 +5593,11 @@ async function triggerAdminAgentLogic(retryCount = 0) {
         renderAdminMessages();
         saveData();
 
-        // Parse Dispatches: [DELEGATE:target]...[/DELEGATE] OR [@target: "..."]
-        const robustRegex = /\[DELEGATE:\s*([^\]]+?)\s*\]([\s\S]*?)\[\/DELEGATE\]/gi;
-        const quickRegex = /\[@\s*([^:]+?)\s*:\s*"(.*?)"\s*\]/gi;
-
-        const dispatches = [];
-        let m;
-        while ((m = robustRegex.exec(assistantResponse)) !== null) {
-            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
-        }
-        while ((m = quickRegex.exec(assistantResponse)) !== null) {
-            dispatches.push({ rawTarget: m[1], instruction: m[2].trim() });
-        }
-
-        // --- NEW ADMIN TOOLS ---
-        let anyFailed = false;
-        let failedTargets = [];
-        
-        const cleanStr = (str) => str.replace(/["'“”]/g, '').trim();
-
-        const createProjectRegex = /\[CREATE_PROJECT:\s*(.+?)\s*\]/gi;
-        const createAgentRegex = /\[CREATE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
-        const deleteProjectRegex = /\[DELETE_PROJECT:\s*(.+?)\s*\]/gi;
-        const deleteAgentRegex = /\[DELETE_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
-        const stopAgentRegex = /\[STOP_AGENT:\s*([^:]+?)\s*:\s*(.+?)\s*\]/gi;
-
-        while ((m = createProjectRegex.exec(assistantResponse)) !== null) {
-            const name = cleanStr(m[1]);
-            adminLog(`🛠️ Orquestador creando proyecto: <strong>${name}</strong>`);
-            try {
-                await createNewProject(name);
-            } catch (err) {
-                anyFailed = true;
-                failedTargets.push(`CREATE_PROJECT:${name}`);
-                state.adminMessages.push({ role: 'system', content: `❌ Error al crear proyecto "${name}": ${err.message}` });
-            }
-        }
-
-        while ((m = createAgentRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const aName = cleanStr(m[2]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                adminLog(`🛠️ Orquestador creando agente <strong>${aName}</strong> en proyecto <strong>${project.name}</strong>`);
-                // Implementación rápida de addChat con parámetros
-                const newChat = {
-                    id: 'chat-' + generateId(),
-                    name: aName,
-                    messages: [],
-                    isThinking: false,
-                    mode: 'auto',
-                    lastProgress: Date.now(),
-                    isStopped: false,
-                    model: project.model || modelSelect.value
-                };
-                newChat.isNew = true; // For visual animation
-                project.chats.push(newChat);
-                saveData();
-                renderProjectList();
-                renderTabs();
-                renderAdminMonitor();
-            } else {
-                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para crear el agente.`);
-                anyFailed = true;
-                failedTargets.push(`CREATE_AGENT:${pId}`);
-                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo crear el agente "${aName}" porque el proyecto "${pId}" NO EXISTE. Asegúrate de crear el proyecto primero o usar el nombre exacto de un proyecto existente.` });
-            }
-        }
-
-        while ((m = deleteProjectRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                if (confirm(`⚠️ El Orquestador solicita eliminar el proyecto "${project.name}". ¿Confirmar?`)) {
-                    adminLog(`🗑️ Orquestador eliminando proyecto: <strong>${project.name}</strong>`);
-                    await window.deleteProject(project.id);
-                } else {
-                    adminLog(`🛑 Acción cancelada por el usuario: Eliminar proyecto ${project.name}`);
-                }
-            } else {
-                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para eliminar.`);
-                anyFailed = true;
-                failedTargets.push(`DELETE_PROJECT:${pId}`);
-                state.adminMessages.push({ role: 'system', content: `❌ ERROR de Herramienta: No se pudo eliminar el proyecto "${pId}" porque NO EXISTE.` });
-            }
-        }
-
-        // ─── DELETE_AGENT ───
-        while ((m = deleteAgentRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const aId = cleanStr(m[2]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                const chatIndex = project.chats.findIndex(c => c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase());
-                if (chatIndex >= 0) {
-                    const agentName = project.chats[chatIndex].name || aId;
-                    project.chats.splice(chatIndex, 1);
-                    adminLog(`🗑️ Agente eliminado: <strong>${agentName}</strong> de <strong>${project.name}</strong>`);
-                    saveData();
-                    renderProjectList();
-                    renderTabs();
-                    renderAdminMonitor();
-                } else {
-                    adminLog(`❌ No se encontró el agente <strong>${aId}</strong> en el proyecto <strong>${project.name}</strong>`);
-                    anyFailed = true;
-                    failedTargets.push(`DELETE_AGENT:${pId}:${aId}`);
-                }
-            } else {
-                adminLog(`❌ No se encontró el proyecto <strong>${pId}</strong> para eliminar agente.`);
-                anyFailed = true;
-                failedTargets.push(`DELETE_AGENT:${pId}`);
-            }
-        }
-
-        // ─── STOP_AGENT ───
-        while ((m = stopAgentRegex.exec(assistantResponse)) !== null) {
-            const pId = cleanStr(m[1]);
-            const aId = cleanStr(m[2]);
-            const project = state.projects.find(p => p.id === pId || (p.name || '').toLowerCase() === pId.toLowerCase());
-            if (project) {
-                const chat = project.chats.find(c => c.id === aId || (c.name || '').toLowerCase() === aId.toLowerCase());
-                if (chat) {
-                    chat.isThinking = false;
-                    chat.isRunning = false;
-                    chat.isStopped = true;
-                    // Intentar detener vía API
-                    fetch(`${API_BASE}/admin/agents/${encodeURIComponent(project.id)}/${encodeURIComponent(chat.id)}/stop`, { method: 'POST' })
-                        .catch(() => {});
-                    adminLog(`🛑 Agente detenido: <strong>${chat.name}</strong> en <strong>${project.name}</strong>`);
-                    saveData();
-                    renderAdminMonitor();
-                } else {
-                    anyFailed = true;
-                    failedTargets.push(`STOP_AGENT:${pId}:${aId}`);
-                }
-            } else {
-                anyFailed = true;
-                failedTargets.push(`STOP_AGENT:${pId}`);
-            }
-        }
-        // -----------------------
-
-
-
-        for (const dispatch of dispatches) {
-            let rawTarget = dispatch.rawTarget;
-            const instruction = dispatch.instruction;
-
-            // Limpieza ULTRA-robusta del identificador
-            let targetName = rawTarget.toLowerCase()
-                .replace(/["'“”]/g, '') // Quitar comillas de todo tipo
-                .split('|')[0]         // Si copió toda la línea con pipes, agarrar solo lo primero
-                .split('(')[0]         // Si puso el proyecto en paréntesis, quitarlo
-                .replace(/^(agente|nombre|id|proyecto|name|target|id_unico|destinatario|id \(usar este\)):/i, '')
-                .replace(/^(el agente|el proyecto|agente|proyecto)\s+/i, '')
-                .split('[')[0]         // Quitar posibles [ID: ...] finales si copió la línea entera
-                .trim();
-
-            let found = false;
-            // Primero buscar por ID exacto (prioridad)
-            for (const p of state.projects) {
-                for (const c of p.chats) {
-                    if ((c.id || '').toLowerCase() === targetName) {
-                        c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
-                        state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}**` });
-                        if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) break;
-            }
-
-            // Si no se encontró por ID, buscar por nombre o proyecto de forma flexible
-            if (!found && targetName) {
-                for (const p of state.projects) {
-                    for (const c of p.chats) {
-                        const agentNameLower = (c.name || '').toLowerCase();
-                        const projectNameLower = (p.name || '').toLowerCase();
-                        const compositeName = `${agentNameLower} (${projectNameLower})`.toLowerCase();
-
-                        // Coincidencias ultra-flexibles
-                        const isMatch =
-                            agentNameLower === targetName ||
-                            projectNameLower === targetName ||
-                            compositeName === targetName ||
-                            targetName === agentNameLower.replace(/\s+/g, '') ||
-                            targetName === projectNameLower.replace(/\s+/g, '') ||
-                            agentNameLower.includes(targetName) ||
-                            projectNameLower.includes(targetName) ||
-                            targetName.includes(agentNameLower);
-
-                        if (isMatch) {
-                            c.messages.push({ role: 'user', content: `🚨 INSTRUCCIÓN DEL ADMINISTRADOR: ${instruction}` });
-                            state.adminMessages.push({ role: 'system', content: `🎯 Tarea enviada a **${c.name}** en **${p.name}** (vía coincidencia de nombre)` });
-                            if (!c.isThinking) triggerAgentLogic(p, c, 'admin');
-                            found = true;
-                        }
-                    }
-                }
-            }
-            if (!found) {
-                const systemCommands = ['create_project', 'create_agent', 'delete_project'];
-                if (systemCommands.includes(targetName)) {
-                    state.adminMessages.push({ role: 'system', content: `❌ ERROR: No puedes usar [@${rawTarget}: ...] para comandos de sistema. Debes usar el formato directo: [${targetName.toUpperCase()}: Parámetros]` });
-                } else {
-                    state.adminMessages.push({ role: 'system', content: `❌ No se pudo encontrar al agente: **${rawTarget}**` });
-                }
-                anyFailed = true;
-                failedTargets.push(rawTarget);
-            }
-        }
-
-        if (anyFailed) {
-            const agentList = state.projects.flatMap(p => p.chats.map(c => `- ${c.name} (Proyecto: ${p.name}) [ID: ${c.id}]`)).join('\n');
-            const projectList = state.projects.map(p => `- ${p.name} [ID: ${p.id}]`).join('\n');
-            const feedback = `⚠️ Algunas acciones del Orquestador fallaron: [${failedTargets.join(', ')}]. \n\nPROYECTOS:\n${projectList}\n\nAGENTES:\n${agentList}\n\nCorregí manualmente o pedile al Orquestador que lo intente de nuevo con los datos correctos.`;
-
-            state.adminMessages.push({ role: 'system', content: feedback });
-            renderAdminMessages();
-            saveData();
-        }
-
+        // ─── Los comandos (CREATE_PROJECT, CREATE_AGENT, @AgentName, etc.)
+        // YA fueron ejecutados por el servidor en executeAdminCommands().
+        // El servidor también emite broadcasts WebSocket (sync:stateUpdated)
+        // para que la UI se entere de los cambios.
+        // Acá solo mostramos un resumen de lo que se ejecutó y refrescamos UI.
         renderAdminMessages();
         state.adminIsThinking = false;
         if (stopAdminBtn) stopAdminBtn.classList.add('hidden');
@@ -5787,9 +5633,9 @@ function renderAdminMonitor() {
     state.projects.forEach(p => {
         p.chats.forEach(c => {
             const lastTime = new Date(c.lastProgress || Date.now()).toLocaleTimeString();
-            const statusClass = c.isThinking ? 'busy' : 'idle';
-            const statusText = c.isThinking ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
-            const stopBtnDisabled = !c.isThinking ? 'disabled' : '';
+            const statusClass = isAgentActive(c) ? 'busy' : 'idle';
+            const statusText = isAgentActive(c) ? (c.thinkingStatus || 'Pensando...') : 'Ocioso';
+            const stopBtnDisabled = !isAgentActive(c) ? 'disabled' : '';
 
             html += `
                 <tr>
@@ -5827,13 +5673,24 @@ function updateAgentBadge() {
         .then(r => r.json())
         .then(data => {
             const agents = data.agents || [];
-            // Contar agentes 'vivos': thinking, running o idle (ejecutándose)
-            const running = agents.filter(a => a.status === 'thinking' || a.status === 'running' || a.status === 'idle').length;
+            // Contar SOLO agentes que están EJECUTÁNDOSE (running/thinking), NO idle
+            // "idle" es el estado por defecto cuando un agente existe pero no está procesando
+            const running = agents.filter(a => a.status === 'thinking' || a.status === 'running').length;
             badge.textContent = running;
-            badge.style.display = running > 0 ? 'inline-flex' : 'none';
+            // Siempre mostrar el badge — si es 0, mostrar 0 en gris oscuro
+            badge.style.display = 'inline-flex';
+            if (running === 0) {
+                badge.style.background = '#2a2a2a';
+                badge.style.color = '#666';
+                badge.style.opacity = '0.6';
+            } else {
+                badge.style.background = 'var(--primary-color)';
+                badge.style.color = '#fff';
+                badge.style.opacity = '1';
+            }
         })
         .catch(() => {
-            // Fallback: contar desde estado local
+            // Fallback: contar desde estado local — SOLO thinking
             let running = 0;
             for (const p of state.projects) {
                 for (const c of p.chats) {
@@ -5841,7 +5698,16 @@ function updateAgentBadge() {
                 }
             }
             badge.textContent = running;
-            badge.style.display = running > 0 ? 'inline-flex' : 'none';
+            badge.style.display = 'inline-flex';
+            if (running === 0) {
+                badge.style.background = '#2a2a2a';
+                badge.style.color = '#666';
+                badge.style.opacity = '0.6';
+            } else {
+                badge.style.background = 'var(--primary-color)';
+                badge.style.color = '#fff';
+                badge.style.opacity = '1';
+            }
         });
 }
 
@@ -7118,10 +6984,7 @@ function setupEventListeners() {
     const agentsRoomBtn = document.getElementById('agents-room-btn');
     if (agentsRoomBtn) {
         agentsRoomBtn.onclick = () => {
-            const isStaticPath = window.location.pathname.startsWith('/static/');
-            const url = isStaticPath 
-                ? `${window.location.origin}/static/agents-room.html?_=${Date.now()}`
-                : `${window.location.origin}/agents-room.html?_=${Date.now()}`;
+            const url = `${window.location.origin}/static/agents-room.html?_=${Date.now()}`;
             window.open(url, '_blank');
         };
     }
@@ -8542,7 +8405,7 @@ init();
 // HERMES CONTROL PANEL MODULE
 // ──────────────────────────────────────────────
 (function() {
-    const API = window.API_BASE || 'http://localhost:3001/api';
+    const API = window.API_BASE || 'http://localhost:4699/api';
     const panelBtn = document.getElementById('hermes-panel-btn');
     const panelModal = document.getElementById('hermes-panel-modal');
     const panelClose = document.getElementById('hermes-panel-close');
@@ -8560,7 +8423,7 @@ init();
         if (ws && ws.readyState === WebSocket.OPEN) return;
         const wsHost = window.location.hostname;
         try {
-            ws = new WebSocket(`ws://${wsHost}:3001/ws/hermes`);
+            ws = new WebSocket(`ws://${wsHost}:4699/ws/hermes`);
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
@@ -8593,6 +8456,31 @@ init();
                         console.log('[SYSTEM] Recibido evento de reinicio:', data.reason);
                         // Refresh console to show restart event
                         setTimeout(() => refreshConsoleUI(), 500);
+                    }
+                    if (data.event === 'hermes:admin:delegation-complete') {
+                        // Una delegación asincrónica terminó — mostrar en admin chat
+                        console.log(`[DELEGATION] ✅ ${data.agentName} completó tarea`);
+                        if (typeof renderAdminMessages === 'function') {
+                            const icon = data.status === 'completed' ? '✅' : '❌';
+                            state.adminMessages.push({
+                                role: 'system',
+                                content: `${icon} *Delegación Completada* — 🤖 **${data.agentName}** (${data.projectName})\n📋 ${data.task}\n\n📝 Resultado:\n${(data.result || '').slice(0, 1000)}`,
+                                timestamp: Date.now()
+                            });
+                            renderAdminMessages();
+                            saveData();
+                        }
+                        // Re-trigger admin agent para que procese el resultado
+                        if (!state.adminIsThinking && !state.adminIsStopped) {
+                            state.adminNeedsRecheck = true;
+                            setTimeout(() => {
+                                if (state.adminNeedsRecheck && !state.adminIsThinking) {
+                                    triggerAdminAgentLogic();
+                                }
+                            }, 1000);
+                        } else {
+                            state.adminNeedsRecheck = true;
+                        }
                     }
                 } catch {}
             };
@@ -8744,7 +8632,7 @@ init();
             instancesContainer.innerHTML = `
                 <p class="empty-state" style="text-align: center; padding: 20px; color: #ef4444;">
                     ❌ Error de conexión<br>
-                    <span style="font-size: 0.8rem;">Backend en ${window.location.hostname}:3001</span>
+                    <span style="font-size: 0.8rem;">Backend en ${window.location.hostname}:4699</span>
                 </p>
             `;
         }
@@ -8809,7 +8697,7 @@ init();
 // HERMES TAB MODULE — Pestaña interactiva de Hermes
 // ──────────────────────────────────────────────
 (function() {
-    const API = window.API_BASE || 'http://localhost:3001/api';
+    const API = window.API_BASE || 'http://localhost:4699/api';
     const hermesOutput = document.getElementById('hermes-output');
     const hermesInput = document.getElementById('hermes-input');
     const hermesInputArea = document.getElementById('hermes-input-area');
@@ -9127,7 +9015,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     // Conectar WebSocket para recibir progreso en vivo
     let progressWs = null;
     try {
-        progressWs = new WebSocket(`ws://${window.location.hostname}:3001/ws/hermes`);
+        progressWs = new WebSocket(`ws://${window.location.hostname}:4699/ws/hermes`);
         // Throttle para evitar re-renders excesivos durante progreso rápido
         let progressRenderTimer = null;
         progressWs.onmessage = (event) => {
@@ -9648,7 +9536,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
 // LISTA DE AGENTES — Tabla limpia
 // ──────────────────────────────────────────────
 (function() {
-    const API = window.API_BASE || 'http://localhost:3001/api';
+    const API = window.API_BASE || 'http://localhost:4699/api';
     const tbody = document.getElementById('monitor-tbody');
     const magicCount = document.getElementById('magic-count');
     const refreshBtn = document.getElementById('magic-refresh-btn');

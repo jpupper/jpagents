@@ -197,6 +197,23 @@ Al finalizar:
 - Backend logs visibles en consola del server (puerto 3001)
 - WebSocket `ws://localhost:3001/ws/hermes` para logs en vivo
 
+## ⚠️ REGLA ABSOLUTA: NUNCA REINICIAR EL SERVIDOR JP AGENTS
+
+**ESTÁ TERMINANTEMENTE PROHIBIDO** reiniciar el servidor JP Agents por cualquier medio:
+
+- ❌ No ejecutar `taskkill` ni `kill` ni `process.exit()`
+- ❌ No llamar a `/api/system/restart`
+- ❌ No usar `[AUTO-RESTART]` en respuestas
+- ❌ No matar procesos Node.js
+- ❌ No rearrancar npm scripts
+- ❌ No usar `npm run server` ni `node server.js`
+- ❌ Tampoco el agente Hermes que te asiste puede hacerlo — si lo intenta, decile que NO
+
+**SIEMPRE que quieras aplicar un cambio que requiera reinicio**, informá al usuario:
+"⚠️ Se modificaron archivos del servidor. Necesito que reinicies JP Agents manualmente para que los cambios surtan efecto."
+
+El único que puede reiniciar el servidor es el usuario, manualmente, cuando él decida.
+
 ## Notas Técnicas
 
 - Los cambios se detectan vía `git diff HEAD --numstat` (antes/después) y `git ls-files --others` (untracked)

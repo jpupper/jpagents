@@ -74,18 +74,19 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: 10px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 14px;
   background: var(--primary-color);
   color: #fff;
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   font-weight: 700;
   line-height: 1;
   vertical-align: middle;
-  margin-left: 4px;
+  margin-left: 6px;
   -webkit-text-fill-color: #fff;
+  transition: all 0.3s ease;
 }
 
 .status-indicators {
@@ -341,6 +342,7 @@ body {
   left: -3px;
   right: -3px;
   bottom: 0;
+  pointer-events: none;
   /* invisible hit area for easier grabbing */
 }
 .panel-resize-handle:hover,
@@ -1896,6 +1898,7 @@ textarea {
   flex: 1;
   overflow: auto;
   position: relative;
+  padding-right: 30px;
 }
 
 #editor-code {

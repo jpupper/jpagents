@@ -18,6 +18,7 @@ import { connectDB, getCollection } from './db.js';
 import { agentApp } from './agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
 import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger.js';
+import { createChat } from './agent-utils.js';
 
 // Hermes Bridge
 import hermesBridge from './hermes-bridge.js';
@@ -27,7 +28,7 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-const port = 3001;
+const port = parseInt(process.env.JPAGENTS_PORT, 10) || 4699;
 let serverInstance = null; // Store server instance for graceful close
 
 // Middlewares - DEBEN ir antes de las rutas
@@ -35,9 +36,28 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// ─── Body-parser error handler ───
+// Atrapa SyntaxError de JSON malformado (acentos corruptos por encoding de Windows)
+// y devuelve un error 400 claro en vez de que el worker se quede esperando.
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        const preview = String(err.body || '').slice(0, 200).replace(/[^\x20-\x7E]/g, '?');
+        console.error(`[BODY-PARSER] ⚠️ JSON inválido en ${req.method} ${req.url}`);
+        console.error(`[BODY-PARSER]    Preview: ${preview}...`);
+        console.error(`[BODY-PARSER]    Error: ${err.message}`);
+        return res.status(400).json({ error: 'JSON malformado en el body de la solicitud', detail: err.message });
+    }
+    next(err);
+});
+
 // Servir archivos estáticos (Agents Room, etc.)
 const __dirname_route = path.dirname(fileURLToPath(import.meta.url));
 app.use('/static', express.static(path.join(__dirname_route, '.')));
+
+// Redirigir raíz al index.html del monitor
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname_route, 'index.html'));
+});
 
 // Servir imágenes temporales para Hermes (vision_analyze)
 const tempImagesDir = path.join(__dirname_route, 'temp_images');
@@ -69,6 +89,157 @@ function notifyGod(message) {
             console.warn('[GOD] Error notificando a HERMES GOD:', e.message);
         }
     }
+}
+
+// ─── Notificación de agente completado a Telegram (para TODOS los agentes) ───
+hermesBridge.on('agent:complete', async (info) => {
+    try {
+        const { projectId, chatId, name: agentName, responseText, tokenUsage } = info;
+
+        // Obtener nombre del proyecto desde sessions
+        let projectName = projectId;
+        try {
+            const sessions = await loadSessions();
+            const proj = sessions.projects?.find(p => p.id === projectId);
+            if (proj) projectName = proj.name || proj.folder?.split(/[/\\]/).pop() || projectId;
+        } catch {}
+
+        // Extraer objetivo: último mensaje del usuario de este agente
+        let objective = '(tarea asignada)';
+        try {
+            const sessions = await loadSessions();
+            const proj = sessions.projects?.find(p => p.id === projectId);
+            if (proj) {
+                const chat = proj.chats?.find(c => c.id === chatId);
+                if (chat) {
+                    const lastUser = chat.messages?.filter(m => m.role === 'user').pop();
+                    if (lastUser) objective = lastUser.content?.slice(0, 100) || objective;
+                }
+            }
+        } catch {}
+
+        const preview = (responseText || '').slice(0, 300);
+        const telegramMsg =
+            `✅ *${agentName}* completó su tarea\n` +
+            `📁 Proyecto: *${projectName}*\n` +
+            `🎯 Objetivo: ${objective}\n` +
+            (tokenUsage ? `🔢 ${tokenUsage.total_tokens?.toLocaleString() || '?'} tokens · $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
+            `📋 ${preview}${(responseText || '').length > 300 ? '...' : ''}`;
+
+        notifyGod(telegramMsg);
+        console.log(`[TELEGRAM] 📤 Notificación agente "${agentName}" → ${projectName}`);
+    } catch (notifyErr) {
+        console.warn('[TELEGRAM] Error en listener agent:complete:', notifyErr.message);
+    }
+});
+
+// ─── Delegation Tracking System ───
+// Track async agent delegations so the admin gets notified when they complete.
+// Structure: Map<delegationId, { agentName, projectName, task, status, result, timestamp, source, chatId }>
+const pendingDelegations = new Map();
+let delegationCounter = 0;
+
+/**
+ * Registra una delegación y la ejecuta en background.
+ * Returns { id, status: 'delegated', message } inmediatamente.
+ */
+function startDelegation(agentName, projectName, task, projectId, agentId, model, workdir, source = 'admin', chatId = null) {
+    const id = `del-${Date.now().toString(36)}-${(++delegationCounter).toString(36)}`;
+    const entry = {
+        id, agentName, projectName, task: task.slice(0, 500),
+        status: 'running', result: null,
+        timestamp: Date.now(), source, chatId
+    };
+    pendingDelegations.set(id, entry);
+
+    // ─── Ejecutar en background ───
+    (async () => {
+        try {
+            // Asegurar que la instancia bridge existe
+            const instanceKey = `${projectId}:${agentId}`;
+            if (!hermesBridge.instances.has(instanceKey)) {
+                try {
+                    await hermesBridge.startInstance(projectId, agentId, workdir, model, agentName);
+                } catch (startErr) {
+                    // Puede que ya exista (race condition)
+                }
+            }
+
+            const r = await hermesBridge.sendMessage(projectId, agentId,
+                `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${task}`
+            );
+            const responseText = typeof r === 'string' ? r : (r?.text || '(sin respuesta)');
+
+            // Guardar en sessions.json
+            try {
+                const sessionData = await loadSessions();
+                const agentProject = sessionData.projects?.find(p => p.id === projectId);
+                if (agentProject) {
+                    const agentChat = agentProject.chats?.find(c => c.id === agentId);
+                    if (agentChat) {
+                        if (!agentChat.messages) agentChat.messages = [];
+                        agentChat.messages.push({
+                            role: 'user',
+                            content: `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${task}`,
+                            timestamp: Date.now()
+                        });
+                        agentChat.messages.push({
+                            role: 'assistant',
+                            content: responseText.slice(0, 3000),
+                            timestamp: Date.now()
+                        });
+                        await saveSessions(sessionData);
+                        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin-delegation/save' });
+                    }
+                }
+            } catch (saveErr) {
+                console.log(`[DELEGATION] ⚠️ No se pudo guardar conversación: ${saveErr.message}`);
+            }
+
+            // Marcar como completada
+            entry.status = 'completed';
+            entry.result = responseText.slice(0, 2000);
+            console.log(`[DELEGATION] ✅ ${agentName} completó: "${task.slice(0, 60)}..." (${responseText.length} chars)`);
+
+            // ─── Broadcast a WebSocket ───
+            hermesBridge.broadcastToAll('hermes:admin:delegation-complete', {
+                id, agentName, projectName, task: entry.task,
+                result: entry.result,
+                status: 'completed'
+            });
+            // ─── Si es de Telegram, enviar mensaje ───
+            if (source === 'telegram' && chatId && typeof TELEGRAM_BOT_TOKEN === 'string' && TELEGRAM_BOT_TOKEN.length > 40) {
+                try {
+                    const { Bot: TelegramBot } = await import('grammy');
+                    const notifBot = new TelegramBot(TELEGRAM_BOT_TOKEN);
+                    const summary = responseText.length > 500
+                        ? responseText.slice(0, 500) + '...'
+                        : responseText;
+                    await notifBot.api.sendMessage(chatId,
+                        `✅ *Delegación Completada*\n\n🤖 Agente: *${agentName}*\n📋 Tarea: ${task.slice(0, 200)}\n\n📝 Respuesta:\n${summary}`,
+                        { parse_mode: 'Markdown' }
+                    ).catch(() => {});
+                } catch (e) {
+                    console.warn('[DELEGATION] Error enviando notificación Telegram:', e.message);
+                }
+            }
+
+        } catch (err) {
+            entry.status = 'error';
+            entry.result = err.message;
+            console.error(`[DELEGATION] ❌ ${agentName} falló:`, err.message);
+            hermesBridge.broadcastToAll('hermes:admin:delegation-complete', {
+                id, agentName, projectName, task: entry.task,
+                result: `❌ Error: ${err.message}`,
+                status: 'error'
+            });
+        } finally {
+            // Cleanup old entries after 30 min
+            setTimeout(() => pendingDelegations.delete(id), 30 * 60 * 1000);
+        }
+    })();
+
+    return { id, status: 'delegated', message: `✅ Delegado a ${agentName} — ID: ${id}` };
 }
 
 // ─── TELEGRAM BOT INLINE (HERMES GOD integrado) ───
@@ -497,8 +668,10 @@ function initTelegramBot() {
             const cleanResponse = extractTelegramSummary(response) || '(sin respuesta)';
             let executions = [];
             try {
-                const execPromise = executeAdminCommands(response);
-                const execTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Timeout (5 min)')), 300000));
+                // Pasar source='telegram' y chatId para notificaciones async
+                const execPromise = executeAdminCommands(response, 'telegram', chatId);
+                // Timeout reducido porque @AgentName ya no bloquea
+                const execTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Timeout (60s)')), 60000));
                 executions = await Promise.race([execPromise, execTimeout]);
             } catch (execErr) {
                 slog.error(`[TELEGRAM] ⚠️ Error/Timeout en executeAdminCommands:`, execErr.message);
@@ -512,6 +685,7 @@ function initTelegramBot() {
                         if (ex.response) return `  ✅ ${ex.command}: ${ex.target}\n     📝 ${ex.response.slice(0, 500)}`;
                         return `  ✅ ${ex.command}: ${ex.target}`;
                     }
+                    if (ex.status === 'delegated') return `  🤖 ${ex.command}: ${ex.target} — ✅ DELEGADO (recibirás notificación cuando termine)`;
                     if (ex.status === 'error') return `  ❌ ${ex.command}: ${ex.target} — ${ex.error}`;
                     if (ex.status === 'skipped') return `  ⏭️ ${ex.command}: ${ex.target} — ${ex.reason}`;
                     if (ex.message) return `  ℹ️ ${ex.command}: ${ex.target} — ${ex.message}`;
@@ -946,6 +1120,24 @@ async function saveSessions(state) {
     } catch (e) {
         console.error('[DB] Error saving sessions:', e);
     }
+}
+
+/**
+ * updateSessions — Helper que reemplaza el patrón load-modify-save-broadcast.
+ * 
+ * Uso:
+ *   await updateSessions(data => {
+ *       data.projects.push(newProject);
+ *   }, 'CREATE_PROJECT');
+ * 
+ * Hace loadSessions(), pasa data al modifier, saveSessions() y broadcast.
+ */
+async function updateSessions(modifier, source = 'unknown') {
+    const data = await loadSessions();
+    await modifier(data);
+    await saveSessions(data);
+    hermesBridge.broadcastToAll('sync:stateUpdated', { source });
+    return data;
 }
 
 // Routes
@@ -2962,6 +3154,54 @@ app.get('/api/admin/projects', async (req, res) => {
     }
 });
 
+/**
+ * POST /api/admin/agents/create — Crear un agente (para el orquestador via API)
+ * Body: { projectId, name, model?, useHermes? }
+ */
+app.post('/api/admin/agents/create', async (req, res) => {
+    try {
+        const { projectId, name, model, useHermes = true } = req.body;
+        if (!projectId || !name) {
+            return res.status(400).json({ error: 'projectId y name son requeridos' });
+        }
+        await updateSessions(data => {
+            const project = data.projects?.find(p => p.id === projectId || (p.name || '').toLowerCase() === projectId.toLowerCase());
+            if (!project) throw new Error(`Proyecto "${projectId}" no encontrado`);
+            const newChat = createChat(project, { name, useHermes, model: model || project.model });
+            project.chats = project.chats || [];
+            project.chats.push(newChat);
+        }, 'api/agents/create');
+        res.json({ success: true, message: `Agente "${name}" creado` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/admin/projects/create — Crear un proyecto (para el orquestador via API)
+ * Body: { name, folder?, model? }
+ */
+app.post('/api/admin/projects/create', async (req, res) => {
+    try {
+        const { name, folder, model } = req.body;
+        if (!name) return res.status(400).json({ error: 'name es requerido' });
+        await updateSessions(data => {
+            const exists = data.projects?.some(p => (p.name || '').toLowerCase() === name.toLowerCase());
+            if (exists) throw new Error(`Proyecto "${name}" ya existe`);
+            data.projects = data.projects || [];
+            data.projects.push({
+                id: 'proj-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                name, chats: [],
+                folder: folder || '',
+                model: model || 'deepseek-v4-pro'
+            });
+        }, 'api/projects/create');
+        res.json({ success: true, message: `Proyecto "${name}" creado` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/admin/communicate/agent', async (req, res) => {
     const { projectId, chatId, message } = req.body;
     if (!projectId || !chatId || !message) {
@@ -3270,7 +3510,7 @@ app.post('/api/hermes/start', async (req, res) => {
             instanceKey: `${projectId}:${chatId}`,
             projectId,
             chatId,
-            status: 'idle',
+            status: 'running',
             name: name || chatId
         });
 
@@ -3594,12 +3834,13 @@ app.post('/api/hermes/message', async (req, res) => {
 
         res.json({ response: responseText, usage: tokenUsage, changes: gitChanges });
 
-        // ─── Notificar a HERMES GOD + Admin Agent cuando un agente termina ───
+        // ─── Notificar al Admin Agent (orquestador) cuando un agente termina ───
+        // NOTA: La notificación a Telegram se hace vía el listener 'agent:complete' en hermes-bridge.js
+        // (cubre TODOS los agentes, no solo los que pasan por este endpoint)
         try {
             const instance = hermesBridge.instances.get(`${projectId}:${chatId}`);
             if (instance) {
                 const agentName = instance.name || chatId.slice(0, 8);
-                const preview = responseText.slice(0, 300);
                 
                 // Obtener nombre del proyecto desde sessions
                 let projectName = projectId;
@@ -3622,15 +3863,6 @@ app.post('/api/hermes/message', async (req, res) => {
                         }
                     }
                 } catch {}
-
-                const telegramMsg =
-                    `✅ *${agentName}* completó su tarea\n` +
-                    `📁 Proyecto: *${projectName}*\n` +
-                    `🎯 Objetivo: ${objective}\n` +
-                    (tokenUsage ? `🔢 ${tokenUsage.total_tokens?.toLocaleString() || '?'} tokens · $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
-                    `📋 ${preview}${responseText.length > 300 ? '...' : ''}`;
-                
-                notifyGod(telegramMsg);
 
                 // ─── Notificar al Admin Agent (orquestador) ───
                 try {
@@ -4423,8 +4655,11 @@ app.post('/api/admin/hermes-chat/stream', async (req, res) => {
  * Ejecuta comandos de administración encontrados en la respuesta de Hermes.
  * Soporta: CREATE_PROJECT, CREATE_AGENT, DELETE_AGENT, DELETE_PROJECT, STOP_AGENT
  * Retorna array de resultados de ejecución.
+ * @param {string} responseText - Texto de la respuesta de Hermes
+ * @param {string} [source='admin'] - Origen: 'admin' (web) o 'telegram'
+ * @param {number|null} [chatId=null] - Chat ID de Telegram si source='telegram'
  */
-async function executeAdminCommands(responseText) {
+async function executeAdminCommands(responseText, source = 'admin', chatId = null) {
     const executions = [];
     const cleanStr = (str) => (str || '').replace(/["'""]/g, '').trim();
 
@@ -4439,16 +4674,15 @@ async function executeAdminCommands(responseText) {
             if (existing) {
                 executions.push({ command: 'CREATE_PROJECT', target: name, status: 'skipped', reason: 'Ya existe' });
             } else {
-                const newProject = {
-                    id: 'proj-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-                    name, chats: [], folder: '', model: 'deepseek-v4-pro'
-                };
-                data.projects = data.projects || [];
-                data.projects.push(newProject);
-                await saveSessions(data);
-                hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'admin-exec/CREATE_PROJECT' });
-                executions.push({ command: 'CREATE_PROJECT', target: name, status: 'ok', projectId: newProject.id });
-                console.log(`[ADMIN-EXEC] 📁 Proyecto creado: "${name}" (${newProject.id})`);
+                await updateSessions(data => {
+                    data.projects = data.projects || [];
+                    data.projects.push({
+                        id: 'proj-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                        name, chats: [], folder: '', model: 'deepseek-v4-pro'
+                    });
+                }, 'admin-exec/CREATE_PROJECT');
+                executions.push({ command: 'CREATE_PROJECT', target: name, status: 'ok' });
+                console.log(`[ADMIN-EXEC] 📁 Proyecto creado: "${name}"`);
             }
         } catch (e) {
             executions.push({ command: 'CREATE_PROJECT', target: name, status: 'error', error: e.message });
@@ -4469,12 +4703,12 @@ async function executeAdminCommands(responseText) {
                 executions.push({ command: 'CREATE_AGENT', target: `${pId}:${aName}`, status: 'error', error: `Proyecto "${pId}" no encontrado` });
                 continue;
             }
-            const newChat = {
-                id: 'chat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-                name: aName, messages: [], isThinking: false, isRunning: false, isStopped: false,
-                mode: 'auto', lastProgress: Date.now(), model: project.model || 'deepseek-v4-pro',
-                useHermes: true
-            };
+            // Usar createChat() centralizado (ahora importado)
+            const newChat = createChat(project, {
+                name: aName,
+                useHermes: true,
+                model: project.model || 'deepseek-v4-pro'
+            });
             project.chats = project.chats || [];
             project.chats.push(newChat);
             await saveSessions(data);
@@ -4576,8 +4810,10 @@ async function executeAdminCommands(responseText) {
         }
     }
 
-    // ─── @AgentName delegation (enviar tarea a un agente específico) ───
+    // ─── @AgentName delegation (enviar tarea a un agente específico — ASYNC) ───
     // Pattern: [@NombreAgente: "Instrucción para el agente"]
+    // AHORA es ASINCRÓNICO: delega y retorna inmediatamente.
+    // La notificación de finalización llega vía WebSocket o Telegram.
     const agentDelegateRe = /\[@([^:]+?):\s*"([^"]+)"\s*\]/gi;
     while ((m = agentDelegateRe.exec(responseText)) !== null) {
         const agentName = cleanStr(m[1]);
@@ -4601,35 +4837,29 @@ async function executeAdminCommands(responseText) {
                 executions.push({ command: '@AGENT', target: agentName, status: 'error', error: `Agente "${agentName}" no encontrado en ningún proyecto` });
                 continue;
             }
-            // Asegurar que la instancia bridge existe
-            const instanceKey = `${foundProject.id}:${foundAgent.id}`;
-            if (!hermesBridge.instances.has(instanceKey)) {
-                try {
-                    await hermesBridge.startInstance(
-                        foundProject.id, foundAgent.id,
-                        foundProject.folder || 'D:/Programacion/jpagents',
-                        foundAgent.model || foundProject.model || 'deepseek-v4-pro',
-                        foundAgent.name
-                    );
-                    executions.push({ command: '@AGENT', target: agentName, status: 'info', message: 'Instancia bridge iniciada' });
-                } catch (startErr) {
-                    executions.push({ command: '@AGENT', target: agentName, status: 'info', message: `Bridge: ${startErr.message}` });
-                }
-            }
-            // Enviar mensaje y obtener respuesta
-            try {
-                const r = await hermesBridge.sendMessage(foundProject.id, foundAgent.id, `🚨 INSTRUCCIÓN DEL ADMIN (HERMES GOD): ${taskMsg}`);
-                const responseText = typeof r === 'string' ? r : (r?.text || '(sin respuesta)');
-                executions.push({
-                    command: '@AGENT', target: agentName, status: 'ok',
-                    task: taskMsg.slice(0, 200),
-                    response: responseText.slice(0, 1500),
-                    agentId: foundAgent.id, projectId: foundProject.id
-                });
-                console.log(`[ADMIN-EXEC] 🤖 @${agentName}: tarea ejecutada, respuesta (${responseText.length} chars)`);
-            } catch (sendErr) {
-                executions.push({ command: '@AGENT', target: agentName, status: 'error', error: sendErr.message });
-            }
+            
+            // ─── DELEGAR ASINCRÓNICAMENTE ───
+            // startDelegation() ejecuta en background y retorna INMEDIATO
+            const delResult = startDelegation(
+                foundAgent.name || agentName,
+                foundProject.name,
+                taskMsg,
+                foundProject.id,
+                foundAgent.id,
+                foundAgent.model || foundProject.model || 'deepseek-v4-pro',
+                foundProject.folder || 'D:/Programacion/jpagents',
+                source,
+                chatId
+            );
+            
+            executions.push({
+                command: '@AGENT', target: agentName, status: 'delegated',
+                delegationId: delResult.id,
+                task: taskMsg.slice(0, 200),
+                message: delResult.message,
+                agentId: foundAgent.id, projectId: foundProject.id
+            });
+            console.log(`[ADMIN-EXEC] 🤖 @${agentName}: DELEGADO async (${delResult.id}) — "${taskMsg.slice(0, 60)}..."`);
         } catch (e) {
             executions.push({ command: '@AGENT', target: agentName, status: 'error', error: e.message });
         }
@@ -4664,8 +4894,64 @@ async function executeAdminCommands(responseText) {
         }
     }
 
+    // ─── API — Llamada directa a APIs internas ───
+    // El orquestador usa [API: METHOD /path {"body":...}] para hacer llamadas REST
+    const apiCallRe = /\[API:\s*(GET|POST|PUT|DELETE)\s+(\/[^\s\]]+?)\s*(?:\{([^}]*)\})?\s*\]/gi;
+    while ((m = apiCallRe.exec(responseText)) !== null) {
+        const method = m[1].toUpperCase();
+        const endpoint = m[2];
+        let body = null;
+        try {
+            if (m[3] && m[3].trim()) body = JSON.parse(m[3]);
+        } catch {}
+        try {
+            const url = `http://localhost:${port}${endpoint}`;
+            const fetchOpts = {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(10000)
+            };
+            if (body && (method === 'POST' || method === 'PUT')) {
+                fetchOpts.body = JSON.stringify(body);
+            }
+            const apiRes = await fetch(url, fetchOpts);
+            let apiData;
+            try { apiData = await apiRes.json(); } catch { apiData = { raw: await apiRes.text().catch(() => '') }; }
+            executions.push({
+                command: 'API',
+                target: `${method} ${endpoint}`,
+                status: apiRes.ok ? 'ok' : 'error',
+                statusCode: apiRes.status,
+                response: JSON.stringify(apiData).slice(0, 500)
+            });
+            console.log(`[ADMIN-EXEC] 🌐 API ${method} ${endpoint} → ${apiRes.status}`);
+        } catch (e) {
+            executions.push({ command: 'API', target: `${method} ${endpoint}`, status: 'error', error: e.message });
+        }
+    }
+
     return executions;
 }
+
+/**
+ * GET /api/admin/delegations — Listar delegaciones activas y recientes
+ */
+app.get('/api/admin/delegations', (req, res) => {
+    const all = [];
+    for (const [id, entry] of pendingDelegations) {
+        all.push({ id, ...entry });
+    }
+    res.json({ success: true, count: all.length, delegations: all.sort((a, b) => b.timestamp - a.timestamp) });
+});
+
+/**
+ * GET /api/admin/delegations/:id — Estado de una delegación específica
+ */
+app.get('/api/admin/delegations/:id', (req, res) => {
+    const entry = pendingDelegations.get(req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Delegación no encontrada' });
+    res.json({ success: true, delegation: { id: req.params.id, ...entry } });
+});
 
 /**
  * POST /api/admin/execute-commands — Ejecutar comandos de admin desde texto
@@ -4887,47 +5173,6 @@ app.get('/api/admin/agents/:projectId/:chatId/status', async (req, res) => {
     }
 });
 
-/**
- * POST /api/admin/agents/create — Crear un nuevo agente en un proyecto
- * Body: { projectId, agentName, model?, systemPrompt? }
- */
-app.post('/api/admin/agents/create', async (req, res) => {
-    try {
-        const { projectId, agentName, model, systemPrompt } = req.body;
-        if (!projectId || !agentName) return res.status(400).json({ error: 'Se requieren projectId y agentName' });
-
-        const data = await loadSessions();
-        const project = data.projects?.find(p => p.id === projectId || (p.name || '').toLowerCase() === projectId.toLowerCase());
-        if (!project) return res.status(404).json({ error: `Proyecto "${projectId}" no encontrado. Proyectos disponibles: ${(data.projects||[]).map(p => p.name).join(', ')}` });
-
-        const newChat = {
-            id: 'chat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-            name: agentName,
-            messages: [],
-            isThinking: false,
-            isRunning: false,
-            isStopped: false,
-            mode: 'auto',
-            lastProgress: Date.now(),
-            model: model || project.model || 'deepseek-v4-pro',
-            systemPrompt: systemPrompt || '',
-            useHermes: true
-        };
-
-        project.chats = project.chats || [];
-        project.chats.push(newChat);
-        await saveSessions(data);
-
-        console.log(`[ADMIN] 🤖 Agente creado: "${agentName}" en proyecto "${project.name}" (id=${newChat.id})`);
-        res.json({ success: true, agent: { id: newChat.id, name: agentName, projectId: project.id, projectName: project.name } });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ──────────────────────────────────────────────
-// 404 Handler for API
-// ──────────────────────────────────────────────
 app.use('/api', (req, res) => {
     res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found` });
 });
@@ -5521,9 +5766,10 @@ async function startServer() {
                 sessions.projects.forEach(proj => {
                     if (proj.chats) {
                         proj.chats.forEach(chat => {
-                            if (chat.isThinking || chat.isRunning) {
+                            if (chat.isThinking || chat.isRunning || chat.isStreaming) {
                                 chat.isThinking = false;
                                 chat.isRunning = false;
+                                chat.isStreaming = false;
                                 resetCount++;
                             }
                         });
