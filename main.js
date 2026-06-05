@@ -8981,7 +8981,15 @@ init();
 // HERMES LOGIC — Maneja mensajes de chat común → Hermes Bridge
 // ──────────────────────────────────────────────
 async function triggerHermesLogic(project, chat, origin = 'user') {
-    if (chat.isThinking) return;
+    // 🐛 BUGFIX: El guard 'if (chat.isThinking) return;' causaba que si el WS
+    // 'hermes:agent:started {running}' llegaba durante el await del auto-start,
+    // el chat quedaba marcado como pensando PERO triggerHermesLogic() babeaba,
+    // nunca se creaba el progress message, y el agente se quedaba "procesando"
+    // para siempre sin enviar el mensaje a Hermes.
+    // En vez de babealar, simplemente re-setear isThinking y proceder.
+    if (chat.isThinking) {
+        console.log(`[HERMES] ⚠️ isThinking ya era true (llegó WS 'running' antes que triggerHermesLogic). Reseteando y procediendo...`);
+    }
 
     updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
