@@ -36,6 +36,22 @@ const SESSION_FILE = path.join(HERMES_HOME, 'god-bot-sessions.json');
 const MAX_THINKING_LENGTH = 2000;
 const THINKING_UPDATE_INTERVAL = 3000;
 
+/**
+ * Plantilla de instrucción obligatoria que se PREPENDE a cada mensaje
+ * enviado a Hermes para forzar el formato RESUMEN.
+ */
+const RESUMEN_MANDATE = `⚠️ REGLA — Al FINAL de tu respuesta agregá este bloque RESUMEN:
+
+━━━ 📋 RESUMEN ━━━
+
+📋 OBJETIVO: <qué pidió el usuario, 1 línea>
+⚙️ REALIZACIÓN: <herramientas usadas, pasos clave>
+📝 MODIFICACIONES: <archivos creados/modificados — paths absolutos>
+📊 ESTADO: <resultado concreto>
+📌 NOTAS: <pendientes, N/A si está completo>
+
+REGLAS: campos obligatorios. Si no aplica = "N/A". No omitir.`;
+
 // ─── Estado ───
 let godWs = null;
 let godWsReconnectTimer = null;
@@ -406,16 +422,134 @@ function extractResponse(stdout) {
 }
 
 /**
- * Valida que la respuesta contenga el formato obligatorio de 4 puntos.
- * El skill BOTADMIN exige: 📋 OBJETIVO, ⚙️ REALIZACIÓN, 📝 MODIFICACIONES, 📊 ESTADO ACTUAL
+ * Valida que la respuesta contenga el formato RESUMEN obligatorio (📋⚙️📝📊).
  */
 function hasRequiredFormat(text) {
     if (!text || text.length < 20) return false;
-    const hasObjetivo = text.includes('📋') || text.toLowerCase().includes('objetivo');
-    const hasRealizacion = text.includes('⚙️') || text.toLowerCase().includes('realización') || text.toLowerCase().includes('realizacion');
-    const hasModificaciones = text.includes('📝') || text.toLowerCase().includes('modificaciones');
-    const hasEstado = text.includes('📊') || text.toLowerCase().includes('estado actual');
-    return hasObjetivo && hasRealizacion && hasModificaciones && hasEstado;
+    // Check for proper RESUMEN format with labels — NOT just the emojis alone
+    if (text.includes('📋 OBJETIVO') && text.includes('📊 ESTADO')) return true;
+    if (text.includes('━━━ 📋 RESUMEN')) return true;
+    return false;
+}
+
+/**
+ * Extrae información útil de la respuesta de Hermes para sintetizar
+ * un RESUMEN con contenido real.
+ */
+function extractResumenData(response, originalMessage) {
+    const data = {
+        objetivo: originalMessage || 'Consulta',
+        realizacion: [],
+        modificaciones: [],
+        estado: 'Procesado',
+        notas: 'N/A'
+    };
+
+    // Extraer paths de archivos creados/modificados
+    const filePaths = response.match(/[DC]:\\[^\s,;)\]]{10,}/g);
+    if (filePaths) {
+        const unique = [...new Set(filePaths)];
+        data.modificaciones = unique.slice(0, 5);
+    }
+
+    // Extraer URLs
+    const urls = response.match(/https?:\/\/[^\s,;)\]]{10,}/g);
+    if (urls && data.modificaciones.length < 5) {
+        data.modificaciones.push(...urls.slice(0, 3));
+    }
+
+    // Detectar herramientas usadas
+    const toolPatterns = [
+        /write_file|crea(?:r|ste)|escribí|modifiq/i,
+        /terminal|ejecut|comando|npm|git/i,
+        /web_search|buscador|google/i,
+        /vision_analyze|imagen|imág|screenshot/i,
+        /ftp|deploy|subir|upload/i,
+        /skill_view|habilidad|skill/i,
+        /patch|edit/i,
+        /browser|navegador|web/i,
+        /read_file|leer|lei/i,
+        /search_files|busqu|archiv/i,
+        /CREATE_PROJECT|CREATE_AGENT|DELETE_|STOP_AGENT|delegad/i,
+        /curl|fetch|api|endpoint/i
+    ];
+    for (const pattern of toolPatterns) {
+        if (pattern.test(response)) {
+            const match = response.match(pattern);
+            if (match) data.realizacion.push(match[0].toLowerCase());
+        }
+    }
+
+    // Detectar estado
+    if (/error|fall[óo]|no pudo|exception/i.test(response)) {
+        data.estado = '❌ Error';
+    } else if (/completad|terminad|listo|✅|hecho|cread|subid/i.test(response)) {
+        data.estado = '✅ Completado';
+    } else if (/en proceso|trabajando|ejecutando|procesando/i.test(response)) {
+        data.estado = '🔄 En progreso';
+    }
+
+    // Detectar notas
+    const seguirMatch = response.match(/pr[oó]ximos? paso|seguir|pendiente|falta|faltar[íi]a/i);
+    if (seguirMatch) {
+        data.notas = 'Ver detalle en respuesta arriba';
+    }
+
+    return data;
+}
+
+/**
+ * Fuerza que la respuesta SIEMPRE termine con el bloque RESUMEN formateado.
+ * Si el modelo no lo generó, lo sintetiza automáticamente con datos reales.
+ */
+function ensureResumen(response, originalMessage = '') {
+    if (!response || response.length < 5) {
+        return `━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${originalMessage || 'Consulta al asistente'}\n⚙️ REALIZACIÓN: N/A — Sin respuesta\n📝 MODIFICACIONES: Ninguna\n📊 ESTADO: Sin respuesta disponible\n📌 NOTAS: N/A`;
+    }
+
+    // Si ya tiene nuestro nuevo formato, devolver tal cual
+    if (response.includes('━━━ 📋 RESUMEN ━━━')) {
+        return response;
+    }
+
+    // Si tiene formato emoji (📋...📊) pero sin el separador nuevo
+    if (hasRequiredFormat(response)) {
+        const objetivoIdx = response.indexOf('📋');
+        const preContent = response.slice(0, objetivoIdx).trim();
+        const resumenBlock = response.slice(objetivoIdx).trim();
+
+        const cleanPre = preContent
+            .replace(/^.*\[thinking\].*$/gm, '')
+            .replace(/^.*Conversation completed.*$/gm, '')
+            .replace(/^.*Session:.*$/gm, '')
+            .replace(/^.*Tool call:.*$/gm, '')
+            .replace(/^.*Turn ended:.*$/gm, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        if (cleanPre.length > 10) {
+            return `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
+        }
+        return `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
+    }
+
+    // No tiene formato — sintetizar con datos extraídos
+    console.log('[WORKER] ⚠️ Sintetizando RESUMEN con datos extraídos...');
+    const data = extractResumenData(response, originalMessage);
+
+    const shortBody = response.length > 2000
+        ? response.slice(0, 2000) + '\n\n[...]'
+        : response;
+
+    const realizacionStr = data.realizacion.length > 0
+        ? [...new Set(data.realizacion)].join(', ')
+        : 'Procesó la consulta';
+
+    const modificacionesStr = data.modificaciones.length > 0
+        ? data.modificaciones.join('\n    ')
+        : 'N/A';
+
+    return `${shortBody}\n\n━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${data.objetivo.slice(0, 300)}\n⚙️ REALIZACIÓN: ${realizacionStr}\n📝 MODIFICACIONES:\n    ${modificacionesStr}\n📊 ESTADO: ${data.estado}\n📌 NOTAS: ${data.notas}`;
 }
 
 // ─── Hermes con streaming de pensamiento (IPC version) ───
@@ -429,7 +563,7 @@ function askHermesWithThinking(message, statusMsgChatId, statusMsgId, chatId) {
         if (resumeId) console.log(`[WORKER] 🔄 Reanudando sesión ${resumeId}`);
 
         const args = [
-            'chat', '-q', message, '-s', 'botadmin', '-Q', '--verbose',
+            'chat', '-q', `${message}\n\n${RESUMEN_MANDATE}`, '-s', 'botadmin', '-Q', '--verbose',
             '--source', 'hermes-god|telegram|god'
         ];
         if (resumeId) {
@@ -1004,26 +1138,9 @@ async function processMessage(payload) {
         finalResponse = response;
     }
 
-    // ─── Validar formato obligatorio de 4 puntos ───
-    if (finalResponse !== '(sin respuesta)' && !hasRequiredFormat(finalResponse)) {
-        console.log('[WORKER] ⚠️ Respuesta sin formato 4-puntos. Envolviendo con fallback...');
-        const originalText = finalResponse.length > 3000
-            ? finalResponse.slice(0, 3000) + '\n\n[...respuesta completa truncada para estructura]'
-            : finalResponse;
-        finalResponse = `📋 OBJETIVO:
-${text.slice(0, 300)}
-
-⚙️ REALIZACIÓN:
-Hermes procesó la consulta
-
-📝 MODIFICACIONES:
-Ver detalle a continuación
-
-📊 ESTADO ACTUAL:
-${originalText}
-
-━━━━━━━━━━━━━━━━
-⚠️ El modelo no siguió el formato estructurado. El contenido real está arriba.`;
+    // ─── Aplicar RESUMEN forzado ───
+    if (finalResponse !== '(sin respuesta)') {
+        finalResponse = ensureResumen(finalResponse, text);
     }
 
     saveChatHistory(chatId, 'user', isAudio ? `[🎤 Audio] ${text}` : text);

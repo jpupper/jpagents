@@ -216,7 +216,7 @@ function startDelegation(agentName, projectName, task, projectId, agentId, model
                         ? responseText.slice(0, 500) + '...'
                         : responseText;
                     await notifBot.api.sendMessage(chatId,
-                        `✅ *Delegación Completada*\n\n🤖 Agente: *${agentName}*\n📋 Tarea: ${task.slice(0, 200)}\n\n📝 Respuesta:\n${summary}`,
+                        `✅ *Delegación Completada*\n\n━━━ 🤖 RESUMEN ━━━\n\n📋 Tarea: ${task.slice(0, 200)}\n\n👤 Agente: \`${agentName}\`\n\n📝 Respuesta:\n${summary}\n\n━━━`,
                         { parse_mode: 'Markdown' }
                     ).catch(() => {});
                 } catch (e) {
@@ -279,12 +279,15 @@ async function callHermesAdmin(message, history = []) {
         const historyBlock = truncated
             .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
             .join('\n\n');
-        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}\n\n${RESUMEN_MANDATE}`;
         // Safety: si finalMsg > 20KB, no pasamos history y mandamos solo el mensaje actual
         if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
-            console.warn(`[ADMIN-HERMES] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual`);
-            finalMsg = message;
+            console.warn(`[ADMIN-HERMES] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual con mandate`);
+            finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
         }
+    } else {
+        // Sin history: agregar mandate directo
+        finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
     }
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
@@ -348,11 +351,14 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
         const historyBlock = truncated
             .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
             .join('\n\n');
-        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}`;
+        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}\n\n${RESUMEN_MANDATE}`;
         if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
-            console.warn(`[ADMIN-HERMES-STREAMING] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual`);
-            finalMsg = message;
+            console.warn(`[ADMIN-HERMES-STREAMING] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual con mandate`);
+            finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
         }
+    } else {
+        // Sin history: agregar mandate directo
+        finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
     }
     const { spawn } = await import('child_process');
     const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '-Q', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
@@ -542,6 +548,180 @@ function extractTelegramSummary(text) {
 }
 
 /**
+ * Plantilla de instrucción obligatoria que se PREPENDE a cada mensaje
+ * enviado a Hermes ADMIN para forzar el formato RESUMEN.
+ * Se interpola con el mensaje del usuario.
+ */
+const RESUMEN_MANDATE = `⚠️ REGLA — Al FINAL de tu respuesta agregá este bloque RESUMEN:
+
+━━━ 📋 RESUMEN ━━━
+
+📋 OBJETIVO: <qué pidió el usuario, 1 línea>
+⚙️ REALIZACIÓN: <herramientas usadas, pasos clave>
+📝 MODIFICACIONES: <archivos creados/modificados — paths absolutos>
+📊 ESTADO: <resultado concreto>
+📌 NOTAS: <pendientes, N/A si está completo>
+
+REGLAS: campos obligatorios. Si no aplica = "N/A". No omitir.`;
+
+/**
+ * Valida que la respuesta contenga el formato RESUMEN obligatorio (📋⚙️📝📊).
+ * Si no lo tiene, lo SINTETIZA usando el mensaje original y la respuesta.
+ */
+function hasResumenFormat(text) {
+    if (!text || text.length < 20) return false;
+    // Check for proper RESUMEN format with labels — NOT just the emojis alone
+    if (text.includes('📋 OBJETIVO') && text.includes('📊 ESTADO')) return true;
+    // Also check old format for backward compat during transition
+    if (text.includes('━━━ 📋 RESUMEN')) return true;
+    return false;
+}
+
+/**
+ * Extrae información útil de la respuesta de Hermes para sintetizar
+ * un RESUMEN con contenido real.
+ */
+function extractResumenData(response, originalMessage) {
+    const data = {
+        objetivo: originalMessage || 'Consulta',
+        realizacion: [],
+        modificaciones: [],
+        estado: 'Procesado',
+        notas: 'N/A'
+    };
+
+    // Extraer paths de archivos creados/modificados
+    const filePaths = response.match(/[DC]:\\[^\s,;)\]]{10,}/g);
+    if (filePaths) {
+        const unique = [...new Set(filePaths)];
+        // Limitar a 5 paths para no saturar
+        data.modificaciones = unique.slice(0, 5);
+    }
+
+    // Extraer URLs (subidas a web, etc)
+    const urls = response.match(/https?:\/\/[^\s,;)\]]{10,}/g);
+    if (urls && data.modificaciones.length < 5) {
+        data.modificaciones.push(...urls.slice(0, 3));
+    }
+
+    // Detectar herramientas usadas
+    const toolPatterns = [
+        /write_file|crea(?:r|ste)|escribí|modifiq/i,
+        /terminal|ejecut|comando|npm|git/i,
+        /web_search|buscador|google/i,
+        /vision_analyze|imagen|imág|screenshot/i,
+        /ftp|deploy|subir|upload/i,
+        /skill_view|habilidad|skill/i,
+        /patch|edit/i,
+        /browser|navegador|web/i,
+        /read_file|leer|lei/i,
+        /search_files|busqu|archiv/i,
+        /CREATE_PROJECT|CREATE_AGENT|DELETE_|STOP_AGENT|delegad/i,
+        /curl|fetch|api|endpoint/i
+    ];
+    for (const pattern of toolPatterns) {
+        if (pattern.test(response)) {
+            const match = response.match(pattern);
+            if (match) data.realizacion.push(match[0].toLowerCase());
+        }
+    }
+
+    // Detectar estado
+    if (/error|fall[óo]|no pudo|exception/i.test(response)) {
+        data.estado = '❌ Error';
+    } else if (/completad|terminad|listo|✅|hecho|cread|subid/i.test(response)) {
+        data.estado = '✅ Completado';
+    } else if (/en proceso|trabajando|ejecutando|procesando/i.test(response)) {
+        data.estado = '🔄 En progreso';
+    }
+
+    // Detectar notas/pendientes
+    const seguirMatch = response.match(/pr[oó]ximos? paso|seguir|pendiente|falta|faltar[íi]a/i);
+    if (seguirMatch) {
+        data.notas = 'Ver detalle en respuesta arriba';
+    }
+
+    return data;
+}
+
+/**
+ * Fuerza que la respuesta SIEMPRE termine con el bloque RESUMEN formateado.
+ * Si el modelo no lo generó, lo sintetiza automáticamente con datos reales.
+ *
+ * @param {string} response - Respuesta cruda de Hermes
+ * @param {string} originalMessage - Mensaje original del usuario
+ * @returns {string} - Respuesta con RESUMEN garantizado
+ */
+function ensureResumen(response, originalMessage = '') {
+    if (!response || response.length < 5) {
+        return (
+`━━━ 📋 RESUMEN ━━━
+
+📋 OBJETIVO: ${originalMessage || 'Consulta al asistente'}
+⚙️ REALIZACIÓN: N/A — El asistente no produjo respuesta
+📝 MODIFICACIONES: Ninguna
+📊 ESTADO: Sin respuesta disponible
+📌 NOTAS: N/A`);
+    }
+
+    // Si ya tiene nuestro nuevo formato (━━━ 📋 RESUMEN ━━━), devolver tal cual
+    if (response.includes('━━━ 📋 RESUMEN ━━━')) {
+        return response;
+    }
+
+    // Si tiene formato emoji (📋...📊) pero sin nuestro separador
+    if (hasResumenFormat(response)) {
+        const objetivoIdx = response.indexOf('📋');
+        const preContent = response.slice(0, objetivoIdx).trim();
+        const resumenBlock = response.slice(objetivoIdx).trim();
+
+        // Limpiar basura técnica del preContent
+        const cleanPre = preContent
+            .replace(/^.*\[thinking\].*$/gm, '')
+            .replace(/^.*Conversation completed.*$/gm, '')
+            .replace(/^.*Session:.*$/gm, '')
+            .replace(/^.*Tool call:.*$/gm, '')
+            .replace(/^.*Turn ended:.*$/gm, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        if (cleanPre.length > 10) {
+            // Formatear el bloque resumen con nuestro formato estándar
+            return `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
+        }
+        return `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
+    }
+
+    // No tiene formato — sintetizar con datos extraídos
+    const data = extractResumenData(response, originalMessage);
+
+    // Truncar respuesta larga (máximo 2000 chars en el cuerpo)
+    const shortBody = response.length > 2000
+        ? response.slice(0, 2000) + '\n\n[...]'
+        : response;
+
+    const realizacionStr = data.realizacion.length > 0
+        ? [...new Set(data.realizacion)].join(', ')
+        : 'Procesó la consulta';
+
+    const modificacionesStr = data.modificaciones.length > 0
+        ? data.modificaciones.join('\n    ')
+        : 'N/A';
+
+    return (
+`${shortBody}
+
+━━━ 📋 RESUMEN ━━━
+
+📋 OBJETIVO: ${data.objetivo.slice(0, 300)}
+⚙️ REALIZACIÓN: ${realizacionStr}
+📝 MODIFICACIONES:
+    ${modificacionesStr}
+📊 ESTADO: ${data.estado}
+📌 NOTAS: ${data.notas}`);
+}
+
+/**
  * Inicializa el bot de Telegram inline dentro del servidor.
  */
 function initTelegramBot() {
@@ -664,8 +844,8 @@ function initTelegramBot() {
                 }
             }
 
-            // ─── Extraer resumen estructurado y ejecutar comandos ───
-            const cleanResponse = extractTelegramSummary(response) || '(sin respuesta)';
+            // ─── Extraer resumen estructurado (force RESUMEN) y ejecutar comandos ───
+            const cleanResponse = ensureResumen(response, userMsg) || '(sin respuesta)';
             let executions = [];
             try {
                 // Pasar source='telegram' y chatId para notificaciones async
@@ -4582,7 +4762,7 @@ app.post('/api/admin/hermes-chat', async (req, res) => {
         const executions = await executeAdminCommands(response);
 
         console.log(`[ADMIN-HERMES] ✅ Respuesta (${response.length} chars), ${executions.length} comandos ejecutados`);
-        res.json({ success: true, response, sessionId, executions });
+        res.json({ success: true, response: ensureResumen(response, message), sessionId, executions });
     } catch (e) {
         // FIX: try-catch en console.error para evitar EPIPE → respuesta nunca enviada
         try { console.error('[ADMIN-HERMES] Error:', e.message); } catch (logErr) {}
@@ -4634,10 +4814,10 @@ app.post('/api/admin/hermes-chat/stream', async (req, res) => {
             try { console.error('[ADMIN-HERMES-STREAM] Error en executeAdminCommands:', execErr.message); } catch {}
         }
 
-        // Send final done event (con respuesta limpia)
+        // Send final done event (con RESUMEN forzado)
         writeEvent({
             event: 'done',
-            response: cleanHermesResponse(response) || '(sin respuesta)',
+            response: ensureResumen(response, message) || '(sin respuesta)',
             executions,
             stderr: hermesStderr || ''
         });

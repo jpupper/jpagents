@@ -702,6 +702,10 @@ optgroup {
 .tab:hover { background: #232328; }
 .tab.active { background: var(--bg-color); color: var(--accent-color); border-top: 2px solid var(--accent-color); }
 
+.god-tab { font-weight: 600; }
+.god-tab.active { background: var(--bg-color); color: #c9a84c; border-top: 2px solid #c9a84c; }
+.god-tab:hover { background: #232328; color: #f0d67a; }
+
 .add-tab {
     background: var(--accent-gradient);
     color: white !important;
@@ -885,6 +889,9 @@ optgroup {
 
 .chat-messages::-webkit-scrollbar { width: 6px; }
 .chat-messages::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 10px; }
+
+.session-summary-list::-webkit-scrollbar { width: 5px; }
+.session-summary-list::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 10px; }
 
 .message {
   max-width: 85%;
@@ -2735,6 +2742,91 @@ pre code.hljs {
     min-height: 0;
 }
 
+/* ─── 👑 HERMES GOD VIEW ─── */
+.god-chat-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: 1rem;
+}
+.god-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 0.5rem;
+}
+.god-header h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    background: linear-gradient(135deg, #c9a84c, #f0d67a);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.god-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+.god-input-area {
+    display: flex;
+    gap: 0.5rem;
+    background: var(--card-bg);
+    padding: 0.75rem;
+    border-radius: 12px;
+    border: 1px solid rgba(201, 168, 76, 0.3);
+}
+.god-input-area textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.85rem;
+    resize: none;
+    outline: none;
+    padding: 0.5rem;
+    line-height: 1.4;
+}
+.god-input-area textarea::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+.god-log {
+    flex: 1;
+    min-height: 0;
+}
+#god-send-btn {
+    border-color: #b8942e;
+    transition: all 0.2s;
+}
+#god-send-btn:hover {
+    background: #d4a834;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(201, 168, 76, 0.4);
+}
+#stop-god-btn {
+    background: #f44336;
+    border: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    color: white;
+    cursor: pointer;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
+}
+#stop-god-btn:hover {
+    background: #d32f2f;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(244, 67, 54, 0.4);
+}
 /* ─── TELEGRAM MONITOR ─── */
 .admin-telegram-section {
     display: flex;
@@ -3444,6 +3536,9 @@ pre code.hljs {
     flex-direction: column;
     gap: 12px;
     animation: slideUp 0.3s ease-out;
+    max-height: 38vh;
+    overflow: hidden;
+    flex-shrink: 0;
 }
 
 @keyframes slideUp {
@@ -3476,6 +3571,9 @@ pre code.hljs {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
 }
 
 .session-summary-item {

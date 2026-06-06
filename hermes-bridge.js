@@ -330,8 +330,8 @@ class HermesBridge extends EventEmitter {
 
         const outFilePath = path.join(outputDir, `${chatId}-out.log`);
         const errFilePath = path.join(outputDir, `${chatId}-err.log`);
-        const outFd = fs.openSync(outFilePath, 'a');
-        const errFd = fs.openSync(errFilePath, 'a');
+        const outFd = fs.openSync(outFilePath, 'w');  // 'w' = truncar, no acumular runs anteriores
+        const errFd = fs.openSync(errFilePath, 'w');
 
         const taskMarker = `\n=== TASK START: ${new Date().toISOString()} ===\n`;
         fs.writeSync(outFd, taskMarker);
@@ -673,14 +673,29 @@ class HermesBridge extends EventEmitter {
      * Extrae el session ID del stderr/stdout de Hermes
      */
     _extractSessionId(stderr, stdout) {
-        const sessionIdMatch = stderr?.match(/\bsession_id:\s*(\S+)/i) || 
-                               stderr?.match(/\bSession\s+ID:\s*(\S+)/i) ||
-                               stderr?.match(/\[(\d{8}_\d{6}_[a-f0-9]+)\]/i) ||
-                               stderr?.match(/\bsession=(\d{8}_\d{6}_[a-f0-9]+)/i) ||
-                               stdout?.match(/\bSession:\s+(\d{8}_\d{6}_[a-f0-9]+)/i) ||
-                               stdout?.match(/\bsesión:\s+(\S+)/i);
-        if (sessionIdMatch) {
-            return sessionIdMatch[1].trim();
+        // BUGFIX: Usar matchAll + último match, NO .match() (primer match).
+        // Los archivos de output son append-only, así que stderr/stdout acumulan
+        // TODAS las ejecuciones anteriores. El último match es la sesión ACTUAL.
+        const _lastMatch = (str, regex) => {
+            if (!str) return null;
+            const matches = [...str.matchAll(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : regex.flags + 'g'))];
+            return matches.length > 0 ? matches[matches.length - 1] : null;
+        };
+
+        const patterns = [
+            [stderr, /\bsession_id:\s*(\S+)/i],
+            [stderr, /\bSession\s+ID:\s*(\S+)/i],
+            [stderr, /\[(\d{8}_\d{6}_[a-f0-9]+)\]/i],
+            [stderr, /\bsession=(\d{8}_\d{6}_[a-f0-9]+)/i],
+            [stdout, /\bSession:\s+(\d{8}_\d{6}_[a-f0-9]+)/i],
+            [stdout, /\bsesión:\s+(\S+)/i],
+        ];
+
+        for (const [source, regex] of patterns) {
+            const match = _lastMatch(source, regex);
+            if (match && match[1]) {
+                return match[1].trim();
+            }
         }
         return null;
     }
@@ -762,45 +777,48 @@ class HermesBridge extends EventEmitter {
                 return errorResult;
             }
 
-            // ─── Resolver respuesta por prioridad: state.db → stdout → raw → fallback ───
+            // ─── Resolver respuesta por prioridad: stdout → raw → state.db → fallback ───
+            // BUGFIX (Junio 2026): Antes state.db era Path 1, pero en sesiones multi-turn
+            // getLastAssistantMessage() puede devolver la respuesta de una tarea ANTERIOR si
+            // el write de Hermes a state.db no está flusheado cuando Node.js lo lee (race).
+            // El stdout SIEMPRE es actual porque el archivo se trunca por run ('w' flag).
             let finalText = null;
 
-            // Path 1: Intentar extraer de state.db
-            if (sessionId) {
-                try {
-                    const cleanContent = await getLastAssistantMessage(sessionId);
-                    if (cleanContent) {
-                        console.log('[HERMES-BRIDGE] ✅ Respuesta obtenida de state.db (' + cleanContent.length + ' chars)');
-                        finalText = cleanContent;
-                    } else {
-                        console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
-                    }
-                } catch (dbErr) {
-                    console.warn('[HERMES-BRIDGE] Error leyendo state.db, fallback a stdout:', dbErr.message);
+            // Path 1: Extraer de stdout (siempre actual — archivo truncado por run)
+            try {
+                const parsed = extractCleanResponseFromStdout(result.stdout || '');
+                if (parsed) {
+                    console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
+                    finalText = parsed;
+                } else {
+                    console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, probando stdout raw');
                 }
+            } catch (parseErr) {
+                console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
             }
 
-            // Path 2: Extraer de stdout
-            if (!finalText) {
-                try {
-                    const parsed = extractCleanResponseFromStdout(result.stdout || '');
-                    if (parsed) {
-                        console.log('[HERMES-BRIDGE] ✅ Respuesta extraída de stdout (' + parsed.length + ' chars)');
-                        finalText = parsed;
-                    } else {
-                        console.log('[HERMES-BRIDGE] extractCleanResponseFromStdout devolvió vacío, usando stdout raw');
-                    }
-                } catch (parseErr) {
-                    console.error('[HERMES-BRIDGE] Error parseando stdout:', parseErr.message);
-                }
-            }
-
-            // Path 3: Raw stdout
+            // Path 2: Raw stdout
             if (!finalText) {
                 const raw = result.stdout || '';
                 if (raw.trim()) {
                     console.log('[HERMES-BRIDGE] ⚠️  Usando stdout raw (' + raw.length + ' chars)');
                     finalText = raw.trim();
+                }
+            }
+
+            // Path 3: state.db (fallback — puede tener datos stale en sesiones multi-turn,
+            // pero mejor que nada si stdout falló)
+            if (!finalText && sessionId) {
+                try {
+                    const cleanContent = await getLastAssistantMessage(sessionId);
+                    if (cleanContent) {
+                        console.log('[HERMES-BRIDGE] ⚠️  Fallback a state.db (' + cleanContent.length + ' chars) — posiblemente stale');
+                        finalText = cleanContent;
+                    } else {
+                        console.log('[HERMES-BRIDGE] state.db query devolvió null/empty para sessionId:', sessionId);
+                    }
+                } catch (dbErr) {
+                    console.warn('[HERMES-BRIDGE] Error leyendo state.db:', dbErr.message);
                 }
             }
 
@@ -823,6 +841,9 @@ class HermesBridge extends EventEmitter {
                 console.error(`[HERMES-BRIDGE] ❌ sendMessage error para ${instanceKey}:`, runErr.message);
                 instance.status = 'error';
                 this._broadcastStatus(instanceKey, 'error');
+                // Notificar también en error — el admin/owner necesita saber que falló
+                this._emitAgentComplete(instanceKey, projectId, instance,
+                    `❌ Error: ${runErr.message}`, null);
             }
             throw runErr;
         }

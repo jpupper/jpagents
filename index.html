@@ -46,6 +46,7 @@
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
         <button id="agents-room-btn" class="btn-monitor" title="Agents Room 3D" style="margin-top: 6px;">🏰 Agents Room</button>
         <button id="hermes-panel-btn" class="btn-monitor" title="Panel de Control Hermes" style="margin-top: 6px;">⚡ Hermes Control</button>
+        <button id="god-sidebar-btn" class="btn-monitor" title="HERMES GOD — Centro de Control Supremo" style="margin-top: 6px; border-color: #c9a84c;">👑 HERMES GOD</button>
       </div>
       <div class="sidebar-footer">
         <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración Global</button>
@@ -97,6 +98,7 @@
           <div class="tab" data-tab="terminal">Terminal</div>
           <div class="tab" data-tab="hermes" id="hermes-tab-nav" style="display:none;">⚡ Hermes</div>
           <div class="tab" data-tab="matrix">Matrix Agentic Tree</div>
+          <div class="tab" data-tab="god" id="god-tab-nav">👑 GOD</div>
         </nav>
 
         <!-- Dashboard View (No tab active) -->
@@ -291,6 +293,33 @@
             <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
           </div>
         </div>
+
+        <!-- 👑 HERMES GOD View -->
+        <div id="god-tab-content" class="tab-content hidden">
+          <div class="god-header">
+            <h2>👑 HERMES GOD <span style="font-size:0.7rem;opacity:0.6;font-weight:300;">— Centro de Control Supremo</span></h2>
+            <div class="god-status-bar">
+              <span id="god-status-text" style="font-size:0.75rem;opacity:0.7;">Disponible</span>
+              <button onclick="window.clearGodChat()" class="btn-clear-admin" title="Limpiar historial">🧹</button>
+            </div>
+          </div>
+          <div class="god-chat-view">
+            <div id="god-chat-messages" class="chat-messages god-log">
+              <div class="message system">👑 Bienvenido a HERMES GOD — el centro de control supremo de JP Agents. Podés crear proyectos, delegar tareas a agentes, o simplemente consultar el estado del sistema.</div>
+            </div>
+            <div class="god-input-area">
+              <textarea id="god-input" placeholder="Escribí tu orden para HERMES GOD..." rows="2"></textarea>
+              <button id="improve-god-prompt-btn" class="send-btn" title="Mejorar Prompt con IA" style="background: var(--primary-color); margin-right: 5px;">✨</button>
+              <button id="god-send-btn" class="send-btn" style="background: #c9a84c; border-color: #b8942e;">👑</button>
+              <button id="stop-god-btn" class="btn-stop hidden" onclick="window.stopGodAgent()" title="Detener HERMES GOD">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12"></rect>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <!-- /👑 HERMES GOD View -->
 
         <!-- Terminal View -->
         <div id="terminal-tab-content" class="tab-content terminal-view hidden">

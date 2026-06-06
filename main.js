@@ -718,6 +718,12 @@ let state = {
     telegramMessages: [],  // { type: 'incoming'|'outgoing'|'status'|'error', chatId, from?, text, timestamp }
     adminIsThinking: false,
     adminIsStopped: false,
+    godMessages: [],
+    godIsThinking: false,
+    godIsStopped: false,
+    godThinkingText: '',
+    godAbortController: null,
+    godNeedsRecheck: false,
     maxValidationRetries: 15,
     autoValidation: true,
     taskState: {
@@ -874,6 +880,15 @@ const adminChatMessages = document.getElementById('admin-chat-messages');
 const adminGlobalInput = document.getElementById('admin-global-input');
 const adminSendBtn = document.getElementById('admin-send-btn');
 const stopAdminBtn = document.getElementById('stop-admin-btn');
+
+// 👑 HERMES GOD DOM refs
+const godTabContent = document.getElementById('god-tab-content');
+const godChatMessages = document.getElementById('god-chat-messages');
+const godInput = document.getElementById('god-input');
+const godSendBtn = document.getElementById('god-send-btn');
+const stopGodBtn = document.getElementById('stop-god-btn');
+const godSidebarBtn = document.getElementById('god-sidebar-btn');
+const godStatusText = document.getElementById('god-status-text');
 
 // Vision Support
 const attachImgBtn = document.getElementById('attach-img');
@@ -1352,6 +1367,22 @@ async function init() {
                         });
                         renderTelegramMessages();
                     }
+                    // ─── 👑 HERMES GOD SYNC ───
+                    if (data.event === 'god:sync') {
+                        if (typeof renderGodMessages === 'function') {
+                            // También lo agregamos al GOD chat si no vino de ahí
+                            const alreadyInGod = state.godMessages.some(m => m.content === data.content && m.role === data.role);
+                            if (!alreadyInGod) {
+                                state.godMessages.push({
+                                    role: data.role === 'user' ? 'user' : 'agent',
+                                    content: data.source === 'telegram' ? `📱 ${data.content}` : data.content,
+                                    timestamp: Date.now()
+                                });
+                                renderGodMessages();
+                                saveData();
+                            }
+                        }
+                    }
                 } catch(e) {}
             };
             sysWs.onclose = () => {
@@ -1458,6 +1489,7 @@ async function loadData(shouldScan = true) {
             state.improverPrompt = data.improverPrompt || "";
             state.activeProjectId = data.activeProjectId || null;
             state.adminMessages = data.adminMessages || [];
+            state.godMessages = data.godMessages || [];
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
             state.skillsMetadata = data.skillsMetadata || {};
@@ -1476,6 +1508,8 @@ async function loadData(shouldScan = true) {
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
             console.log("📍 Restored active project:", state.activeProjectId);
+        } else if (state.activeProjectId === 'admin' || state.activeProjectId === 'god') {
+            console.log(`📍 Restored ${state.activeProjectId} tab`);
         } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
         } else {
@@ -1849,6 +1883,7 @@ async function saveData() {
             improverPrompt: state.improverPrompt,
             activeProjectId: state.activeProjectId,
             adminMessages: state.adminMessages,
+            godMessages: state.godMessages,
             maxValidationRetries: state.maxValidationRetries,
             autoValidation: state.autoValidation,
             deepseekApiKey: state.deepseekApiKey,
@@ -1930,6 +1965,7 @@ function syncUI() {
         const isChat = chats.some(c => c.id === project.activeTabId);
         if (isChat) {
             renderMessages(true);
+            restoreChatDraft();  // Restaurar draft guardado al cargar
         } else {
             renderTabs();
         }
@@ -2613,6 +2649,40 @@ function getActiveChat() {
     return p.chats[0];
 }
 
+// ─── Draft Persistence: guarda el texto del input en el chat activo ───
+// SOLO guarda si el activeTabId actual realmente es un chat (no fallback de getActiveChat)
+function saveChatDraft() {
+    const p = getActiveProject();
+    if (!p || !Array.isArray(p.chats)) return;
+    // Verificar que el tab activo realmente sea un chat (no terminal/hermes/git/etc)
+    const isCurrentlyOnChat = p.chats.some(c => c.id === p.activeTabId);
+    if (!isCurrentlyOnChat) return;
+    const chat = p.chats.find(c => c.id === p.activeTabId);
+    if (chat) {
+        // Siempre guardar, incluso strings vacíos, para poder "borrar" drafts
+        if (chatInput.value) {
+            chat.draftInput = chatInput.value;
+        } else {
+            delete chat.draftInput; // Si el usuario borró todo, eliminar el draft
+        }
+    }
+}
+
+// ─── Draft Persistence: restaura el texto del input desde el chat activo ───
+// SOLO restaura si el activeTabId realmente es un chat
+function restoreChatDraft() {
+    const p = getActiveProject();
+    const isOnChat = p && Array.isArray(p.chats) && p.chats.some(c => c.id === p.activeTabId);
+    if (isOnChat) {
+        const chat = p.chats.find(c => c.id === p.activeTabId);
+        chatInput.value = (chat && chat.draftInput) ? chat.draftInput : '';
+    } else {
+        chatInput.value = '';
+    }
+    // Disparar evento input para que los handlers de slash/autocomplete se actualicen
+    chatInput.dispatchEvent(new Event('input'));
+}
+
 async function fetchModels() {
     try {
         const res = await fetchWithLog(`${API_BASE}/models`);
@@ -2810,6 +2880,8 @@ function renderTabs() {
     if (!project) {
         if (state.activeProjectId === 'admin') {
             tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
+        } else if (state.activeProjectId === 'god') {
+            tabsNav.innerHTML = `<div class="tab god-tab active">👑 HERMES GOD</div>`;
         } else {
             tabsNav.innerHTML = '';
         }
@@ -2896,6 +2968,14 @@ function renderTabs() {
     tabsHtml += `
         <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
             <span>🔀 GIT</span>
+        </div>
+    `;
+
+    // 8. 👑 GOD Tab (global, always visible)
+    const isGodActive = state.activeProjectId === 'god';
+    tabsHtml += `
+        <div class="tab god-tab ${isGodActive ? 'active' : ''}" onclick="window.switchTab('god')">
+            <span>👑 GOD</span>
         </div>
     `;
 
@@ -3097,6 +3177,7 @@ function updateViewVisibility() {
     if (hermesTabContent) hermesTabContent.classList.add('hidden');
     const gitTabContent = document.getElementById('git-tab-content');
     if (gitTabContent) gitTabContent.classList.add('hidden');
+    if (godTabContent) godTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -3163,6 +3244,12 @@ function updateViewVisibility() {
         adminBtn.classList.toggle('active', isAdminActive);
     }
 
+    // Update GOD sidebar button state
+    if (godSidebarBtn) {
+        const isGodActive = state.activeProjectId === 'god';
+        godSidebarBtn.classList.toggle('active', isGodActive);
+    }
+
     const skillsBtn = document.getElementById('skills-manager-btn');
     if (skillsBtn) {
         const isSkillsActive = state.activeProjectId === 'skills' || (project && project.activeTabId === 'skills');
@@ -3174,6 +3261,16 @@ function updateViewVisibility() {
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
+        return;
+    }
+
+    // 👑 GOD tab is a global tab, not project-scoped
+    if (state.activeProjectId === 'god') {
+        saveFileBtn.classList.add('hidden');
+        if (godTabContent) {
+            godTabContent.classList.remove('hidden');
+        }
+        renderGodMessages();
         return;
     }
 
@@ -3299,6 +3396,11 @@ function updateViewVisibility() {
         renderAdminMonitor();
         renderAdminMessages();
         // Detener health-check al salir de un chat
+        stopHealthCheck();
+    } else if (state.activeProjectId === 'god') {
+        saveFileBtn.classList.add('hidden');
+        if (godTabContent) godTabContent.classList.remove('hidden');
+        renderGodMessages();
         stopHealthCheck();
     } else if (isOpenFile) {
         saveFileBtn.classList.remove('hidden');
@@ -3560,8 +3662,18 @@ window.switchTab = (id) => {
     console.log("Switching to tab:", id);
 
     if (id === 'admin') {
+        // ─── Guardar draft antes de salir ───
+        saveChatDraft();
         state.activeProjectId = 'admin';
         renderTabs();
+        return;
+    }
+
+    if (id === 'god') {
+        saveChatDraft();
+        state.activeProjectId = 'god';
+        renderTabs();
+        renderGodMessages();
         return;
     }
 
@@ -3573,9 +3685,16 @@ window.switchTab = (id) => {
 
     const p = getActiveProject();
     if (p) {
+        // ─── Guardar draft del chat actual ───
+        saveChatDraft();
+
         p.activeTabId = id;
         renderTabs();
         renderMessages(); // To refresh chat if switching to a chat tab
+
+        // ─── Restaurar draft (si no es chat, se limpia automáticamente) ───
+        restoreChatDraft();
+
         saveData();
 
         // Reset git commit message context when switching agents
@@ -3656,6 +3775,9 @@ window.switchProject = (id, event = null) => {
         if (event.target.classList.contains('btn-delete')) return;
     }
 
+    // ─── Guardar draft del chat activo antes de cambiar de proyecto ───
+    saveChatDraft();
+
     console.log(`🚀 Switching to project: ${id}`);
     state.activeProjectId = id;
     const project = getActiveProject();
@@ -3672,6 +3794,9 @@ window.switchProject = (id, event = null) => {
 
     renderProjectList();
     renderTabs();
+
+    // ─── Restaurar draft del chat activo (si no es chat, se limpia automáticamente) ───
+    restoreChatDraft();
 
     if (project.folder) {
         console.log(`📂 Project has folder, scanning: ${project.folder}`);
@@ -4189,6 +4314,7 @@ async function sendMessage() {
     }
 
     chatInput.value = '';
+    delete chat.draftInput;  // Limpiar draft al enviar
     clearImages();
     renderMessages();
 
@@ -5424,6 +5550,199 @@ window.clearAdminChat = () => {
     if (!confirm("¿Borrar todo el historial del chat de administración?")) return;
     state.adminMessages = [];
     renderAdminMessages();
+    saveData();
+};
+
+// ─── 👑 HERMES GOD ───
+function renderGodMessages() {
+    if (!godChatMessages) return;
+
+    if (state.godMessages.length === 0) {
+        godChatMessages.innerHTML = `<div class="message system">👑 Bienvenido a HERMES GOD — el centro de control supremo de JP Agents.</div>`;
+        return;
+    }
+
+    let thinkingHtml = '';
+    if (state.godIsThinking) {
+        const thinkingText = state.godThinkingText 
+            ? state.godThinkingText.split('\n').filter(l => l.trim()).map(l => `<div>${escapeHtml(l)}</div>`).join('')
+            : '';
+        thinkingHtml = `
+            <div class="message agent thinking">
+                <div class="thinking-bubble-content">
+                    <div class="spinner"></div>
+                    <div class="thinking-text-wrapper">
+                        <div class="thinking-status">💭 HERMES GOD pensando...</div>
+                        ${thinkingText ? `<div class="thinking-subtext thinking-stream">${thinkingText}</div>` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    godChatMessages.innerHTML = '';
+    state.godMessages.forEach(m => {
+        const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+        const timeSpan = time ? `<span style="font-size: 0.7rem; opacity: 0.7;">[${time}]</span> ` : '';
+
+        let roleClass = m.role;
+        if (m.role === 'system') roleClass = 'system';
+
+        // Hide dispatch tags from display
+        let displayContent = m.content.replace(/\[@([^:]+):[ \t]*"(.*?)"\]/g, (match, name) => {
+            return `<div class="admin-dispatch-pill">📡 Ordenando a <strong>${name}</strong>...</div>`;
+        });
+
+        const div = document.createElement('div');
+        div.className = `message ${roleClass}`;
+        div.innerHTML = timeSpan + formatMarkdown(displayContent);
+        godChatMessages.appendChild(div);
+    });
+
+    if (thinkingHtml) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = thinkingHtml;
+        if (tempDiv.firstElementChild) {
+            godChatMessages.appendChild(tempDiv.firstElementChild);
+        }
+    }
+
+    setTimeout(() => {
+        godChatMessages.scrollTop = godChatMessages.scrollHeight;
+    }, 50);
+}
+
+async function triggerGodLogic(retryCount = 0) {
+    if (state.godIsThinking) {
+        state.godNeedsRecheck = true;
+        return;
+    }
+
+    state.godIsThinking = true;
+    state.godIsStopped = false;
+    state.godNeedsRecheck = false;
+    state.godThinkingText = '';
+    if (stopGodBtn) stopGodBtn.classList.remove('hidden');
+    if (godStatusText) godStatusText.textContent = '💭 Pensando...';
+    renderGodMessages();
+
+    // Obtener el último mensaje del usuario
+    const lastUserMsg = state.godMessages.filter(m => m.role === 'user').pop();
+    const queryMessage = lastUserMsg ? lastUserMsg.content : '';
+
+    // Build history para contexto
+    const history = state.godMessages.map(m => ({
+        role: m.role === 'agent' ? 'assistant' : (m.role === 'system' ? 'user' : m.role),
+        content: m.content
+    }));
+
+    try {
+        state.godAbortController = new AbortController();
+
+        const response = await fetch(`${API_BASE}/admin/hermes-chat/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: queryMessage, history }),
+            signal: state.godAbortController.signal
+        });
+
+        if (!response.ok) {
+            let detail = response.statusText;
+            try {
+                const errBody = await response.json();
+                if (errBody.error) detail = errBody.error;
+                else if (errBody.response) detail = errBody.response;
+            } catch {}
+            throw new Error(`Hermes GOD API Error: ${detail}`);
+        }
+
+        // ─── Leer el stream ndjson ───
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let assistantResponse = '(sin respuesta)';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+
+                    if (event.event === 'thinking') {
+                        state.godThinkingText = event.text;
+                        renderGodMessages();
+                    } else if (event.event === 'done') {
+                        assistantResponse = event.response || '(sin respuesta)';
+                    } else if (event.event === 'error') {
+                        throw new Error(event.error);
+                    }
+                } catch (parseErr) {
+                    if (parseErr.message && !parseErr.message.includes('JSON')) {
+                        throw parseErr;
+                    }
+                }
+            }
+        }
+
+        if (!assistantResponse) {
+            throw new Error('La transmisión finalizó sin respuesta');
+        }
+        
+        // Mostrar la respuesta en el chat GOD
+        state.godMessages.push({ role: 'agent', content: assistantResponse });
+        renderGodMessages();
+        saveData();
+
+        state.godIsThinking = false;
+        if (stopGodBtn) stopGodBtn.classList.add('hidden');
+        if (godStatusText) godStatusText.textContent = 'Disponible';
+
+        if (state.godNeedsRecheck) {
+            if (retryCount < 2) {
+                triggerGodLogic(retryCount + 1);
+            } else {
+                state.godNeedsRecheck = false;
+                renderGodMessages();
+                saveData();
+            }
+        } else {
+            renderGodMessages();
+            saveData();
+        }
+
+    } catch (e) {
+        state.godIsThinking = false;
+        if (stopGodBtn) stopGodBtn.classList.add('hidden');
+        if (godStatusText) godStatusText.textContent = 'Error';
+        state.godMessages.push({ role: 'system', content: '⚠️ Error de HERMES GOD: ' + e.message });
+        renderGodMessages();
+    }
+}
+
+window.stopGodAgent = () => {
+    if (state.godAbortController) {
+        state.godAbortController.abort();
+    }
+    state.godIsThinking = false;
+    state.godIsStopped = true;
+    if (stopGodBtn) stopGodBtn.classList.add('hidden');
+    if (godStatusText) godStatusText.textContent = 'Detenido';
+    state.godMessages.push({ role: 'system', content: '⏹️ HERMES GOD detenido por el usuario.' });
+    renderGodMessages();
+    saveData();
+};
+
+window.clearGodChat = () => {
+    if (!confirm("¿Borrar todo el historial de HERMES GOD?")) return;
+    state.godMessages = [];
+    renderGodMessages();
     saveData();
 };
 
@@ -7061,6 +7380,63 @@ function setupEventListeners() {
         }
     };
 
+    // ─── 👑 HERMES GOD Event Handlers ───
+    if (godSendBtn) {
+        godSendBtn.onclick = async () => {
+            const cmd = godInput.value.trim();
+            if (!cmd) return;
+
+            state.godMessages.push({ role: 'user', content: cmd, timestamp: Date.now() });
+            godInput.value = '';
+            renderGodMessages();
+
+            await triggerGodLogic();
+        };
+    }
+
+    if (godInput) {
+        godInput.onkeydown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (godSendBtn) godSendBtn.click();
+            }
+        };
+    }
+
+    // Improve prompt button for GOD
+    const improveGodBtn = document.getElementById('improve-god-prompt-btn');
+    if (improveGodBtn) {
+        improveGodBtn.onclick = async () => {
+            const cmd = godInput.value.trim();
+            if (!cmd) return;
+            try {
+                improveGodBtn.textContent = '⏳';
+                improveGodBtn.disabled = true;
+                const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: cmd })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.improved) godInput.value = data.improved;
+                }
+            } catch (e) {
+                console.error('[GOD] Error mejorando prompt:', e);
+            } finally {
+                improveGodBtn.textContent = '✨';
+                improveGodBtn.disabled = false;
+            }
+        };
+    }
+
+    // GOD sidebar button
+    if (godSidebarBtn) {
+        godSidebarBtn.addEventListener('click', () => {
+            window.switchTab('god');
+        });
+    }
+
     window.sendDirectAgentCommand = async (projectId, chatId) => {
         const input = document.getElementById(`direct-input-${projectId}-${chatId}`);
         const cmd = input.value.trim();
@@ -7260,6 +7636,9 @@ function setupEventListeners() {
         }
         
         chatInput.value = '';
+        // Limpiar draft del chat activo cuando se ejecuta un comando slash
+        const activeChat = getActiveChat();
+        if (activeChat) delete activeChat.draftInput;
         hideSlashDropdown();
         chatInput.focus();
     }
@@ -8457,6 +8836,19 @@ init();
                                 timestamp: Date.now()
                             });
                             renderAdminMessages();
+                        }
+                        // También al GOD chat (si no vino de ahí)
+                        if (typeof renderGodMessages === 'function') {
+                            const alreadyInGod = state.godMessages.some(m => m.content === data.content && m.role === data.role);
+                            if (!alreadyInGod) {
+                                state.godMessages.push({
+                                    role: data.role === 'user' ? 'user' : 'agent',
+                                    content: data.source === 'telegram' ? `📱 ${data.content}` : data.content,
+                                    timestamp: Date.now()
+                                });
+                                renderGodMessages();
+                                saveData();
+                            }
                         }
                     }
                     if (data.event === 'hermes:admin-sync' || data.event === 'god:sync') {
