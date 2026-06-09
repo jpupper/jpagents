@@ -1,25 +1,53 @@
-import { state, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
-import { initMatrix } from './matrix.js';
-import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachImgBtn, imageInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
-if (editorCode) editorCode.contentEditable = true;
-import { stripAnsi, ansiToHtml, escapeHtml, createChat, isAgentActive, getDiffEngine, countLines, getLanguage, formatProgressLines, highlightGitDiff, formatMarkdown, pathJoin } from './modules/utils.js';
-
-// ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
-let terminalEventSource = null;
-let isSaving = false;
-let savePending = false;
-let amIMaster = false;
-let mySocketId = null;
-let syncWs = null;
-let draggedProjectId = null;
-let draggedTabId = null;
-let draggedTabType = null;
+import { initMatrix } from './matrix.js'
 
 // ── Local: strip ANSI escape codes ──
+function stripAnsi(text) {
+    if (typeof text !== 'string') return text;
+    return text
+        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
+        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
+        .replace(/\x1b[\[\(].{0,3}/g, '')
+        .replace(/\x1b./g, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+}
 
 // ── Local: create chat object ──
+function createChat(project, opts = {}) {
+    const {
+        name = 'Agente ' + ((project.chats?.length || 0) + 1),
+        useHermes = true,
+        model = project?.model || 'deepseek-v4-pro',
+        skills,
+        mode = 'auto'
+    } = opts;
+    return {
+        id: 'chat-' + (Date.now().toString(36) + Math.random().toString(36).substr(2)),
+        name,
+        messages: [],
+        isThinking: false,
+        isRunning: false,
+        isStreaming: false,
+        isStopped: false,
+        mode,
+        lastProgress: Date.now(),
+        model,
+        useHermes,
+        isNew: true,
+        skills: skills || (project?.skills ? [...project.skills] : []),
+        totalTokens: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalApiCalls: 0
+    };
+}
 
 // ── Local: check if agent is active ──
+function isAgentActive(chat) {
+    if (!chat) return false;
+    return !!chat.isThinking;
+}
 
 let activeMatrix = null;
 
@@ -126,10 +154,79 @@ marked.setOptions({
 // ── ANSI Escape Code Stripper (comprehensive) ──
 // Hermes emite secuencias ANSI (colores, cursor, erase, scroll) que se ven como basura en HTML.
 // Función local definida arriba.
+window.stripAnsi = stripAnsi;
 
 // ── ANSI to HTML Converter ──
 // Convierte secuencias de escape ANSI (colores, bold, etc.) en <span> con estilo CSS.
 // Soporta: colores 30-37, 90-97 (fg), 40-47, 100-107 (bg), bold(1), dim(2), italic(3), underline(4)
+function ansiToHtml(text) {
+    if (typeof text !== 'string') return escapeHtml(String(text));
+    // Primero escapamos HTML para prevenir XSS
+    let html = escapeHtml(text);
+    let result = '';
+    let i = 0;
+    let openSpans = 0;
+    // Paleta ANSI oscura (legible sobre fondo oscuro)
+    const FG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const FG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    const BG = ['#1a1a1a','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#abb2bf'];
+    const BG_BRIGHT = ['#5c6370','#e06c75','#98c379','#e5c07b','#61afef','#c678dd','#56b6c2','#ffffff'];
+    let cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false };
+
+    function styleStr() {
+        const s = [];
+        if (cur.fg) s.push('color:' + cur.fg);
+        if (cur.bg) s.push('background-color:' + cur.bg);
+        if (cur.bold) s.push('font-weight:bold');
+        if (cur.dim) s.push('opacity:0.6');
+        if (cur.italic) s.push('font-style:italic');
+        if (cur.underline) s.push('text-decoration:underline');
+        return s.join(';');
+    }
+
+    function closeSpans() { while (openSpans > 0) { result += '</span>'; openSpans--; } }
+    function openSpan() {
+        closeSpans();
+        const st = styleStr();
+        if (st) { result += '<span style="' + st + '">'; openSpans = 1; }
+    }
+
+    while (i < html.length) {
+        if (html.charCodeAt(i) === 27 && html.charAt(i + 1) === '[') {
+            let j = i + 2;
+            while (j < html.length && !/[A-Za-z@-_]/.test(html.charAt(j))) j++;
+            if (j >= html.length) break;
+            const params = html.substring(i + 2, j);
+            const final = html.charAt(j);
+            i = j + 1;
+            if (final !== 'm') continue; // solo SGR, ignorar cursor/erase/scroll
+            const codes = params ? params.split(';').map(Number) : [0];
+            for (const c of codes) {
+                if (c === 0) { cur = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false }; }
+                else if (c === 1) cur.bold = true;
+                else if (c === 2) cur.dim = true;
+                else if (c === 3) cur.italic = true;
+                else if (c === 4) cur.underline = true;
+                else if (c === 22) { cur.bold = false; cur.dim = false; }
+                else if (c === 23) cur.italic = false;
+                else if (c === 24) cur.underline = false;
+                else if (c >= 30 && c <= 37) cur.fg = FG[c - 30];
+                else if (c === 39) cur.fg = null;
+                else if (c >= 90 && c <= 97) cur.fg = FG_BRIGHT[c - 90];
+                else if (c >= 40 && c <= 47) cur.bg = BG[c - 40];
+                else if (c === 49) cur.bg = null;
+                else if (c >= 100 && c <= 107) cur.bg = BG_BRIGHT[c - 100];
+            }
+            openSpan();
+            continue;
+        }
+        result += html.charAt(i);
+        i++;
+    }
+    closeSpans();
+    return result.replace(/\r\n?/g, '\n');
+}
+window.ansiToHtml = ansiToHtml;
 
 const API_BASE = (() => {
     const host = window.location.hostname;
@@ -601,15 +698,156 @@ async function performPeriodicSync() {
     }
 }
 
-// ─── Generar nombre de agente desde el prompt del usuario ───
+// New State Structure
+const DEFAULT_NAMING_PROMPT = `Eres un generador de nombres creativos para AGENTES de IA.
+
+Tu tarea: dado el mensaje de un usuario, genera un NOMBRE CORTO (2-4 palabras) en español que describa creativamente la tarea o el objetivo.
+
+REGLAS:
+- Solo devuelve el nombre, sin explicaciones, sin comillas, sin puntos.
+- Máximo 4 palabras, mínimo 2.
+- Debe sonar como un NOMBRE PROPIO de proyecto/misión, no una descripción.
+- Sé creativo: usa metáforas, conceptos abstractos o combinaciones originales.
+- Ejemplo: usuario dice "crea un juego de naves espaciales" → nombre: "Galaxia Atómica"
+- Ejemplo: usuario dice "haz un análisis de ventas del mes" → nombre: "Balance Financiero"
+- Ejemplo: usuario dice "escribe un script para ordenar archivos" → nombre: "Clasificador Digital"
+- NO copies el prompt del usuario literalmente. INVENTA un nombre.
+
+Respuesta solo el nombre:`;
+
+const DEFAULT_USER_SYSTEM_PROMPT = `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨
+
+Eres un asistente de programación experto que opera EXCLUSIVAMENTE a través de herramientas MCP. 
+Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema RECHAZARÁ tus acciones.
+
+### 🛠️ REGLAS DE ORO:
+
+1. **REGLA DE SELECTIVIDAD**: SOLO usa herramientas si es estrictamente necesario. Si puedes responder con tu conocimiento base, hazlo sin usar herramientas.
+2. **REGLA DE LECTURA (OBLIGATORIA)**: ANTES de modificar o escribir en cualquier archivo, DEBES leer su contenido usando [CALL:read_file]{"path": "..."}. No intentes adivinar el código.
+3. **REGLA DE ESCRITURA**: Para crear o modificar archivos, DEBES usar EXACTAMENTE este formato:
+   [CALL:write_file]{"path": "nombre.ext", "content": "Contenido completo..."}
+   No uses bloques de código standard ( \`\`\`js ).
+4. **REGLA DE HONESTIDAD**: Si una herramienta devuelve un ERROR, NO digas que la tarea está terminada. Informa del error al usuario, analiza por qué falló (ej: ruta incorrecta, JSON mal escapado) e intenta corregirlo. NUNCA mientas sobre el estado de una operación.
+5. **REGLA DE ALEATORIEDAD**: Si necesitas un número aleatorio, USA SIEMPRE [CALL:RANDOM]{"min": X, "max": Y}.
+
+### ⚠️ MANEJO DE ERRORES:
+- Si el error dice "File not found", usa [CALL:list_files] para ver la estructura real.
+- Si el error es de JSON, asegúrate de que el campo "content" tenga los saltos de línea como \\n y las comillas escapadas.`;
+
+const DEFAULT_ORCHESTRATOR_PROMPT = `Eres el AGENTE ADMINISTRADOR y ORQUESTADOR.
+Tu objetivo es gestionar de principio a fin las peticiones del usuario, delegando tareas a agentes específicos cuando sea necesario.
+
+FLUJO DE TRABAJO:
+1. Analiza la petición del usuario.
+2. Si requiere un nuevo proyecto o agente, créalos.
+3. Delega la tarea al agente correspondiente.
+4. Si recibes una notificación de que un agente terminó, revisa su resultado y decide si la tarea global está completa o si se requiere otro paso.
+
+REGLAS CRÍTICAS:
+1. NO crees proyectos ni agentes de forma aleatoria. Solo hazlo si la petición del usuario lo requiere explícitamente.
+2. Ante notificaciones de "TASK COMPLETE", verifica si realmente se cumplió el objetivo antes de dar por terminada la sesión administrativa.
+3. Si el usuario te habla directamente en este chat, él manda. Si recibes una notificación del sistema, actúa como supervisor, no como ejecutor.
+
+INSTRUCCIONES DE COMANDO:
+- Delegar: [DELEGATE:ID_O_NOMBRE] Instrucción... [/DELEGATE] o [@Nombre: "Instrucción"]
+- Administración de proyectos: [CREATE_PROJECT: Nombre], [DELETE_PROJECT: ID_o_Nombre]
+- Administración de agentes: [CREATE_AGENT: Proyecto : NombreAgente], [DELETE_AGENT: Proyecto : Agente], [STOP_AGENT: Proyecto : Agente]
+- Consulta: [LIST_AGENTS] (el sistema te muestra la tabla actualizada de agentes)
+
+REGLAS:
+- Usá [CREATE_PROJECT: Nombre] para crear un proyecto nuevo (sin comillas en el nombre).
+- Usá [CREATE_AGENT: NombreProyecto : NombreAgente] para crear un agente DENTRO de un proyecto existente.
+- Usá [DELETE_AGENT: Proyecto : Agente] para eliminar un agente específico.
+- Usá [STOP_AGENT: Proyecto : Agente] para detener un agente que está corriendo.
+- Usá [DELETE_PROJECT: ID_o_Nombre] para eliminar un proyecto entero.
+- Usá [@NombreAgente: "Instrucción detallada"] para delegar tareas a agentes existentes.
+- SIEMPRE creá el proyecto primero, después el agente, después delegá la tarea.
+- NO uses comillas en los nombres de proyectos o agentes dentro de los comandos.`;
+
+
+let state = {
+    projects: [],
+    activeProjectId: null,
+    models: [],
+    selectedModel: '',
+    selectedAdminModel: '', // Dedicated model for Admin
+    mode: 'auto', // 'auto' or 'supervised'
+    userSystemPrompt: DEFAULT_USER_SYSTEM_PROMPT,
+    namingPrompt: DEFAULT_NAMING_PROMPT,
+    orchestratorPrompt: DEFAULT_ORCHESTRATOR_PROMPT,
+    secondAgentConfig: {
+        enabled: true,
+        model: 'gemma4:e4b',
+        temperature: 0.7,
+        maxTokens: 50
+    },
+    improverPrompt: "",
+    deepseekApiKey: '',
+    openaiApiKey: '',
+    openrouterApiKey: '',
+    customApiBase: '',
+    deepseekThinking: true,
+    adminMessages: [],
+    telegramMessages: [],  // { type: 'incoming'|'outgoing'|'status'|'error', chatId, from?, text, timestamp }
+    adminIsThinking: false,
+    adminIsStopped: false,
+    godMessages: [],
+    godIsThinking: false,
+    godIsStopped: false,
+    godThinkingText: '',
+    godAbortController: null,
+    godNeedsRecheck: false,
+    maxValidationRetries: 15,
+    autoValidation: true,
+    taskState: {
+        objective: '',
+        steps: [],
+        currentStep: 0
+    },
+    skillsMetadata: {} // Maps skill name to metadata object { isDefault: boolean }
+    , sidebarWidth: 260,
+    sidebarVisible: true,
+    fileExplorerWidth: 300,
+    fileExplorerVisible: true
+};
+
+// Exportado para filemanager.js
+window.__jpState = state;
+
+let pendingDeletes = new Set();
+let pendingDeleteAll = false;
+let pendingDeleteAllTimeout = null;
+
+
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+// --- Generative Naming Arrays ---
+const ADJECTIVES = ["Cosmic", "Universal", "Quantum", "Galactic", "Nebulous", "Stellar", "Astral", "Solar", "Lunar", "Orbital", "Celestial", "Infinite", "Eternal", "Mystical", "Ethereal", "Radiant", "Vibrant", "Dynamic", "Organic", "Digital", "Atomic", "Molecular", "Tectonic", "Volcanic", "Oceanic", "Forest", "Desert", "Mountain", "Arctic", "Tropical", "Phantom", "Secret", "Hidden", "Lost", "Found", "Bright", "Dark", "Light", "Shadow", "Zenith"];
+const COLORS = ["Red", "Green", "Blue", "Yellow", "Magenta", "Cyan", "White", "Black", "Gray", "Silver", "Gold", "Platinum", "Copper", "Bronze", "Emerald", "Ruby", "Sapphire", "Amethyst", "Topaz", "Onyx", "Amber", "Coral", "Teal", "Turquoise", "Lavender", "Violet", "Indigo", "Crimson", "Scarlet", "Maroon", "Olive", "Lime", "Mint", "Forest", "Sky", "Ocean", "Navy", "Peach", "Salmon", "Orange"];
+const ANIMALS = ["Tiger", "Lion", "Wolf", "Eagle", "Hawk", "Falcon", "Owl", "Phoenix", "Dragon", "Griffin", "Kraken", "Shark", "Whale", "Dolphin", "Octopus", "Bear", "Panther", "Leopard", "Cheetah", "Lynx", "Fox", "Coyote", "Deer", "Elk", "Moose", "Bison", "Bull", "Stallion", "Raven", "Crow", "Swan", "Peacock", "Cobra", "Viper", "Python", "Gecko", "Iguana", "Chameleon", "Tortoise", "Elephant"];
+
+function generateRandomProjectName() {
+    const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+    const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+    const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+    return `${adj} ${color} ${animal}`;
+}
+
+/**
+ * Genera un nombre corto para un agente a partir del prompt del usuario.
+ * Extrae las primeras ~4-6 palabras significativas del prompt.
+ */
 async function generateChatNameFromPrompt(prompt) {
     if (!prompt || typeof prompt !== 'string') return null;
+
+    // Intentar con el Second Agent (Gemma4 / Ollama local)
     if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
         try {
             const namingInstruction = state.namingPrompt || DEFAULT_NAMING_PROMPT;
             const saModel = state.secondAgentConfig.model;
             const temperature = state.secondAgentConfig.temperature || 0.7;
             const maxTokens = state.secondAgentConfig.maxTokens || 50;
+
             const response = await fetch(`${OLLAMA_BASE}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -617,44 +855,113 @@ async function generateChatNameFromPrompt(prompt) {
                     model: saModel,
                     prompt: `${namingInstruction}\n\nMensaje del usuario: ${prompt.trim()}`,
                     stream: false,
-                    options: { temperature, num_predict: maxTokens }
+                    options: {
+                        temperature: temperature,
+                        num_predict: maxTokens
+                    }
                 }),
                 signal: AbortSignal.timeout(8000)
             });
+
             if (response.ok) {
                 const data = await response.json();
                 let name = (data.response || '').trim().replace(/["']/g, '').split('\n')[0];
                 if (name && name.length > 2 && name.length <= 40) {
-                    console.log(`[NAMING] 🦙 ${saModel} generó: "${name}"`);
+                    console.log(`[NAMING] 🦙 ${saModel} generó: "${name}" desde Ollama`);
                     return name;
                 }
             }
         } catch (e) {
-            console.warn(`[NAMING] ⚠️ Second Agent: ${e.message}`);
+            console.warn(`[NAMING] ⚠️ Second Agent (Ollama) no disponible (${e.message}), usando fallback...`);
         }
     }
+
+    // ─── FALLBACK: método antiguo (primeras palabras) ───
+    // FIX: Sanitizar caracteres HTML-breaking y validar calidad del nombre
+    //      Nombres con <, >, ', " rompían el template literal de renderTabs() y tildeaban la UI.
     let text = prompt.trim()
         .replace(/^(hola|buenos dias|buenas tardes|buenas noches|hello|hi|hey|saludos)[,\s!.]*/i, '')
         .replace(/^(necesito|quiero|puedes|podrias|necesitamos|tenemos que|hay que|me gustaria|quisiera|hace falta)[,\s]*/i, '')
         .replace(/^(por favor|please|fa vor)[,\s]*/i, '')
-        .replace(/^(que me|ayudame|hazme|creame|hacé|che[,\s]*)/i, '').trim();
+        .replace(/^(que me|ayudame|hazme|creame|hacé|che[,\s]*)/i, '')
+        .trim();
+
     if (!text) text = prompt.trim();
+
+    // ─── Sanitizar: remover caracteres que rompen HTML y URLs/código ───
+    // Solo permitir: letras, números, espacios, guiones, tildes, ñ
     const cleanText = text.replace(/[<>"'&|{}[\]()=+*%$#@!\\\/]/g, ' ').replace(/\s+/g, ' ').trim();
-    const words = cleanText.split(/\s+/).filter(w => w.length > 1 && w.length <= 40 && !/^\d+$/.test(w));
-    let name = words.slice(0, 3).map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase()).join(' ');
+    const words = cleanText.split(/\s+/).filter(w => {
+        // Filtrar palabras de una sola letra, puros números, o muy largas (>40 chars como URLs)
+        return w.length > 1 && w.length <= 40 && !/^\d+$/.test(w);
+    });
+
+    const nameWords = words.slice(0, 3);
+
+    let name = nameWords
+        .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())
+        .join(' ');
+
+    // ─── Validación final: nombre vacío o demasiado corto → fallback con timestamp ───
     if (!name || name.length < 3) {
         const now = new Date();
-        name = `Tarea ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        name = `Tarea ${ts}`;
+        console.log(`[NAMING] 📛 Fallback naming produjo nombre vacío, usando timestamp: "${name}"`);
     }
-    return name.length > 28 ? name.slice(0, 25).trim() + '...' : name || null;
+
+    if (name.length > 28) {
+        return name.slice(0, 25).trim() + '...';
+    }
+
+    return name || null;
 }
 
 // DOM Elements
+const chatList = document.getElementById('chat-list');
+const chatMessages = document.getElementById('chat-messages');
+const chatInput = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+const modelSelect = document.getElementById('model-select');
+const folderPathInput = document.getElementById('folder-path');
+const scanFolderBtn = document.getElementById('scan-folder');
+const scanFolderSidebarBtn = document.getElementById('scan-folder-sidebar');
+const fileList = document.getElementById('file-list');
+const newChatBtn = document.getElementById('new-chat');
 
+const tabsNav = document.getElementById('tabs-nav');
+const chatTabContent = document.getElementById('chat-tab-content');
+const editorTabContent = document.getElementById('editor-tab-content');
+const editorCode = document.getElementById('editor-code');
+const editorGutter = document.getElementById('editor-gutter');
+const currentFilename = document.getElementById('current-filename');
+const diffStats = document.getElementById('diff-stats');
+const pendingActions = document.getElementById('pending-actions');
+const acceptBtn = document.getElementById('accept-change');
+const rejectBtn = document.getElementById('reject-change');
+const saveFileBtn = document.getElementById('save-file-btn');
+const modeSwitchToggle = document.getElementById('mode-switch-toggle');
 
 // Make editor editable
+if (editorCode) editorCode.contentEditable = true;
+const dashboardTabContent = document.getElementById('dashboard-tab-content');
+const dashboardProjectName = document.getElementById('dashboard-project-name');
+const dashboardProjectPath = document.getElementById('dashboard-project-path');
+const statChats = document.getElementById('stat-chats');
+const statFiles = document.getElementById('stat-files');
+const adminMonitorBtn = document.getElementById('admin-monitor-btn');
+const adminTabContent = document.getElementById('admin-tab-content');
+const monitorTbody = document.getElementById('monitor-tbody');
+const adminChatMessages = document.getElementById('admin-chat-messages');
+const adminGlobalInput = document.getElementById('admin-global-input');
+const adminSendBtn = document.getElementById('admin-send-btn');
+const stopAdminBtn = document.getElementById('stop-admin-btn');
 
 // Vision Support
+const attachImgBtn = document.getElementById('attach-img');
+const imageInput = document.getElementById('image-input');
+const imagePreviewContainer = document.getElementById('image-preview-container');
+const micBtn = document.getElementById('mic-btn');
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  🎤 STANDALONE MICROPHONE INIT (corre aunque init() falle)
@@ -791,11 +1098,44 @@ async function generateChatNameFromPrompt(prompt) {
 })();
 
 // Git Controls (GIT Tab)
+const gitPushBtn = document.getElementById('git-push-btn');
+const gitResetOriginBtn = document.getElementById('git-reset-origin-btn');
+const gitRefreshBtn = document.getElementById('git-refresh-btn');
+const gitCommitMsgInput = document.getElementById('git-commit-msg');
 
 // Terminal Elements
+const terminalTabContent = document.getElementById('terminal-tab-content');
+const terminalOutput = document.getElementById('terminal-output');
+const terminalInput = document.getElementById('terminal-input');
+const clearTerminalBtn = document.getElementById('clear-terminal-btn');
+const terminalRunBtn = document.getElementById('terminal-run-btn');
+const terminalStopBtn = document.getElementById('terminal-stop-btn');
+const matrixTabContent = document.getElementById('matrix-tab-content');
 
+let currentAttachedImages = [];
+let lastRenderedChatId = null;
+let lastRenderedProjectId = null;
+let skillsList = [];
+let skillsCache = {}; // Cache for skill contents: { name: content }
+let hermesSkillsList = []; // Hermes skills: [{ name, category, description }]
+let hermesSkillsCache = {}; // Cache for Hermes skill contents
+let activeSkillName = null;
+let activeSkillSource = 'local'; // 'local' or 'hermes'
 
 // DOM Elements for Skills
+const skillsManagerBtn = document.getElementById('skills-manager-btn');
+const skillsTab = document.getElementById('skills-tab');
+const skillsTabContent = document.getElementById('skills-tab-content');
+const skillsListEl = document.getElementById('skills-list');
+const skillEditorContainer = document.getElementById('skill-editor-container');
+const skillEmptyState = document.getElementById('skill-empty-state');
+const skillNameInput = document.getElementById('skill-name-input');
+const skillContentTextarea = document.getElementById('skill-content-textarea');
+const saveSkillBtn = document.getElementById('save-skill-btn');
+const deleteSkillBtn = document.getElementById('delete-skill-btn');
+const newSkillBtn = document.getElementById('new-skill-btn');
+const agentSkillSelect = document.getElementById('agent-skill-select');
+const skillsSearchInput = document.getElementById('skills-search-input');
 
 // =============================================
 // PANEL RESIZE & TOGGLE LOGIC
@@ -1259,6 +1599,7 @@ async function loadData(shouldScan = true) {
 }
 
 // --- TERMINAL LOGIC ---
+let terminalEventSource = null;
 
 function appendToTerminal(text, type = 'stdout', projectId = null) {
     const project = projectId ? state.projects.find(p => p.id === projectId) : getActiveProject();
@@ -1571,6 +1912,8 @@ function sanitizeProject(p) {
     };
 }
 
+let isSaving = false;
+let savePending = false;
 
 async function saveData() {
     console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2]);
@@ -1645,6 +1988,9 @@ async function clearClientLogs() {
     } catch (e) { }
 }
 
+let amIMaster = false;
+let mySocketId = null;
+let syncWs = null;
 
 function claimMaster() {
     console.log('[SYNC-FLOW] 👑 claimMaster() called. amIMaster =', amIMaster, 'readyState =', syncWs ? syncWs.readyState : 'null');
@@ -1712,15 +2058,14 @@ async function loadSkills() {
     try {
         const res = await fetch(`${API_BASE}/skills`);
         const data = await res.json();
-        state.skillsList.length = 0;
-        if (data.skills) state.skillsList.push(...data.skills);
+        skillsList = data.skills || [];
 
         // Cache all skill contents
-        for (const name of state.skillsList) {
+        for (const name of skillsList) {
             try {
                 const sRes = await fetch(`${API_BASE}/skills/${name}`);
                 const sData = await sRes.json();
-                state.skillsCache[name] = sData.content || "";
+                skillsCache[name] = sData.content || "";
             } catch (e) {
                 console.warn(`Error caching skill ${name}:`, e);
             }
@@ -1730,16 +2075,16 @@ async function loadSkills() {
         try {
             const hRes = await fetch(`${API_BASE}/hermes/skills`);
             const hData = await hRes.json();
-            state.hermesSkillsList.length = 0;
-            if (hData.skills) {
-                // Filtrar categorías ocultas (empiezan con .)
-                const filtered = hData.skills.filter(s => !s.category.startsWith('.'));
-                state.hermesSkillsList.push(...filtered);
-                // Cachear contenidos inline (servidor ya los leyó)
-                for (const skill of filtered) {
-                    if (skill.content) {
-                        state.hermesSkillsCache[skill.name] = skill.content;
-                    }
+            hermesSkillsList = hData.skills || [];
+            
+            // Cache Hermes skill contents
+            for (const skill of hermesSkillsList) {
+                try {
+                    const sRes = await fetch(`${API_BASE}/hermes/skills/${skill.category}/${skill.name}`);
+                    const sData = await sRes.json();
+                    hermesSkillsCache[skill.name] = sData.content || "";
+                } catch (e) {
+                    console.warn(`Error caching Hermes skill ${skill.name}:`, e);
                 }
             }
         } catch (e) {
@@ -1757,7 +2102,7 @@ function renderSkillsList() {
     if (!skillsListEl) return;
 
     // Determine which list to show based on active source
-    const skills = state.activeSkillSource === 'hermes' ? state.hermesSkillsList : state.skillsList;
+    const skills = activeSkillSource === 'hermes' ? hermesSkillsList : skillsList;
     const searchTerm = skillsSearchInput ? skillsSearchInput.value.toLowerCase().trim() : '';
 
     skillsListEl.innerHTML = skills
@@ -1770,12 +2115,12 @@ function renderSkillsList() {
             const description = typeof s === 'string' ? '' : (s.description || '');
             const category = typeof s === 'string' ? '' : (s.category || '');
             const source = typeof s === 'string' ? 'local' : 'hermes';
-            const isDefault = state.activeSkillSource === 'local' ? (state.skillsMetadata[name]?.isDefault) : false;
+            const isDefault = activeSkillSource === 'local' ? (state.skillsMetadata[name]?.isDefault) : false;
             const badge = isDefault ? '<span class="skill-badge-default" title="Cargado por defecto en nuevos proyectos">⭐</span>' : '';
             const catTag = category ? `<span class="skill-cat-tag">${category}</span>` : '';
-            const isActive = state.activeSkillName === name;
+            const isActive = activeSkillName === name;
             return `
-                <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}', '${state.activeSkillSource}')">
+                <div class="skill-item ${isActive ? 'active' : ''}" onclick="window.selectSkill('${name}', '${activeSkillSource}')">
                     <span class="skill-icon">${source === 'hermes' ? '⚡' : '🧠'}</span>
                     <span class="skill-name">${escapeHtml(name)} ${badge} ${catTag}</span>
                     ${description ? `<span class="skill-desc">${escapeHtml(description.slice(0, 60))}</span>` : ''}
@@ -1785,27 +2130,27 @@ function renderSkillsList() {
 }
 
 window.selectSkill = async (name, source = 'local') => {
-    state.activeSkillName = name;
-    state.activeSkillSource = source;
+    activeSkillName = name;
+    activeSkillSource = source;
     renderSkillsList();
 
     try {
         let content = '';
         if (source === 'hermes') {
-            const s = state.hermesSkillsList.find(sk => sk.name === name);
+            const s = hermesSkillsList.find(sk => sk.name === name);
             if (s) {
                 const res = await fetch(`${API_BASE}/hermes/skills/${s.category}/${name}`);
                 const data = await res.json();
                 content = data.content || '';
-                state.hermesSkillsCache[name] = content;
+                hermesSkillsCache[name] = content;
             } else {
-                content = state.hermesSkillsCache[name] || '';
+                content = hermesSkillsCache[name] || '';
             }
         } else {
             const res = await fetch(`${API_BASE}/skills/${name}`);
             const data = await res.json();
             content = data.content || '';
-            state.skillsCache[name] = content;
+            skillsCache[name] = content;
         }
 
         skillNameInput.value = name;
@@ -1853,12 +2198,12 @@ function updateSkillSelects() {
         let options = `<option value="">${s.label}</option>`;
         // Local skills
         options += '<optgroup label="📁 Skills Locales">';
-        options += state.skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
+        options += skillsList.map(name => `<option value="${name}">${name}</option>`).join('');
         options += '</optgroup>';
         // Hermes skills
-        if (state.hermesSkillsList.length > 0) {
+        if (hermesSkillsList.length > 0) {
             options += '<optgroup label="⚡ Skills Hermes">';
-            options += state.hermesSkillsList.map(sk => 
+            options += hermesSkillsList.map(sk => 
                 `<option value="${sk.name}" data-source="hermes" data-category="${sk.category || ''}">${sk.name} (${sk.category || 'general'})</option>`
             ).join('');
             options += '</optgroup>';
@@ -1873,7 +2218,7 @@ function setupSkillsEventListeners() {
 
     if (newSkillBtn) {
         newSkillBtn.addEventListener('click', () => {
-            state.activeSkillName = null;
+            activeSkillName = null;
             skillNameInput.value = '';
             skillContentTextarea.value = '';
             skillEditorContainer.classList.remove('hidden');
@@ -1905,7 +2250,7 @@ function setupSkillsEventListeners() {
                 if (!state.skillsMetadata) state.skillsMetadata = {};
                 state.skillsMetadata[name] = { isDefault };
 
-                state.activeSkillName = name;
+                activeSkillName = name;
                 await loadSkills();
                 saveData(); // Save global state with new metadata
                 showSkillStatus("Skill guardado con éxito.");
@@ -1941,12 +2286,12 @@ function setupSkillsEventListeners() {
 
     if (deleteSkillBtn) {
         deleteSkillBtn.addEventListener('click', async () => {
-            if (!state.activeSkillName) return;
-            if (!confirm(`¿Estás seguro de que quieres borrar el skill "${state.activeSkillName}"?`)) return;
+            if (!activeSkillName) return;
+            if (!confirm(`¿Estás seguro de que quieres borrar el skill "${activeSkillName}"?`)) return;
 
             try {
-                await fetch(`${API_BASE}/skills/${state.activeSkillName}`, { method: 'DELETE' });
-                state.activeSkillName = null;
+                await fetch(`${API_BASE}/skills/${activeSkillName}`, { method: 'DELETE' });
+                activeSkillName = null;
                 await loadSkills();
                 skillEditorContainer.classList.add('hidden');
                 skillEmptyState.classList.remove('hidden');
@@ -1960,15 +2305,15 @@ function setupSkillsEventListeners() {
     document.querySelectorAll('.skills-source-tab').forEach(tab => {
         tab.addEventListener('click', () => {
             const source = tab.dataset.skillsSource;
-            if (source === state.activeSkillSource) return;
+            if (source === activeSkillSource) return;
             
             // Update active tab
             document.querySelectorAll('.skills-source-tab').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             
             // Switch source
-            state.activeSkillSource = source;
-            state.activeSkillName = null;
+            activeSkillSource = source;
+            activeSkillName = null;
             
             // Show/hide new skill button for Hermes view
             if (newSkillBtn) newSkillBtn.style.display = source === 'hermes' ? 'none' : '';
@@ -2282,7 +2627,7 @@ async function createNewProject(customName = null) {
     const defaultSkills = [];
     if (state.skillsMetadata) {
         for (const [name, meta] of Object.entries(state.skillsMetadata)) {
-            if (meta.isDefault && state.skillsList.includes(name)) {
+            if (meta.isDefault && skillsList.includes(name)) {
                 defaultSkills.push(name);
             }
         }
@@ -2726,7 +3071,7 @@ window.viewProjectPrompt = (projectId) => {
                     <div class="project-skills-ui" style="background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border-color);">
                         <select id="modal-project-skill-select" class="skill-select" style="width: 100%; padding: 0.8rem; margin-bottom: 1rem;">
                             <option value="">+ Seleccionar Habilidad para el Proyecto...</option>
-                            ${state.skillsList.map(s => `<option value="${s}">${s}</option>`).join('')}
+                            ${skillsList.map(s => `<option value="${s}">${s}</option>`).join('')}
                         </select>
                         <div id="modal-project-skills-tags" class="skills-tags-container">
                             ${skills.length > 0 ? skills.map(s => `
@@ -2983,10 +3328,10 @@ function updateViewVisibility() {
         const chat = chats.find(c => c.id === project.activeTabId);
         if (chat) {
             // Solo renderizar mensajes si la vista estaba oculta (cambio de tab real) o si cambió el chat/proyecto
-            const chatOrProjectChanged = chat.id !== state.lastRenderedChatId || project.id !== state.lastRenderedProjectId;
+            const chatOrProjectChanged = chat.id !== lastRenderedChatId || project.id !== lastRenderedProjectId;
             if (wasHidden || chatOrProjectChanged) {
-                state.lastRenderedChatId = chat.id;
-                state.lastRenderedProjectId = project.id;
+                lastRenderedChatId = chat.id;
+                lastRenderedProjectId = project.id;
                 renderMessages(false);
                 renderAgentSkills();
             }
@@ -3136,8 +3481,36 @@ function updateViewVisibility() {
     }
 }
 
+function getDiffEngine() {
+    return window.JsDiff || window.Diff || (typeof JsDiff !== 'undefined' ? JsDiff : null) || (typeof Diff !== 'undefined' ? Diff : null);
+}
+window.getDiffEngine = getDiffEngine;
 
+function countLines(str) {
+    if (!str || str.length === 0) return 0;
+    const lines = str.split(/\r?\n/);
+    if (lines.length > 1 && lines[lines.length - 1] === '') return lines.length - 1;
+    return (lines.length === 1 && lines[0] === '') ? 0 : lines.length;
+}
+window.countLines = countLines;
 
+function getLanguage(ext) {
+    const map = {
+        'js': 'javascript', 'ts': 'typescript', 'py': 'python',
+        'html': 'xml', 'css': 'css', 'json': 'json',
+        'md': 'markdown', 'txt': 'plaintext', 'bat': 'dos',
+        'sql': 'sql', 'sh': 'bash'
+    };
+    return map[ext] || null;
+}
+window.getLanguage = getLanguage;
+function escapeHtml(text) {
+    if (typeof text !== 'string') return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+window.escapeHtml = escapeHtml;
 
 // Limpiar historial de Telegram
 const telegramClearBtn = document.getElementById('telegram-clear-btn');
@@ -3164,7 +3537,62 @@ function updateTelegramBadge() {
     }
 }
 
+function formatProgressLines(rawContent) {
+    if (!rawContent) return '';
+    const lines = rawContent.split('\n');
+    return lines.map(line => {
+        const trimmed = line.trim();
+        const escaped = escapeHtml(line);
+        if (trimmed.startsWith('+')) {
+            return `<span class="diff-add">${escaped}</span>`;
+        } else if (trimmed.startsWith('-')) {
+            return `<span class="diff-del">${escaped}</span>`;
+        } else if (trimmed.startsWith('🛠️') || trimmed.includes('🛠️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('📖') || trimmed.startsWith('📝') || trimmed.startsWith('🔧') || trimmed.startsWith('🔍') || trimmed.startsWith('⚙️')) {
+            return `<span class="tool-line">${escaped}</span>`;
+        } else if (trimmed.startsWith('✅')) {
+            return `<span class="status-ok">${escaped}</span>`;
+        } else if (trimmed.startsWith('❌')) {
+            return `<span class="status-err">${escaped}</span>`;
+        } else if (trimmed.startsWith('🤔')) {
+            return `<span class="thinking-line">${escaped}</span>`;
+        }
+        return escaped;
+    }).join('\n');
+}
 
+// Highlight git diff output with colors: green for additions, red for deletions
+function highlightGitDiff(diffText) {
+    if (!diffText) return '';
+    const lines = diffText.split('\n');
+    const out = [];
+    for (const line of lines) {
+        // Escape HTML first
+        const esc = escapeHtml(line);
+        // Header lines (diff --git, index, ---, +++)
+        if (/^(diff --git|index |--- |\+\+\+ )/.test(esc)) {
+            out.push('<span class="gd-header">' + esc + '</span>');
+        }
+        // Hunk header (@@ ... @@)
+        else if (/^@@ /.test(esc)) {
+            out.push('<span class="gd-hunk">' + esc + '</span>');
+        }
+        // Removed lines
+        else if (/^\-/.test(esc)) {
+            out.push('<span class="gd">' + esc + '</span>');
+        }
+        // Added lines
+        else if (/^\+/.test(esc)) {
+            out.push('<span class="gi">' + esc + '</span>');
+        }
+        // Everything else
+        else {
+            out.push(esc);
+        }
+    }
+    return out.join('\n');
+}
 
 window.switchTab = (id) => {
     console.log("Switching to tab:", id);
@@ -3735,6 +4163,20 @@ function updateThinking(chat, isThinking, status = "", subtext = "") {
     }
 }
 
+function formatMarkdown(text) {
+    try {
+        // Strip ANSI escape codes first (Hermes emits terminal colors)
+        const clean = stripAnsi(text);
+        const str = (typeof clean === 'string') ? clean : (typeof clean === 'object' ? JSON.stringify(clean, null, 2) : String(clean || ""));
+        if (marked && marked.parse) {
+            return marked.parse(str, { gfm: true, breaks: true });
+        }
+        return text.replace(/\n/g, '<br>');
+    } catch (e) {
+        console.error("Markdown error:", e);
+        return text.replace(/\n/g, '<br>');
+    }
+}
 
 async function sendMessage() {
     const content = chatInput.value.trim();
@@ -3744,8 +4186,8 @@ async function sendMessage() {
 
     // Add user message to state
     const userMsg = { role: 'user', content };
-    if (state.currentAttachedImages.length > 0) {
-        userMsg.images = [...state.currentAttachedImages];
+    if (currentAttachedImages.length > 0) {
+        userMsg.images = [...currentAttachedImages];
     }
     chat.messages.push(userMsg);
 
@@ -3883,7 +4325,7 @@ function buildRefactoredSystemPrompt(taskState) {
     const activeChat = getActiveChat();
     if (activeChat && activeChat.skills && activeChat.skills.length > 0) {
         skillsContent = "### AGENT SKILLS:\n" + activeChat.skills.map(sName => {
-            const content = state.skillsCache[sName];
+            const content = skillsCache[sName];
             if (content) {
                 return `#### Skill: ${sName}\n${content}`;
             }
@@ -6212,6 +6654,16 @@ window.rejectChange = () => {
 
 
 
+function pathJoin(dir, file) {
+    if (!dir) return file;
+    if (!file) return dir;
+    const fSan = file.replace(/\\/g, '/');
+    if (fSan.includes(':') || fSan.startsWith('/')) return fSan;
+    const d = dir.replace(/\\/g, '/').replace(/\/$/, '');
+    const f = fSan.replace(/^\//, '');
+    return d + '/' + f;
+}
+window.pathJoin = pathJoin;
 
 async function handleFileClick(path, originalPath, p, options = {}) {
     const { setActive = true } = options;
@@ -7327,7 +7779,7 @@ async function addImages(files) {
         try {
             const base64 = await toBase64(file);
             const cleanBase64 = base64.split(',')[1];
-            state.currentAttachedImages.push(cleanBase64);
+            currentAttachedImages.push(cleanBase64);
         } catch (err) {
             console.error("Error processing image:", err);
         }
@@ -7345,8 +7797,8 @@ function toBase64(file) {
 }
 
 function renderImagePreviews() {
-    imagePreviewContainer.classList.toggle('hidden', state.currentAttachedImages.length === 0);
-    imagePreviewContainer.innerHTML = state.currentAttachedImages.map((img, index) => `
+    imagePreviewContainer.classList.toggle('hidden', currentAttachedImages.length === 0);
+    imagePreviewContainer.innerHTML = currentAttachedImages.map((img, index) => `
         <div class="preview-item">
             <img src="data:image/jpeg;base64,${img}" />
             <button class="remove-img" onclick="window.removeImage(${index})">&times;</button>
@@ -7355,12 +7807,12 @@ function renderImagePreviews() {
 }
 
 window.removeImage = (index) => {
-    state.currentAttachedImages.splice(index, 1);
+    currentAttachedImages.splice(index, 1);
     renderImagePreviews();
 };
 
 function clearImages() {
-    state.currentAttachedImages.length = 0;
+    currentAttachedImages = [];
     renderImagePreviews();
 }
 
@@ -8370,6 +8822,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
 // ═══════════════════════════════════════════════════════════════
 //  DRAG & DROP — Reordenar Proyectos (Sidebar)
 // ═══════════════════════════════════════════════════════════════
+let draggedProjectId = null;
 
 window.onProjectDragStart = (e, projectId) => {
     draggedProjectId = projectId;
@@ -8418,6 +8871,8 @@ window.onProjectDrop = (e, targetId) => {
 // ═══════════════════════════════════════════════════════════════
 //  DRAG & DROP — Reordenar Tabs
 // ═══════════════════════════════════════════════════════════════
+let draggedTabId = null;
+let draggedTabType = null;
 
 window.onTabDragStart = (e, tabId, tabType) => {
     draggedTabId = tabId;

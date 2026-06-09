@@ -1758,6 +1758,7 @@ app.get('/api/hermes/skills', async (req, res) => {
                         category: cat,
                         path: entryPath,
                         description,
+                        content,
                         source: 'hermes'
                     });
                 }
