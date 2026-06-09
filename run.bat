@@ -28,7 +28,7 @@ for %%p in (4699 2998) do (
         taskkill /f /pid %%a >nul 2>&1
     )
 )
-for %%s in (server.js telegram-bridge mcp_server concurrently hermes-god-worker) do (
+for %%s in (server.js mcp_server concurrently hermes-god-worker) do (
     for /f "skip=1 tokens=2 delims=," %%a in (
         'wmic process where "name='node.exe' and commandline like '%%%%%%s%%%%'" get processid /format:csv 2^>nul'
     ) do (

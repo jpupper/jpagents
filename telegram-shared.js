@@ -58,11 +58,14 @@ export function saveOwnerChatId(chatId, name) {
 }
 
 // ─── Safe Telegram API call with retry ───
-export async function safeTelegramCall(fn) {
+export async function safeTelegramCall(fn, fallbackMsg = null) {
     try {
         return await fn();
     } catch (e) {
-        // Silencioso — el caller decide qué hacer
+        try { console.error(`[TELEGRAM] ⚠️ API call failed: ${e.message?.slice(0, 100)}`); } catch {}
+        if (fallbackMsg && e.message?.includes('message to edit')) {
+            return null;
+        }
         return null;
     }
 }

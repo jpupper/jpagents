@@ -24,6 +24,7 @@ import os from 'os';
 import fs from 'fs';
 import WebSocket from 'ws';
 import { stripAnsi } from './ansi-utils.js';
+import { RESUMEN_MANDATE } from './telegram-shared.js';
 
 // ─── Config ───
 const HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
@@ -39,18 +40,8 @@ const THINKING_UPDATE_INTERVAL = 3000;
 /**
  * Plantilla de instrucción obligatoria que se PREPENDE a cada mensaje
  * enviado a Hermes para forzar el formato RESUMEN.
+ * Ahora importado desde telegram-shared.js
  */
-const RESUMEN_MANDATE = `⚠️ REGLA — Al FINAL de tu respuesta agregá este bloque RESUMEN:
-
-━━━ 📋 RESUMEN ━━━
-
-📋 OBJETIVO: <qué pidió el usuario, 1 línea>
-⚙️ REALIZACIÓN: <herramientas usadas, pasos clave>
-📝 MODIFICACIONES: <archivos creados/modificados — paths absolutos>
-📊 ESTADO: <resultado concreto>
-📌 NOTAS: <pendientes, N/A si está completo>
-
-REGLAS: campos obligatorios. Si no aplica = "N/A". No omitir.`;
 
 // ─── Estado ───
 let godWs = null;

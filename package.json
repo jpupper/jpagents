@@ -7,7 +7,6 @@
     "dev": "concurrently --restart-tries 0 \"npm run server\" \"npm run mcp-server\"",
     "server": "node server.js",
     "mcp-server": "node mcp_server.js",
-    "telegram-bridge": "node telegram-bridge.js",
     "god-worker": "node hermes-god-worker.js",
     "hot-reload": "node hot-reload.js"
   },

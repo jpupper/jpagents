@@ -1,6 +1,53 @@
 import { initMatrix } from './matrix.js'
-import { stripAnsi } from './ansi-utils.js'
-import { createChat, isAgentActive, getAgentStatusLabel, getAgentStatusClass } from './agent-utils.js'
+
+// ── Local: strip ANSI escape codes ──
+function stripAnsi(text) {
+    if (typeof text !== 'string') return text;
+    return text
+        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b[PX^_].*?(?:\x1b\\)/g, '')
+        .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
+        .replace(/\x1b[\[\(].{0,3}/g, '')
+        .replace(/\x1b./g, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+}
+
+// ── Local: create chat object ──
+function createChat(project, opts = {}) {
+    const {
+        name = 'Agente ' + ((project.chats?.length || 0) + 1),
+        useHermes = true,
+        model = project?.model || 'deepseek-v4-pro',
+        skills,
+        mode = 'auto'
+    } = opts;
+    return {
+        id: 'chat-' + (Date.now().toString(36) + Math.random().toString(36).substr(2)),
+        name,
+        messages: [],
+        isThinking: false,
+        isRunning: false,
+        isStreaming: false,
+        isStopped: false,
+        mode,
+        lastProgress: Date.now(),
+        model,
+        useHermes,
+        isNew: true,
+        skills: skills || (project?.skills ? [...project.skills] : []),
+        totalTokens: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalApiCalls: 0
+    };
+}
+
+// ── Local: check if agent is active ──
+function isAgentActive(chat) {
+    if (!chat) return false;
+    return !!chat.isThinking;
+}
 
 let activeMatrix = null;
 
@@ -106,7 +153,7 @@ marked.setOptions({
 
 // ── ANSI Escape Code Stripper (comprehensive) ──
 // Hermes emite secuencias ANSI (colores, cursor, erase, scroll) que se ven como basura en HTML.
-// Ahora importado desde ansi-utils.js
+// Función local definida arriba.
 window.stripAnsi = stripAnsi;
 
 // ── ANSI to HTML Converter ──
@@ -187,6 +234,33 @@ const API_BASE = (() => {
     return `http://${host}:${port}/api`;
 })();
 window.API_BASE = API_BASE;
+
+// ─── API Helpers ───
+// Elimina ~200 líneas de fetch repetidos en todo el código
+const apiGet = async (path, options = {}) => {
+    const res = await fetch(`${API_BASE}${path}`, {
+        headers: options.headers || {},
+        ...options.fetchOptions
+    });
+    if (!res.ok && !options.silent) console.warn(`[API] GET ${path} → ${res.status}`);
+    return options.raw ? res : res.json().catch(() => null);
+};
+const apiPost = async (path, body = {}, options = {}) => {
+    const res = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...options.headers },
+        body: JSON.stringify(body),
+        ...options.fetchOptions
+    });
+    if (!res.ok && !options.silent) console.warn(`[API] POST ${path} → ${res.status}`);
+    return options.raw ? res : res.json().catch(() => null);
+};
+const apiDelete = async (path, options = {}) => {
+    const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...options.fetchOptions });
+    if (!res.ok && !options.silent) console.warn(`[API] DELETE ${path} → ${res.status}`);
+    return options.raw ? res : res.json().catch(() => null);
+};
+
 const OLLAMA_BASE = 'http://localhost:11434/api'; // Ollama solo corre localmente
 
 // PROMPTS MANAGEMENT
@@ -1431,7 +1505,12 @@ async function init() {
     setupOpenFolderExplorer();
 
     // Periodic sync para instrucciones externas (cada 2 min — no para polling de estado)
-    setInterval(performPeriodicSync, 120000);
+    const syncInterval = setInterval(performPeriodicSync, 120000);
+    
+    // Limpiar el intervalo cuando la pestaña se oculta para evitar fugas
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) clearInterval(syncInterval);
+    });
 
     // Ollama health check: ya no es polling, se hace al conectar WS y al reconectar
     checkSystemHealth();

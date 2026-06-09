@@ -1018,6 +1018,7 @@ const slog = {
 
 // ─── Envío de respuestas Telegram — ahora importado desde telegram-shared.js ───
 
+/**
 // Almacena preguntas de clarify pendientes por chatId para responder vía botones inline
 // { chatId: { question, choices, resolve, timestamp, messageId } }
 const pendingClarifies = new Map();
@@ -5852,6 +5853,9 @@ async function recoverHermesInstances() {
 // Start initialization and server
 async function startServer() {
     // Auto-start Ollama if needed
+    if (typeof ensureOllamaRunning !== 'function') {
+        console.error(`[DEBUG] ensureOllamaRunning type: ${typeof ensureOllamaRunning}`);
+    }
     ensureOllamaRunning();
 
     try {
@@ -6228,7 +6232,7 @@ async function startServer() {
             }
             setTimeout(() => {
                 try { serverInstance.close(); } catch {}
-                startServer();
+                console.log(typeof ensureOllamaRunning); startServer();
             }, 2000);
         } else {
             console.error('[SERVER] Error al iniciar servidor:', err);
