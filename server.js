@@ -56,9 +56,12 @@ app.use((err, req, res, next) => {
 const __dirname_route = path.dirname(fileURLToPath(import.meta.url));
 app.use('/static', express.static(path.join(__dirname_route, '.')));
 
-// Redirigir raíz al index.html del monitor
+// Servir frontend desde public/
+app.use(express.static(path.join(__dirname_route, 'public')));
+
+// Redirigir raíz al index.html del frontend
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname_route, 'index.html'));
+    res.sendFile(path.join(__dirname_route, 'public', 'index.html'));
 });
 
 // Servir imágenes temporales para Hermes (vision_analyze)
@@ -6259,6 +6262,10 @@ async function startServer() {
             }
             if (localIP !== 'localhost') break;
         }
+        console.log(`\n═══════════════════════════════════════════════`);
+        console.log(`  🚀 JP AGENTS — LINK PARA ABRIR`);
+        console.log(`  ➜  http://localhost:${port}`);
+        console.log(`═══════════════════════════════════════════════\n`);
         console.log(`Server running at http://localhost:${port}`);
         console.log(`🌐 Red local: http://${localIP}:${port}`);
         console.log(`[HERMES] WebSocket en ws://localhost:${port}/ws/hermes`);

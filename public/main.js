@@ -1,5 +1,3 @@
-import './style.css'
-import { marked } from 'marked'
 import { initMatrix } from './matrix.js'
 import { stripAnsi } from './ansi-utils.js'
 import { createChat, isAgentActive, getAgentStatusLabel, getAgentStatusClass } from './agent-utils.js'
