@@ -634,6 +634,7 @@ async function nativePickFolder() {
         btns.forEach(b => b.innerHTML = '📁');
     }
 }
+window.nativePickFolder = nativePickFolder;
 
 // Wrapper para dar feedback visual si falla el selector de carpeta
 window.safePickFolder = async function () {

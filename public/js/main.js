@@ -610,6 +610,7 @@ async function fetchWithLog(url, options = {}, retries = 10, noRetry = false) {
         }
     }
 }
+window.fetchWithLog = fetchWithLog;
 
 async function checkSystemHealth(externalData = null) {
     const updateDot = (id, live) => {
@@ -809,6 +810,9 @@ let state = {
     fileExplorerWidth: 300,
     fileExplorerVisible: true
 };
+
+// Exportado para filemanager.js
+window.__jpState = state;
 
 let pendingDeletes = new Set();
 let pendingDeleteAll = false;
@@ -1180,11 +1184,7 @@ window.toggleSidebar = function() {
     saveData();
 };
 
-window.toggleFileExplorer = function() {
-    state.fileExplorerVisible = !state.fileExplorerVisible;
-    applyPanelState();
-    saveData();
-};
+;
 
 function initPanelResize() {
     const sidebarHandle = document.getElementById('sidebar-resize-handle');
@@ -1877,7 +1877,7 @@ function setupOpenFolderExplorer() {
             await new Promise(r => setTimeout(r, 300));
             // 3. Abrir un selector de carpeta NUEVO (con await para atrapar errores)
             try {
-                await nativePickFolder();
+                await window.safePickFolder();
             } catch (e) {
                 const errMsg = e.message || 'Error desconocido';
                 console.error('Error abriendo selector de carpeta:', errMsg);
@@ -1993,6 +1993,7 @@ async function saveData() {
         }
     }
 }
+window.saveData = saveData;
 
 async function clearClientLogs() {
     try {
@@ -3450,11 +3451,11 @@ function updateViewVisibility() {
             pendingActions.classList.toggle('hidden', !file.pendingContent);
 
             if (file.pendingContent) {
-                renderDiff(file, true);
+                window.renderDiff(file, true);
             } else if (file.diff) {
-                renderDiff(file);
+                window.renderDiff(file);
             } else {
-                renderCode(file);
+                window.renderCode(file);
             }
         }
     } else {
@@ -3493,49 +3494,10 @@ function updateViewVisibility() {
     }
 }
 
-function renderCode(file) {
-    const extension = file.name.split('.').pop().toLowerCase();
-    const lang = getLanguage(extension) || 'plaintext';
-
-    // Clear previous state
-    editorCode.className = 'hljs';
-    if (lang !== 'plaintext') {
-        editorCode.classList.add(`language-${lang}`);
-    }
-
-    // Stats and Info
-    diffStats.classList.add('hidden');
-    document.getElementById('editor-lang').textContent = lang;
-
-    try {
-        let content = file.content;
-        if (typeof hljs !== 'undefined') {
-            const supportedLangs = hljs.listLanguages();
-            const actualLang = supportedLangs.includes(lang) ? lang : 'plaintext';
-            content = hljs.highlight(file.content, { language: actualLang }).value;
-        } else {
-            content = escapeHtml(file.content);
-        }
-
-        // Render line numbers
-        const lines = file.content.split(/\r?\n/);
-        let gutterHtml = '';
-        lines.forEach((_, i) => {
-            gutterHtml += `<div class="gutter-num">${i + 1}</div>`;
-        });
-        editorGutter.innerHTML = gutterHtml;
-        editorCode.innerHTML = content;
-
-    } catch (e) {
-        console.error("Highlight error:", e);
-        editorCode.textContent = file.content;
-        editorGutter.innerHTML = '';
-    }
-}
-
 function getDiffEngine() {
     return window.JsDiff || window.Diff || (typeof JsDiff !== 'undefined' ? JsDiff : null) || (typeof Diff !== 'undefined' ? Diff : null);
 }
+window.getDiffEngine = getDiffEngine;
 
 function countLines(str) {
     if (!str || str.length === 0) return 0;
@@ -3543,61 +3505,7 @@ function countLines(str) {
     if (lines.length > 1 && lines[lines.length - 1] === '') return lines.length - 1;
     return (lines.length === 1 && lines[0] === '') ? 0 : lines.length;
 }
-
-function renderDiff(file, isPending = false) {
-    const engine = getDiffEngine();
-    let changes = null;
-
-    if (isPending && engine) {
-        changes = engine.diffLines(file.content || "", file.pendingContent || "");
-    } else {
-        changes = file.diff;
-    }
-
-    if (!changes || !Array.isArray(changes)) {
-        renderCode(file);
-        return;
-    }
-    let html = '';
-    let gutterHtml = '';
-    let addedCount = 0;
-    let removedCount = 0;
-    let lineNum = 1;
-
-    changes.forEach(part => {
-        const lines = part.value.split(/\r?\n/);
-        if (lines[lines.length - 1] === '') lines.pop(); // Remove last empty line from split
-
-        lines.forEach(line => {
-            const type = part.added ? 'added' : (part.removed ? 'removed' : '');
-            const marker = part.added ? '+' : (part.removed ? '-' : ' ');
-            if (part.added) addedCount++;
-            if (part.removed) removedCount++;
-
-            html += `<span class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</span>`;
-
-            // For the gutter, we only increment line number for non-removed lines
-            // or we show something else for removed lines.
-            // Traditional editors usually show the line number for both or skip for removed.
-            if (!part.removed) {
-                gutterHtml += `<div class="gutter-num ${type}">${lineNum++}</div>`;
-            } else {
-                gutterHtml += `<div class="gutter-num ${type}">-</div>`;
-            }
-        });
-    });
-
-    editorGutter.innerHTML = gutterHtml;
-    editorCode.innerHTML = html;
-    editorCode.className = '';
-
-    const extension = file.name.split('.').pop().toLowerCase();
-    document.getElementById('editor-lang').textContent = (getLanguage(extension) || 'plaintext') + (isPending ? ' (PENDING)' : ' (DIFF)');
-
-    diffStats.querySelector('.diff-added').textContent = `+ ${addedCount} agregadas`;
-    diffStats.querySelector('.diff-removed').textContent = `- ${removedCount} eliminadas`;
-    diffStats.classList.remove('hidden');
-}
+window.countLines = countLines;
 
 function getLanguage(ext) {
     const map = {
@@ -3608,12 +3516,14 @@ function getLanguage(ext) {
     };
     return map[ext] || null;
 }
+window.getLanguage = getLanguage;
 function escapeHtml(text) {
     if (typeof text !== 'string') return '';
     const d = document.createElement('div');
     d.textContent = text;
     return d.innerHTML;
 }
+window.escapeHtml = escapeHtml;
 
 // Limpiar historial de Telegram
 const telegramClearBtn = document.getElementById('telegram-clear-btn');
@@ -3773,22 +3683,7 @@ window.deleteChat = (id) => {
     saveData();
 };
 
-window.closeFileTab = (path) => {
-    const p = getActiveProject();
-    if (!p) return;
-    p.openFiles = p.openFiles.filter(f => f.path.replace(/\\/g, '/') !== path);
-    if (p.activeTabId === path) {
-        if (p.chats.length > 0) {
-            p.activeTabId = p.chats[0].id;
-        } else if (p.openFiles.length > 0) {
-            p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
-        } else {
-            p.activeTabId = null;
-        }
-    }
-    renderTabs();
-    saveData();
-};
+;
 
 window.switchProject = (id, event = null) => {
     // Don't switch if we just finished a drag
@@ -3829,7 +3724,7 @@ window.switchProject = (id, event = null) => {
         window.scanFolder(project.folder, id);
     } else {
         console.log("📂 Project has no folder.");
-        renderFileList();
+        window.renderFileList();
     }
     saveData();
 };
@@ -3853,19 +3748,7 @@ window.handleDeleteClick = (id, event) => {
 };
 
 // Permite que el agente Hermes setee la carpeta activa de un proyecto y escanee archivos
-window.setProjectFolder = async (projectId, folderPath) => {
-    const project = state.projects.find(p => p.id === projectId);
-    if (!project) {
-        console.error('❌ setProjectFolder: proyecto no encontrado:', projectId);
-        return { success: false, error: 'Project not found' };
-    }
-    project.folder = folderPath;
-    folderPathInput.value = folderPath;
-    await window.scanFolder(folderPath, projectId);
-    saveData();
-    console.log('✅ setProjectFolder:', projectId, '->', folderPath);
-    return { success: true, folder: folderPath };
-};
+;
 
 window.cancelDelete = (id, event) => {
     if (event) event.stopPropagation();
@@ -4426,173 +4309,15 @@ function playAgentErrorSound() {
 window.playAgentCompleteSound = playAgentCompleteSound;
 window.playAgentErrorSound = playAgentErrorSound;
 
+// ─── improvePrompt delegado a improveprompt.js ───
 async function improvePrompt(targetElementId, e) {
-    const target = document.getElementById(targetElementId);
-    if (!target) return;
-
-    const content = target.value.trim();
-    if (!content) {
-        showToast('Escribí algo primero para mejorar el prompt.', 'warning');
-        return;
-    }
-
-    const originalText = target.value;
-    const btn = e?.currentTarget || (e ? e.target : null);
-    const originalBtnText = btn ? btn.innerText : null;
-
-    if (btn) {
-        btn.innerText = "⏳";
-        btn.disabled = true;
-    }
-    target.disabled = true;
-
-    try {
-        // Usar el modelo del agente/chat activo si mejoramos el chat-input
-        let selectedModel;
-        let apiKey = null;
-        let baseUrl = null;
-        
-        // BUGFIX: Usar el SECOND AGENT (Ollama local) para mejorar prompts,
-        // no el modelo del chat principal. El second agent es más rápido
-        // y está diseñado para tareas auxiliares como esta.
-        if (state.secondAgentConfig && state.secondAgentConfig.enabled && state.secondAgentConfig.model) {
-            selectedModel = state.secondAgentConfig.model;
-            // Second agent siempre usa Ollama local
-            apiKey = null;
-            baseUrl = null;
-        } else if (targetElementId === 'chat-input') {
-            const chat = getActiveChat();
-            const project = getActiveProject();
-            const agentModelSelect = document.getElementById('agent-model-select');
-            selectedModel = chat?.model || project?.model || (agentModelSelect ? agentModelSelect.value : '') || state.selectedModel || modelSelect.value || '';
-        } else {
-            selectedModel = state.selectedModel || modelSelect.value || '';
-        }
-        
-        // Detectar API según el modelo (misma lógica que en agent chat)
-        // Si el modelo está vacío, forzar Ollama local
-        if (selectedModel) {
-            if (selectedModel.includes('/')) {
-                apiKey = state.openrouterApiKey;
-                baseUrl = "https://openrouter.ai/api/v1";
-            } else if (selectedModel.startsWith('deepseek')) {
-                apiKey = state.deepseekApiKey;
-                baseUrl = "https://api.deepseek.com";
-            } else if (selectedModel.startsWith('gpt') || selectedModel.startsWith('o1') || selectedModel.startsWith('o3')) {
-                apiKey = state.openaiApiKey;
-            } else if (state.customApiBase) {
-                baseUrl = state.customApiBase;
-            }
-        }
-        
-        // Si no hay API key y el modelo es remoto, advertir y forzar Ollama
-        if (selectedModel && !apiKey && baseUrl && baseUrl !== 'http://localhost:11434') {
-            console.warn(`[IMPROVE] No hay API key configurada para ${selectedModel}, redirigiendo a Ollama.`);
-            apiKey = null;
-            baseUrl = null;
-            selectedModel = ''; // Forzar a que el servidor use su default
-        }
-        
-        showToast('✨ Mejorando prompt...', 'info');
-        
-        const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, model: selectedModel, apiKey, baseUrl })
-        });
-
-        if (!res.ok) {
-            const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
-            throw new Error(errData.error || `Error ${res.status}`);
-        }
-
-        const data = await res.json();
-        if (data.improvedContent && data.improvedContent !== originalText) {
-            showToast('✅ Prompt mejorado. Revisá los cambios.', 'success');
-            showPromptDiffUI(targetElementId, originalText, data.improvedContent);
-        } else {
-            showToast('El prompt ya está óptimo, no se necesitaron cambios.', 'info');
-        }
-    } catch (e) {
-        console.error("Error improvePrompt:", e);
-        showToast('No se pudo mejorar el prompt: ' + e.message, 'error');
-        target.value = originalText;
-    } finally {
-        if (btn) {
-            btn.innerText = originalBtnText || "✨";
-            btn.disabled = false;
-        }
-        target.disabled = false;
-        target.focus();
-    }
+    return window.ImprovePrompt.improvePrompt(targetElementId, e);
 }
-
 function showPromptDiffUI(targetId, original, improved) {
-    const target = document.getElementById(targetId);
-    const parent = target.parentElement;
-
-    // Remove existing diff if any
-    const existing = parent.querySelector('.prompt-diff-container');
-    if (existing) existing.remove();
-
-    const diffContainer = document.createElement('div');
-    diffContainer.className = 'prompt-diff-container';
-    diffContainer.innerHTML = `
-        <div class="prompt-diff-header">
-            <span>🔍 Comparación de Cambios (IA)</span>
-            <div class="prompt-diff-actions">
-                <button class="btn-danger-outline" onclick="this.closest('.prompt-diff-container').remove()" style="padding: 4px 10px; font-size: 0.7rem;">Descartar ✕</button>
-                <button class="btn-primary btn-accept-prompt" style="padding: 4px 12px; font-size: 0.75rem; width: auto; background: #238636;">Aplicar Cambios ✓</button>
-            </div>
-        </div>
-        <div class="prompt-diff-body"></div>
-    `;
-
-    const body = diffContainer.querySelector('.prompt-diff-body');
-    renderPromptDiff(body, original, improved);
-
-    diffContainer.querySelector('.btn-accept-prompt').onclick = () => {
-        target.value = improved;
-        diffContainer.remove();
-        
-        // Sync with state where appropriate
-        if (targetId === 'global-prompt') state.userSystemPrompt = improved;
-        if (targetId === 'orchestrator-prompt') state.orchestratorPrompt = improved;
-        if (targetId === 'improver-prompt') state.improverPrompt = improved;
-        if (targetId === 'project-prompt') {
-            const project = getActiveProject();
-            if (project) project.projectPrompt = improved;
-        }
-        
-        saveData(); // Persistent save
-        target.focus();
-    };
-
-    // Insert after the textarea or before depending on preference
-    target.after(diffContainer);
-    diffContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return window.ImprovePrompt.showPromptDiffUI(targetId, original, improved);
 }
-
 function renderPromptDiff(container, original, improved) {
-    const engine = getDiffEngine();
-    if (!engine) {
-        container.innerText = "Error: JsDiff engine not found.";
-        return;
-    }
-
-    const changes = engine.diffLines(original, improved);
-    let html = '';
-    changes.forEach(part => {
-        const lines = part.value.split(/\r?\n/);
-        if (lines[lines.length - 1] === '') lines.pop();
-
-        lines.forEach(line => {
-            const type = part.added ? 'added' : (part.removed ? 'removed' : '');
-            const marker = part.added ? '+' : (part.removed ? '-' : ' ');
-            html += `<div class="diff-line ${type}"><span class="diff-marker">${marker}</span>${escapeHtml(line)}</div>`;
-        });
-    });
-    container.innerHTML = html;
+    return window.ImprovePrompt.renderPromptDiff(container, original, improved);
 }
 
 function buildRefactoredSystemPrompt(taskState) {
@@ -5222,209 +4947,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 }
 
 
-window.scanFolder = async function (pathInput = null, projectId = null) {
-    // If no projectId is provided, we use the active one as fallback
-    const targetProjectId = projectId || state.activeProjectId;
-    const project = state.projects.find(p => p.id === targetProjectId);
-
-    if (!project) {
-        console.warn("[SCAN] No target project found for scan.");
-        renderFileList();
-        return;
-    }
-
-    let folderPath = (typeof pathInput === 'string') ? pathInput : (pathInput || project.folder || folderPathInput.value);
-
-    if (!folderPath) {
-        renderFileList();
-        return;
-    }
-
-    try {
-        const res = await fetchWithLog(`${API_BASE}/files/list`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folderPath })
-        });
-        const data = await res.json();
-
-        // Re-find the project to ensure it still exists in state
-        const targetProject = state.projects.find(p => p.id === targetProjectId);
-        if (!targetProject) return;
-
-        if (data.error) {
-            console.error("Scan error:", data.error);
-            targetProject.isCorrupted = true;
-            // Only re-render project list if it's still relevant to UI
-            renderProjectList();
-            return;
-        }
-
-        targetProject.isCorrupted = false;
-        targetProject.currentFiles = data.files || [];
-        targetProject.folder = data.currentPath;
-
-        // Only update UI elements if this is still the active project
-        if (state.activeProjectId === targetProjectId) {
-            folderPathInput.value = data.currentPath;
-
-            // Auto-detect skill.md
-            const skillFile = targetProject.currentFiles.find(f => f.name.toLowerCase() === 'skill.md' || f.name.toLowerCase() === 'skill.txt');
-            const skillIndicator = document.getElementById('skill-source-indicator');
-
-            if (skillFile && !targetProject.projectPrompt) {
-                try {
-                    const res = await fetchWithLog(`${API_BASE}/files/read`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ filePath: skillFile.path.replace(/\\/g, '/') })
-                    });
-                    const skillData = await res.json();
-                    if (skillData.content) {
-                        targetProject.projectPrompt = skillData.content;
-                        const projectPromptInput = document.getElementById('project-prompt');
-                        if (projectPromptInput) projectPromptInput.value = targetProject.projectPrompt;
-                        if (skillIndicator) skillIndicator.classList.remove('hidden');
-                    }
-                } catch (e) {
-                    console.error("Error loading skill.md:", e);
-                }
-            } else if (skillFile) {
-                if (skillIndicator) skillIndicator.classList.remove('hidden');
-            } else {
-                if (skillIndicator) skillIndicator.classList.add('hidden');
-            }
-            renderFileList();
-        }
-
-        saveData();
-        if (state.activeProjectId === targetProjectId) renderFileList();
-
-    } catch (e) {
-        console.error("Fetch error scanning folder:", e);
-    } finally {
-        // Reset icon state in case of failure or success
-        if (scanFolderBtn) {
-            scanFolderBtn.textContent = '📁';
-            scanFolderBtn.classList.remove('loading');
-        }
-    }
-}
-
-function renderFileList(container = fileList, files = null, parentPath = "") {
-    const p = getActiveProject();
-    if (!p) {
-        container.innerHTML = '<p class="empty-state">No hay proyecto activo</p>';
-        return;
-    }
-
-    const searchInput = document.getElementById('file-search');
-    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : "";
-
-    const currentFilesFiltered = (files || p.currentFiles || []).filter(f => {
-        if (!searchTerm) return true;
-        return f.name.toLowerCase().includes(searchTerm);
-    });
-
-    if (currentFilesFiltered.length === 0 && !p.folder && !parentPath) {
-        container.innerHTML = '<p class="empty-state">No hay carpeta seleccionada</p>';
-        return;
-    }
-
-    let html = '';
-
-    // Solo mostramos el "atrás" en el nivel raíz y si no estamos usando vista de árbol expandida todavía
-    if (!parentPath && p.folder && !searchTerm) {
-        html += `<div class="file-item directory back-nav" onclick="window.goUp()">
-            <span class="file-icon">⤴️</span>
-            <span class="file-name">.. (Subir nivel)</span>
-        </div>`;
-    }
-
-    html += currentFilesFiltered.map(f => {
-        const isDir = f.isDirectory;
-        const icon = isDir ? '📁' : getFileIcon(f.name);
-        const path = f.path.replace(/\\/g, '/');
-        const id = `file-${btoa(path).replace(/=/g, '')}`;
-
-        if (isDir) {
-            return `
-                <div class="tree-item-wrapper" id="wrapper-${id}">
-                    <div class="file-item directory" onclick="window.toggleFolder('${path}', '${id}')">
-                        <span class="folder-caret">▶</span>
-                        <span class="file-icon">${icon}</span>
-                        <span class="file-name">${f.name}</span>
-                        <div class="file-item-actions">
-                            <button class="btn-file-action" onclick="event.stopPropagation(); window.renameFileUI('${path}', '${f.name}')" title="Renombrar">✏️</button>
-                        </div>
-                    </div>
-                    <div class="folder-content hidden" id="content-${id}"></div>
-                </div>
-            `;
-        } else {
-            return `
-                <div class="file-item file" onclick="window.openFile('${path}')">
-                    <span class="folder-caret invisible">▶</span>
-                    <span class="file-icon">${icon}</span>
-                    <span class="file-name">${f.name}</span>
-                    <div class="file-item-actions">
-                        <button class="btn-file-action" onclick="event.stopPropagation(); window.renameFileUI('${path}', '${f.name}')" title="Renombrar">✏️</button>
-                    </div>
-                </div>
-            `;
-        }
-    }).join('');
-
-    if (currentFilesFiltered.length === 0 && !parentPath) {
-        html += `<p class="empty-state">${searchTerm ? 'No se encontraron resultados' : 'La carpeta está vacía'}</p>`;
-    }
-
-    container.innerHTML = html;
-}
-
-
-function getFileIcon(filename) {
-    const ext = filename.split('.').pop().toLowerCase();
-    const icons = {
-        'js': 'js', 'ts': 'ts', 'html': '🌐', 'css': '🎨',
-        'json': '⚙️', 'md': '📝', 'txt': '📄', 'py': '🐍',
-        'png': '🖼️', 'jpg': '🖼️', 'svg': '🖼️', 'bat': '🐚'
-    };
-    return icons[ext] || '📄';
-}
-
-window.toggleFolder = async (path, id) => {
-    const wrapper = document.getElementById(`wrapper-${id}`);
-    const content = document.getElementById(`content-${id}`);
-    const caret = wrapper.querySelector('.folder-caret');
-
-    if (!content.classList.contains('hidden')) {
-        content.classList.add('hidden');
-        caret.classList.remove('open');
-        return;
-    }
-
-    // Load content if empty
-    if (content.innerHTML === "") {
-        content.innerHTML = '<div class="loading-small">Cargando...</div>';
-        try {
-            const res = await fetchWithLog(`${API_BASE}/files/list`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ folderPath: path })
-            });
-            const data = await res.json();
-            if (data.files) {
-                renderFileList(content, data.files, path);
-            }
-        } catch (e) {
-            content.innerHTML = '<div class="error-small">Error al cargar</div>';
-        }
-    }
-
-    content.classList.remove('hidden');
-    caret.classList.add('open');
-};
+;
 
 function buildSystemPrompt() {
     const p = getActiveProject();
@@ -7142,49 +6665,6 @@ window.rejectChange = () => {
     }
 };
 
-window.renameFileUI = (oldPath, oldName) => {
-    const newName = prompt(`Renombrar "${oldName}" a:`, oldName);
-    if (newName && newName !== oldName) {
-        window.renameFile(oldPath, newName);
-    }
-};
-
-window.renameFile = async (oldPath, newName) => {
-    const dir = oldPath.substring(0, Math.max(oldPath.lastIndexOf('/'), oldPath.lastIndexOf('\\')));
-    const newPath = (dir ? dir + '/' : '') + newName;
-
-    try {
-        const res = await fetch(`${API_BASE}/files/rename`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ oldPath, newPath })
-        });
-        const data = await res.json();
-        if (data.success) {
-            const project = getActiveProject();
-            if (project) {
-                // Update open files if any
-                project.openFiles.forEach(f => {
-                    if (f.path.replace(/\\/g, '/') === oldPath.replace(/\\/g, '/')) {
-                        f.path = newPath;
-                        f.name = newName;
-                    }
-                });
-                if (project.activeTabId === oldPath.replace(/\\/g, '/')) {
-                    project.activeTabId = newPath.replace(/\\/g, '/');
-                }
-                window.scanFolder(project.folder, project.id);
-                renderTabs();
-            }
-        } else {
-            console.error("Error al renombrar:", data.error);
-        }
-    } catch (e) {
-        console.error("Rename error:", e);
-        console.error("Error de conexión al renombrar.");
-    }
-};
-
 
 
 function pathJoin(dir, file) {
@@ -7196,70 +6676,10 @@ function pathJoin(dir, file) {
     const f = fSan.replace(/^\//, '');
     return d + '/' + f;
 }
+window.pathJoin = pathJoin;
 
-window.goUp = () => {
-    const cur = folderPathInput.value;
-    const last = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'));
-    if (last > -1) {
-        const top = cur.substring(0, last);
-        window.scanFolder(top || "/");
-    }
-};
-
-window.saveActiveFile = async () => {
-    const p = getActiveProject();
-    if (!p || !p.activeTabId) return;
-
-    const sanPath = p.activeTabId;
-    const file = p.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
-    if (!file) return;
-
-    const content = editorCode.innerText;
-
-    saveFileBtn.textContent = '⏳...';
-    saveFileBtn.disabled = true;
-
-    try {
-        const res = await fetchWithLog(`${API_BASE}/files/write`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filePath: sanPath, content })
-        });
-
-        if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-        }
-
-        const result = await res.json();
-
-        if (result.success) {
-            file.content = content;
-            file.diff = null; // Clear diff if it was showing
-            saveFileBtn.textContent = 'Guardado ✓';
-            setTimeout(() => {
-                saveFileBtn.textContent = 'Guardar 💾';
-                saveFileBtn.disabled = false;
-            }, 2000);
-
-            // If the file is open in multiple places or needs refresh
-            if (p.folder) window.scanFolder(p.folder, p.id);
-            saveData();
-        } else {
-            console.error("Error al guardar:", result.error);
-            saveFileBtn.textContent = 'Error ❌';
-            saveFileBtn.disabled = false;
-        }
-    } catch (e) {
-        console.error("Save error:", e);
-        console.error("Error de conexión al guardar o timeout.");
-        saveFileBtn.textContent = 'Error ❌';
-        saveFileBtn.disabled = false;
-    }
-};
-
-window.openFile = async (path, options = {}) => {
+async function handleFileClick(path, originalPath, p, options = {}) {
     const { setActive = true } = options;
-    const p = getActiveProject();
     const san = path.replace(/\\/g, '/');
     const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
     if (existing) { if (setActive) { p.activeTabId = san; renderTabs(); } return; }
@@ -7278,57 +6698,6 @@ window.openFile = async (path, options = {}) => {
         console.error("Exception opening file:", e);
     }
 };
-
-async function nativePickFolder() {
-    const btns = [scanFolderBtn, scanFolderSidebarBtn].filter(b => b);
-    btns.forEach(b => b.innerHTML = '⏳');
-    try {
-        // AbortController con timeout de 125s (servidor tiene 120s, damos 5s de margen)
-        const ctrl = new AbortController();
-        const timeoutId = setTimeout(() => ctrl.abort(), 125000);
-        const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
-        clearTimeout(timeoutId);
-        if (res && res.ok) {
-            const data = await res.json();
-            if (data.path) {
-                folderPathInput.value = data.path;
-                window.scanFolder(data.path);
-            } else if (data.conflict) {
-                // Otro diálogo sigue abierto — feedback inmediato
-                console.warn('[nativePickFolder] Conflicto: otro selector sigue activo.');
-                if (typeof showToast === 'function') {
-                    showToast('⚠️ Ya hay un selector de carpeta abierto. Cerrá el diálogo anterior y probá de nuevo.', 'warning');
-                }
-                // No tiramos error — el usuario solo necesita saber qué pasó
-            } else if (data.error) {
-                // El servidor reportó un error explícito (stderr, timeout interno, etc.)
-                const msg = data.error + (data.details ? ': ' + data.details : '');
-                console.error('[nativePickFolder] Error del servidor:', msg);
-                throw new Error(msg);
-            }
-            // Si no hay path, error, ni conflict → el usuario canceló el diálogo (OK)
-        } else if (res) {
-            const errorData = await res.json().catch(() => ({}));
-            const msg = errorData.error || 'Error desconocido del servidor';
-            console.error("No se pudo abrir el selector de carpetas:", msg);
-            throw new Error(msg);
-        } else {
-            throw new Error('No se recibió respuesta del servidor');
-        }
-    } catch (e) {
-        if (e.name === 'AbortError') {
-            const msg = '⏰ Timeout: el selector tardó más de 125s. Reintentá.';
-            console.error(msg);
-            throw new Error(msg);
-        } else {
-            console.error("Exception in nativePickFolder:", e);
-            throw e; // Re-lanzar para que el caller pueda mostrar feedback
-        }
-    }
-    finally {
-        btns.forEach(b => b.innerHTML = '📁');
-    }
-}
 
 function setupEventListeners() {
     adminMonitorBtn.onclick = () => {
@@ -7564,7 +6933,7 @@ function setupEventListeners() {
                     window.scanFolder(project.folder, project.id);
                     showToast('Escaneando carpeta... 📂', 'info');
                 } else {
-                    safePickFolder();
+                    window.safePickFolder();
                 }
                 break;
             case 'git':
@@ -8091,18 +7460,8 @@ function setupEventListeners() {
         });
     }
     // Wrapper para dar feedback visual si falla el selector de carpeta
-    const safePickFolder = async () => {
-        try { await nativePickFolder(); }
-        catch (e) {
-            alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
-                'Posibles causas:\n' +
-                '• El diálogo fue cancelado o cerrado\n' +
-                '• El servidor no respondió a tiempo\n' +
-                '• Intentá de nuevo — suele funcionar al segundo intento.');
-        }
-    };
-    scanFolderBtn.onclick = safePickFolder;
-    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = safePickFolder;
+    scanFolderBtn.onclick = window.safePickFolder;
+    if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = window.safePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
     const thinkingToggleChat = document.getElementById('deepseek-thinking-toggle-chat');
@@ -8211,25 +7570,10 @@ function setupEventListeners() {
         saveData();
     };
 
-    const improveAdminPromptBtn = document.getElementById('improve-admin-prompt-btn');
-    if (improveAdminPromptBtn) {
-        improveAdminPromptBtn.onclick = (e) => improvePrompt('admin-global-input', e);
-    }
 
-    const improveChatPromptBtn = document.getElementById('improve-chat-prompt-btn');
-    if (improveChatPromptBtn) {
-        improveChatPromptBtn.onclick = (e) => improvePrompt('chat-input', e);
-    }
+    // ─── Improve Prompt Buttons (delegado a improveprompt.js) ───
+    if (window.ImprovePrompt?.initButtons) window.ImprovePrompt.initButtons();
 
-    const improveSkillBtn = document.getElementById('improve-skill-btn');
-    if (improveSkillBtn) {
-        improveSkillBtn.onclick = (e) => improvePrompt('skill-content-textarea', e);
-    }
-
-    const improveProjectBtn = document.getElementById('improve-project-prompt-btn');
-    if (improveProjectBtn) {
-        improveProjectBtn.onclick = (e) => improvePrompt('project-prompt', e);
-    }
 
     acceptBtn.onclick = window.acceptChange;
     rejectBtn.onclick = window.rejectChange;
@@ -8265,18 +7609,8 @@ function setupEventListeners() {
     const improverPromptTextarea = document.getElementById('improver-prompt');
     const internalAgentDisplay = document.getElementById('internal-agent-display');
 
-    // Prompt Improvement Buttons for Global Settings
-    const improveGlobalBtn = document.getElementById('improve-global-prompt-btn');
-    if (improveGlobalBtn) improveGlobalBtn.onclick = (e) => improvePrompt('global-prompt', e);
 
-    const improveOrchBtn = document.getElementById('improve-orchestrator-prompt-btn');
-    if (improveOrchBtn) improveOrchBtn.onclick = (e) => improvePrompt('orchestrator-prompt', e);
-
-    const improveImproverBtn = document.getElementById('improve-improver-prompt-btn');
-    if (improveImproverBtn) improveImproverBtn.onclick = (e) => improvePrompt('improver-prompt', e);
-
-    const improveNamingBtn = document.getElementById('improve-naming-prompt-btn');
-    if (improveNamingBtn) improveNamingBtn.onclick = (e) => improvePrompt('naming-prompt', e);
+    // Prompt Improvement Buttons for Global Settings — handled by improveprompt.js initButtons()
 
     // Tab Switching Logic for Modal
     const modalSideTabs = document.querySelectorAll('.modal-side-tab');
