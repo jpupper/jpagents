@@ -193,6 +193,7 @@
               <button class="admin-sub-tab active" data-sub-tab="table">🤖 Lista de Agentes</button>
               <button class="admin-sub-tab" data-sub-tab="chat">💬 Chat Administrativo</button>
               <button class="admin-sub-tab" data-sub-tab="telegram">📱 Telegram</button>
+              <button class="admin-sub-tab" data-sub-tab="console">🖥️ Consola</button>
             </div>
           </div>
 
@@ -262,13 +263,15 @@
               </div>
             </div>
 
-            <!-- Frontend Console -->
-            <div class="dashboard-console">
-              <h3>🖥️ Consola del Frontend (Logs Recientes)</h3>
+            <!-- Frontend Console View (sub-tab) -->
+            <div id="admin-console-view" class="monitor-console-container hidden">
+              <div class="console-header">
+                <h3>🖥️ Consola del Frontend (Logs Recientes)</h3>
+                <button class="btn-clear-console" onclick="window.clearConsoleUI()">Limpiar Consola</button>
+              </div>
               <div id="frontend-console-output" class="console-output">
                 Esperando logs...
               </div>
-              <button class="btn-clear-console" onclick="window.clearConsoleUI()">Limpiar Consola</button>
             </div>
           </div>
         </div>

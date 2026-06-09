@@ -1453,8 +1453,18 @@ async function init() {
     // Cuando el usuario vuelve a esta pestaña, recarga estado completo
     // para sincronizar cambios hechos en otras pestañas/dispositivos
     document.addEventListener('visibilitychange', async () => {
-        if (!document.hidden) {
+        if (document.hidden) {
+            // 🐛 BUGFIX: Guardar draft cuando el usuario se va a otra ventana/pestaña.
+            // Sin esto, al volver loadData() reemplaza state.projects con objetos nuevos
+            // del servidor, y restoreChatDraft() no encuentra draftInput → borra el texto.
+            saveChatDraft();
+        } else {
             console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
+            // 🐛 BUGFIX: Preservar el texto actual del textarea antes de que loadData()
+            // reemplace state.projects. loadData() trae objetos frescos del servidor sin
+            // el draftInput (que nunca se persistió). syncUI() → restoreChatDraft() lo
+            // borraría. Lo guardamos ahora y lo restauramos después.
+            const preservedDraft = chatInput.value;
             // 🐛 BUGFIX: No recargar si hay un agente activo (misma razón que BroadcastChannel)
             if (isTabBusy()) {
                 console.log('[SYNC] 👁️ visibilitychange ignorado — agente activo');
@@ -1467,6 +1477,13 @@ async function init() {
                 if (window.refreshHermesInstances) {
                     window.refreshHermesInstances();
                 }
+            }
+            // 🐛 BUGFIX: Si loadData/syncUI borró el texto pero el usuario tenía algo
+            // escrito, restaurarlo y guardarlo en el nuevo objeto chat.
+            if (preservedDraft && !chatInput.value) {
+                chatInput.value = preservedDraft;
+                chatInput.dispatchEvent(new Event('input'));
+                saveChatDraft(); // persistir el draft en el nuevo objeto chat
             }
         }
     });
@@ -2963,7 +2980,7 @@ function renderTabs() {
                  onclick="window.switchTab('${chat.id}')">
                 <span>🤖 ${escapeHtml(chat.name)}</span>
                 <div class="dot ${isAgentActive(chat) ? 'busy' : ''}"></div>
-                <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">&times;</span>
+                <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">✕</span>
             </div>
         `;
     });
@@ -7348,21 +7365,33 @@ function setupEventListeners() {
         const tableView = document.getElementById('admin-table-view');
         const chatView = document.getElementById('admin-chat-view');
         const telegramView = document.getElementById('admin-telegram-view');
+        const consoleView = document.getElementById('admin-console-view');
 
         if (subTab === 'table') {
             tableView.classList.remove('hidden');
             chatView.classList.add('hidden');
             if (telegramView) telegramView.classList.add('hidden');
+            if (consoleView) consoleView.classList.add('hidden');
         } else if (subTab === 'telegram') {
             tableView.classList.add('hidden');
             chatView.classList.add('hidden');
+            if (consoleView) consoleView.classList.add('hidden');
             if (telegramView) {
                 telegramView.classList.remove('hidden');
                 renderTelegramMessages();
             }
+        } else if (subTab === 'console') {
+            tableView.classList.add('hidden');
+            chatView.classList.add('hidden');
+            if (telegramView) telegramView.classList.add('hidden');
+            if (consoleView) {
+                consoleView.classList.remove('hidden');
+                refreshConsoleUI();
+            }
         } else {
             tableView.classList.add('hidden');
             if (telegramView) telegramView.classList.add('hidden');
+            if (consoleView) consoleView.classList.add('hidden');
             chatView.classList.remove('hidden');
             renderAdminMessages();
         }
@@ -8484,262 +8513,11 @@ function formatLogs(logs) {
     return '';
 }
 
-window.handleGitPush = async () => {
-    const p = getActiveProject();
-    const msgInput = gitCommitMsgInput;
-    const btnEl = gitPushBtn;
+// window.handleGitPush → githubmanager.js
 
-    if (!msgInput) return;
-    const message = (msgInput.value || '').trim();
+// _doGitPush → githubmanager.js
 
-    if (!message) {
-        if (typeof showGitFeedback === 'function') {
-            showGitFeedback('Escribi un mensaje de commit', 'error');
-        }
-        return;
-    }
-
-    if (!p || !p.folder) return;
-
-    // ── Build files preview (async) ──
-    let filesPreview = '';
-    try {
-        const statusRes = await fetch(`${API_BASE}/utils/git-status`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folderPath: p.folder })
-        });
-        const statusData = await statusRes.json();
-        if (statusData.files && statusData.files.length > 0) {
-            filesPreview = statusData.files.map(f => {
-                const icon = f.status === 'A' ? '+' : f.status === 'D' ? '-' : f.status === 'M' ? '~' : '?';
-                return `${icon} ${f.file}`;
-            }).join('\n');
-        }
-    } catch (e) {
-        // non-blocking — continue without preview
-    }
-
-    // ── Execute directly — no confirmation overlay ──
-    _doGitPush(message, p, msgInput, btnEl, filesPreview);
-};
-
-async function _doGitPush(message, p, msgInput, btnEl, filesPreview) {
-    // ── Show mini terminal ──
-    const terminal = document.getElementById('git-process-terminal');
-    const outputEl = document.getElementById('git-process-output');
-    const statusEl = document.getElementById('git-process-status');
-
-    if (!terminal || !outputEl) return;
-
-    // Show terminal
-    terminal.classList.remove('hidden');
-    // Auto-scroll terminal into view with smooth animation
-    setTimeout(() => terminal.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
-
-    // ── Progress indicator ──
-    const progressEl = document.getElementById('git-process-progress');
-    const steps = ['add', 'commit', 'push'];
-    const stepIcons = { add: '📦', commit: '💾', push: '🚀' };
-    const stepLabels = { add: 'add', commit: 'commit', push: 'push' };
-    function updateProgress(completedStep) {
-        if (!progressEl) return;
-        let html = '';
-        steps.forEach((s, i) => {
-            const done = steps.indexOf(completedStep) >= i;
-            const cls = done ? 'done' : 'pending';
-            const mark = done ? '✓' : '○';
-            html += `<span class="git-progress-step ${cls}">${stepIcons[s]} ${stepLabels[s]} ${mark}</span>`;
-            if (i < steps.length - 1) html += '<span class="git-progress-arrow">→</span>';
-        });
-        progressEl.innerHTML = html;
-    }
-    if (progressEl) {
-        progressEl.innerHTML = '<span class="git-progress-step pending">📦 add ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">💾 commit ○</span><span class="git-progress-arrow">→</span><span class="git-progress-step pending">🚀 push ○</span>';
-    }
-
-    // ── Header: message + files preview ──
-    if (statusEl) { statusEl.textContent = 'Conectando...'; statusEl.className = 'git-process-status running'; }
-    let initialHtml = `<div class="git-process-line commit-msg">💬 <strong>${escapeHtml(message)}</strong></div>`;
-    if (filesPreview) {
-        initialHtml += `<div class="git-process-line files-header">📁 Archivos:</div>`;
-        filesPreview.split('\n').forEach(line => {
-            if (line.trim()) initialHtml += `<div class="git-process-line file-item">  ${escapeHtml(line.trim())}</div>`;
-        });
-    } else {
-        initialHtml += `<div class="git-process-line dim">(escaneando archivos...)</div>`;
-    }
-    initialHtml += `<div class="git-process-separator"></div>`;
-    outputEl.innerHTML = initialHtml;
-
-    // Disable button
-    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...PUSHEANDO...'; }
-
-    try {
-        // ── POST to start the job ──
-        const startRes = await fetch(`${API_BASE}/utils/git-commit`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folderPath: p.folder, message })
-        });
-        const { jobId } = await startRes.json();
-
-        if (!jobId) throw new Error('No se recibio jobId del servidor');
-
-        if (statusEl) { statusEl.textContent = 'Ejecutando...'; statusEl.className = 'git-process-status running'; }
-
-        // ── Connect to SSE stream for real-time step updates ──
-        const eventSource = new EventSource(`${API_BASE}/utils/git-commit-stream/${jobId}`);
-
-        await new Promise((resolve, reject) => {
-            eventSource.addEventListener('step', (e) => {
-                try {
-                    const step = JSON.parse(e.data);
-
-                    // Update progress indicator
-                    updateProgress(step.step);
-
-                    if (outputEl) {
-                        const icons = { add: '📦', commit: '💾', push: '🚀' };
-                        const icon = icons[step.step] || '•';
-                        const stepLabel = step.step === 'add' ? 'Stage' : step.step === 'commit' ? 'Commit' : 'Push';
-                        let html = `<div class="git-process-line step-header">${icon} <strong>${stepLabel}</strong></div>`;
-                        html += `<div class="git-process-line command">$ ${escapeHtml(step.command)}</div>`;
-                        if (step.stdout) {
-                            const lines = step.stdout.trim().split('\n');
-                            lines.forEach(line => {
-                                html += `<div class="git-process-line output">${escapeHtml(line)}</div>`;
-                            });
-                        }
-                        if (step.success) {
-                            html += `<div class="git-process-line success-marker">✓ OK</div>`;
-                        } else {
-                            html += `<div class="git-process-line error-marker">✗ ERROR</div>`;
-                            if (step.stderr) {
-                                const errLines = step.stderr.trim().split('\n');
-                                errLines.forEach(line => {
-                                    html += `<div class="git-process-line output stderr">${escapeHtml(line)}</div>`;
-                                });
-                            }
-                        }
-                        outputEl.insertAdjacentHTML('beforeend', html);
-                        outputEl.scrollTop = outputEl.scrollHeight;
-                    }
-                } catch (parseErr) {
-                    // Ignore parse errors on individual steps
-                }
-            });
-
-            eventSource.addEventListener('done', (e) => {
-                eventSource.close();
-                try {
-                    const result = JSON.parse(e.data);
-                    if (result.success) {
-                        if (statusEl) { statusEl.textContent = '✅ Commit & Push EXITOSO'; statusEl.className = 'git-process-status success'; }
-                        if (outputEl) {
-                            outputEl.insertAdjacentHTML('beforeend',
-                                '<div class="git-process-separator"></div>' +
-                                '<div class="git-process-line done-banner">✅ COMMIT & PUSH COMPLETADO</div>');
-                            outputEl.scrollTop = outputEl.scrollHeight;
-                        }
-                        msgInput.value = '';
-                        resolve(true);
-                    } else {
-                        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
-                        if (outputEl) {
-                            outputEl.insertAdjacentHTML('beforeend',
-                                '<div class="git-process-separator"></div>' +
-                                `<div class="git-process-line error-banner">❌ ERROR: ${escapeHtml(result.error || 'Desconocido')}</div>`);
-                            outputEl.scrollTop = outputEl.scrollHeight;
-                        }
-                        resolve(false);
-                    }
-                } catch (parseErr) {
-                    resolve(false);
-                }
-            });
-
-            eventSource.addEventListener('error', (e) => {
-                if (eventSource.readyState === EventSource.CLOSED) return;
-                eventSource.close();
-                if (statusEl) { statusEl.textContent = '❌ Error de conexión'; statusEl.className = 'git-process-status error'; }
-                if (outputEl) {
-                    outputEl.insertAdjacentHTML('beforeend',
-                        '<div class="git-process-line error-banner">❌ Error de conexion con el servidor</div>');
-                    outputEl.scrollTop = outputEl.scrollHeight;
-                }
-                resolve(false);
-            });
-        });
-
-        // Refresh git log on success
-        const isSuccess = statusEl && statusEl.classList.contains('success');
-        if (isSuccess && typeof loadGitLog === 'function') await loadGitLog();
-
-    } catch (e) {
-        if (statusEl) { statusEl.textContent = '❌ Error'; statusEl.className = 'git-process-status error'; }
-        if (outputEl) {
-            outputEl.insertAdjacentHTML('beforeend',
-                `<div class="git-process-line error-banner">❌ ${escapeHtml(e.message)}</div>`);
-            outputEl.scrollTop = outputEl.scrollHeight;
-        }
-    } finally {
-        if (btnEl) {
-            btnEl.disabled = false;
-            btnEl.innerHTML = `<svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg> COMMIT & PUSH`;
-        }
-
-        // ── Sticky terminal — NO auto-hide ──
-        // Only add click-to-dismiss on the header
-        const header = terminal ? terminal.querySelector('.git-process-header') : null;
-        if (header) {
-            header.style.cursor = 'pointer';
-            header.title = 'Click para cerrar';
-            header.onclick = () => {
-                terminal.classList.add('hidden');
-            };
-        }
-    }
-}
-
-// ── Git Push Result Overlay (success / error) ──
-
-window.showGitPushResult = (ok, details, commitMsg) => {
-    const overlay = document.getElementById('git-push-result-overlay');
-    const icon = document.getElementById('git-push-result-icon');
-    const title = document.getElementById('git-push-result-title');
-    const msg = document.getElementById('git-push-result-msg');
-    const detailsEl = document.getElementById('git-push-result-details');
-    const dismissBtn = document.getElementById('git-push-result-dismiss');
-
-    if (!overlay) return;
-
-    if (ok) {
-        icon.textContent = '✅';
-        title.textContent = 'Commit & Push exitoso';
-        msg.textContent = `"${commitMsg}"`;
-        detailsEl.textContent = details;
-        detailsEl.style.color = 'var(--text-secondary)';
-        dismissBtn.className = 'git-push-result-dismiss success';
-    } else {
-        icon.textContent = '❌';
-        title.textContent = 'Error en Git';
-        msg.textContent = `"${commitMsg}"`;
-        detailsEl.textContent = details;
-        detailsEl.style.color = '#f85149';
-        dismissBtn.className = 'git-push-result-dismiss error';
-    }
-
-    overlay.classList.remove('hidden');
-    // Auto-dismiss after 5 seconds on success, 10 on error
-    clearTimeout(window._gitPushTimeout);
-    window._gitPushTimeout = setTimeout(() => overlay.classList.add('hidden'), ok ? 5000 : 10000);
-
-    dismissBtn.onclick = () => {
-        overlay.classList.add('hidden');
-        clearTimeout(window._gitPushTimeout);
-    };
-};
+// showGitPushResult → githubmanager.js
 
 window.addModelToSelect = (modelName) => {
     // Just select it if it's already in the cloud list or Ollama list
@@ -9912,77 +9690,11 @@ window.gotoSearchResult = (projectId) => {
     if (searchInput) searchInput.value = '';
 };
 
-// ──────────────────────────────────────────────
-// GIT TAB FUNCTIONS
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// GIT TAB FUNCTIONS → githubmanager.js
+// ═══════════════════════════════════════════════════════════════
 
-// Show feedback message in the git actions bar area
-function showGitFeedback(msg, type = 'info') {
-    const bar = document.querySelector('.git-actions-bar');
-    if (!bar) return;
-    // Remove any existing feedback
-    const existing = bar.querySelector('.git-feedback');
-    if (existing) existing.remove();
-
-    const el = document.createElement('div');
-    el.className = `git-feedback git-feedback-${type}`;
-    el.textContent = msg;
-    bar.appendChild(el);
-
-    // Auto-remove after 4 seconds
-    setTimeout(() => {
-        if (el.parentNode) el.remove();
-    }, 4000);
-}
-
-// Refresh the git tab view
-window.refreshGitTab = () => {
-    loadGitLog();
-};
-
-// Load git log from the backend
-async function loadGitLog() {
-    const project = getActiveProject();
-    if (!project || !project.folder) {
-        const graph = document.getElementById('git-branch-graph');
-        if (graph) graph.innerHTML = '<div class="git-empty-state">No hay proyecto activo con carpeta</div>';
-        return;
-    }
-
-    const branchBadge = document.getElementById('git-current-branch');
-    const graphContainer = document.getElementById('git-branch-graph');
-    const legendContainer = document.getElementById('git-legend');
-
-    if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state">Cargando historial...</div>';
-    if (legendContainer) legendContainer.style.display = 'none';
-
-    try {
-        const res = await fetchWithLog(`${API_BASE}/utils/git-log`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folderPath: project.folder })
-        });
-        const data = await res.json();
-
-        if (!data.success) {
-            if (graphContainer) graphContainer.innerHTML = `<div class="git-empty-state error">Error: ${escapeHtml(data.error || 'Error desconocido')}</div>`;
-            return;
-        }
-
-        const commits = data.commits || [];
-        const currentBranch = data.currentBranch || 'main';
-
-        // Update branch badge
-        if (branchBadge) branchBadge.textContent = currentBranch;
-
-        // Render
-        renderCommitTree(commits, currentBranch);
-
-    } catch (e) {
-        console.error('[GIT] Error loading log:', e);
-        if (graphContainer) graphContainer.innerHTML = '<div class="git-empty-state error">Error al cargar el historial</div>';
-    }
-}
+// Initialize search input when DOM is ready
 
 // ── Git Zoom + Pan Controls (wheel zoom, click-drag pan) ──
 window._gitZoomLevel = 1.0;

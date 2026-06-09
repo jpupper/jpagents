@@ -13,7 +13,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { Bot } from 'grammy';
 import { connectDB, getCollection } from './db.js';
-import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, safeTelegramCall, sendTelegramResponse, isAuthorized } from './telegram-shared.js';
+import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, safeTelegramCall, sendTelegramResponse, isAuthorized, sendAgentCompleteTelegram } from './telegram-shared.js';
 
 // LangGraph Integration
 import { agentApp } from './agent_graph.js';
@@ -114,18 +114,12 @@ hermesBridge.on('agent:complete', async (info) => {
 
         // Obtener nombre del proyecto desde sessions
         let projectName = projectId;
-        try {
-            const sessions = await loadSessions();
-            const proj = sessions.projects?.find(p => p.id === projectId);
-            if (proj) projectName = proj.name || proj.folder?.split(/[/\\]/).pop() || projectId;
-        } catch {}
-
-        // Extraer objetivo: último mensaje del usuario de este agente
         let objective = '(tarea asignada)';
         try {
             const sessions = await loadSessions();
             const proj = sessions.projects?.find(p => p.id === projectId);
             if (proj) {
+                projectName = proj.name || proj.folder?.split(/[/\\\\]/).pop() || projectId;
                 const chat = proj.chats?.find(c => c.id === chatId);
                 if (chat) {
                     const lastUser = chat.messages?.filter(m => m.role === 'user').pop();
@@ -142,7 +136,30 @@ hermesBridge.on('agent:complete', async (info) => {
             (tokenUsage ? `🔢 ${tokenUsage.total_tokens?.toLocaleString() || '?'} tokens · $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}\n` : '') +
             `📋 ${preview}${(responseText || '').length > 300 ? '...' : ''}`;
 
+        // ─── Notificar a Hermes God Worker (WS) ───
         notifyGod(telegramMsg);
+
+        // ─── Enviar notificación REAL por Telegram al dueño ───
+        const ownerId = telegramBotOwner || (loadOwnerChatId()?.ownerChatId);
+        if (telegramBot && ownerId) {
+            const sent = await sendAgentCompleteTelegram(telegramBot, ownerId, {
+                projectId,
+                chatId,
+                name: agentName,
+                projectName,
+                objective,
+                responseText,
+                tokenUsage
+            }, 'hermes-bridge');
+            if (sent) {
+                console.log(`[TELEGRAM] 📤 Notificación agente "${agentName}" → Telegram (chat ${ownerId})`);
+            } else {
+                console.warn(`[TELEGRAM] ⚠️ No se pudo enviar notificación para "${agentName}"`);
+            }
+        } else {
+            console.log(`[TELEGRAM] ⚠️ Bot no inicializado o dueño no registrado — notificación "${agentName}" solo vía God WS`);
+        }
+
         console.log(`[TELEGRAM] 📤 Notificación agente "${agentName}" → ${projectName}`);
     } catch (notifyErr) {
         console.warn('[TELEGRAM] Error en listener agent:complete:', notifyErr.message);
@@ -5457,6 +5474,20 @@ function startHermesProcessSyncMonitor() {
                                                     `Proyecto: ${tracker.projectId.slice(0, 12)}\n` +
                                                     `Respuesta: ${preview}${cleanResponse.length > 300 ? '...' : ''}`
                                                 );
+                                            }
+                                            // ─── Enviar notificación REAL por Telegram al dueño ───
+                                            const ownerId = telegramBotOwner || (loadOwnerChatId()?.ownerChatId);
+                                            if (telegramBot && ownerId) {
+                                                const recoveryObj = tracker.recoveryObjective || '(tarea recuperada)';
+                                                await sendAgentCompleteTelegram(telegramBot, ownerId, {
+                                                    projectId: tracker.projectId,
+                                                    chatId: tracker.chatId,
+                                                    name: instance?.name || tracker.chatId?.slice(0, 8) || 'Desconocido',
+                                                    projectName: tracker.projectName || tracker.projectId?.slice(0, 12),
+                                                    objective: recoveryObj,
+                                                    responseText: cleanResponse,
+                                                    tokenUsage: null  // no disponible en recovery
+                                                }, 'hermes-bridge');
                                             }
                                         } catch (tgErr) {
                                             console.warn('[TELEGRAM] Error notificando recuperación:', tgErr.message);

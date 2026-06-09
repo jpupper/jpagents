@@ -294,14 +294,7 @@ body {
   min-width: 180px;
   transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, padding 0.3s ease, border 0.3s ease;
 }
-.file-explorer {
-  position: relative;
-  overflow: hidden;
-  min-width: 200px;
-  grid-column: 3;
-  grid-row: 1;
-  transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, padding 0.3s ease, border 0.3s ease;
-}
+
 
 /* --- Explorer Header (title + close button row) --- */
 .explorer-header {
@@ -702,6 +695,32 @@ optgroup {
 .tab:hover { background: #232328; }
 .tab.active { background: var(--bg-color); color: var(--accent-color); border-top: 2px solid var(--accent-color); }
 
+/* ─── TAB CLOSE BUTTON (×) agrandado y clickeable ─── */
+.tab-close {
+    font-size: 1.8rem;
+    font-weight: 900;
+    line-height: 1;
+    padding: 0;
+    margin-left: 2px;
+    border-radius: 6px;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.tab-close:hover {
+    background: rgba(255, 70, 70, 0.35);
+    color: #ff5252;
+    transform: scale(1.1);
+}
 
 .add-tab {
     background: var(--accent-gradient);
@@ -719,74 +738,7 @@ optgroup {
 }
 .add-tab:hover { transform: scale(1.05); filter: brightness(1.1); }
 
-/* TERMINAL STYLES */
-.terminal-view {
-  background: #000;
-  padding: 0 !important;
-  display: flex;
-  flex-direction: column;
-}
 
-.terminal-header {
-  background: #111;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.terminal-header h3 {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.terminal-output {
-  flex: 1;
-  padding: 1rem;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 0.9rem;
-  overflow-y: auto;
-  line-height: 1.4;
-  color: #d1d1d1;
-}
-
-.terminal-line {
-  margin-bottom: 2px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.terminal-line.system { color: #888; font-style: italic; }
-.terminal-line.command { color: #448aff; font-weight: bold; }
-.terminal-line.stdout { color: #fff; }
-.terminal-line.stderr { color: #ff5252; }
-.terminal-line.success { color: #4caf50; }
-
-.terminal-input-area {
-  display: flex;
-  align-items: center;
-  padding: 8px 16px;
-  background: #111;
-  border-top: 1px solid var(--border-color);
-  gap: 10px;
-}
-
-.terminal-prompt {
-  color: #448aff;
-  font-weight: bold;
-  font-family: monospace;
-}
-
-#terminal-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: #fff;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 0.9rem;
-  padding: 4px 0;
-}
 
 #terminal-input:focus {
   box-shadow: none;
@@ -1306,15 +1258,16 @@ optgroup {
   color: white;
   border: none;
   border-radius: 6px;
-  padding: 4px 10px;
+  padding: 6px 12px;
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, filter 0.2s;
 }
 
 .btn-primary-sm:hover {
   opacity: 0.9;
+  filter: brightness(1.1);
 }
 
 /* INPUT AREA FIXED AT BOTTOM */
@@ -1572,6 +1525,7 @@ textarea {
 .chat-item-actions {
   display: flex;
   gap: 4px;
+  align-items: center;
 }
 
 /* ══════════════════════════════════════════════
@@ -1680,26 +1634,7 @@ textarea {
   background: rgba(124, 77, 255, 0.1);
 }
 
-/* File Explorer */
-.file-explorer {
-  grid-column: 3;
-  background-color: var(--sidebar-bg);
-  border-left: 1px solid var(--border-color);
-  padding: 1.5rem;
-  overflow-y: auto;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
 
-.file-explorer h3 {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 1.5rem;
-}
 
 .file-list {
   flex: 1;
@@ -1768,33 +1703,7 @@ textarea {
   background: transparent;
 }
 
-.file-item {
-  padding: 0.6rem 0.8rem;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-  border: 1px solid transparent;
-}
 
-.file-item:hover {
-  background: var(--card-bg);
-  color: var(--text-primary);
-  border-color: var(--border-color);
-}
-
-.file-item.directory {
-  color: var(--accent-color);
-  font-weight: 600;
-}
-
-.file-item.file {
-  color: var(--text-primary);
-}
 
 .empty-state {
   text-align: center;
@@ -1923,18 +1832,31 @@ textarea {
   display: block;
   width: 100%;
   padding-left: 0.5rem;
+  transition: background 0.2s;
+}
+
+.diff-line:hover {
+  filter: brightness(1.2);
 }
 
 .diff-line.added {
   background-color: rgba(63, 185, 80, 0.15);
   border-left: 4px solid #3fb950;
+  color: #7ee787;
 }
 
 .diff-line.removed {
   background-color: rgba(248, 81, 73, 0.15);
   border-left: 4px solid #f85149;
+  color: #ffa198;
   text-decoration: line-through;
   opacity: 0.8;
+}
+
+.diff-line.unchanged {
+  color: #8b949e;
+  display: block;
+  padding: 2px 4px;
 }
 
 .diff-marker {
@@ -2341,33 +2263,7 @@ pre code.hljs {
     gap: 0.5rem;
 }
 
-.modal-side-tab {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    padding: 0.8rem 1.2rem;
-    text-align: left;
-    font-size: 0.95rem;
-    font-weight: 500;
-    cursor: pointer;
-    border-radius: 12px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
 
-.modal-side-tab:hover {
-    background: rgba(255,255,255,0.05);
-    color: var(--text-primary);
-}
-
-.modal-side-tab.active {
-    background: var(--card-bg);
-    color: var(--accent-color);
-    font-weight: 600;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-}
 
 .modal-main-body {
     flex: 1;
@@ -2550,6 +2446,27 @@ pre code.hljs {
     display: flex;
     flex-direction: column;
     gap: 1rem;
+}
+
+/* ─── Monitor Console Sub-Tab ─── */
+.monitor-console-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    flex: 1;
+    min-height: 0;
+}
+.console-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.console-header h3 {
+    font-size: 1rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .dashboard-console h3 {
@@ -2945,9 +2862,11 @@ pre code.hljs {
 .admin-input-area {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
     background: var(--card-bg);
     padding: 0.75rem;
     border-radius: 12px;
+    margin-top: 1rem;
 }
 
 #stop-admin-btn {
@@ -3038,36 +2957,22 @@ pre code.hljs {
     border: 1px solid rgba(124, 77, 255, 0.2);
 }
 
-.admin-input-area {
-    margin-top: 1rem;
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    background: rgba(0,0,0,0.2);
-    padding: 0.5rem;
-    border-radius: 12px;
-}
 
-.admin-input-area textarea {
-    flex: 1;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    padding: 0.5rem;
-    font-size: 0.9rem;
-    min-height: 40px;
-    max-height: 100px;
-}
 
 /* File Tree View */
 .file-explorer {
+    position: relative;
+    overflow: hidden;
+    min-width: 200px;
     grid-column: 3;
+    grid-row: 1;
     background: var(--sidebar-bg);
     border-left: 1px solid var(--border-color);
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
     height: 100%;
+    transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, padding 0.3s ease, border 0.3s ease;
 }
 
 .file-explorer h3 {
@@ -3096,6 +3001,7 @@ pre code.hljs {
   border: 1px solid transparent;
   gap: 12px;
   user-select: none;
+  animation: fadeInItem 0.2s ease-out;
 }
 
 .file-item.directory {
@@ -3163,10 +3069,7 @@ pre code.hljs {
     padding: 0.5rem 0.8rem;
 }
 
-/* Animations */
-.file-item {
-    animation: fadeInItem 0.2s ease-out;
-}
+
 
 @keyframes fadeInItem {
     from { opacity: 0; transform: translateX(-5px); }
@@ -3278,29 +3181,7 @@ pre code.hljs {
     font-size: 1rem;
 }
 
-/* Improved Diff Lines */
-.diff-line {
-    padding-left: 0.5rem;
-    transition: background 0.2s;
-}
 
-.diff-line:hover {
-    filter: brightness(1.2);
-}
-
-.diff-line.added {
-    background-color: rgba(63, 185, 80, 0.1);
-    border-left: 4px solid #3fb950;
-    color: #7ee787;
-}
-
-.diff-line.removed {
-    background-color: rgba(248, 81, 73, 0.1);
-    border-left: 4px solid #f85149;
-    color: #ffa198;
-    text-decoration: none;
-    opacity: 0.9;
-}
 
 .diff-marker {
     display: inline-block;
@@ -3322,8 +3203,8 @@ pre code.hljs {
 .active-skills-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: 6px;
+    padding: 8px 16px 10px 16px;
     background: rgba(255, 255, 255, 0.03);
     border-bottom: 1px solid var(--border-color);
 }
@@ -3807,29 +3688,7 @@ pre code.hljs {
     white-space: nowrap;
 }
 
-/* ─── GEAR CONFIG BUTTON ─── */
-.btn-gear-config {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 4px 8px;
-  cursor: pointer;
-  font-size: 1.1rem;
-  color: var(--text-secondary);
-  transition: all 0.2s;
-  margin-left: 4px;
-  flex-shrink: 0;
-}
-.btn-gear-config:hover {
-  background: rgba(124, 77, 255, 0.1);
-  border-color: var(--accent-color);
-  color: white;
-}
-.btn-gear-config.active {
-  background: rgba(124, 77, 255, 0.15);
-  border-color: var(--accent-color);
-  color: white;
-}
+
 
 /* ─── CONFIG DROPDOWN MENU ─── */
 .agent-config-dropdown {
@@ -3877,94 +3736,38 @@ pre code.hljs {
   max-width: 160px;
 }
 
-/* Config Panel (collapsible subpanel, legacy) */
-.agent-config-panel {
-  width: 100%;
-  padding: 10px 15px;
-  margin: 8px 0 4px 0;
-  background: rgba(0,0,0,0.2);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  animation: slideDown 0.2s ease-out;
-  box-sizing: border-box;
-}
-@keyframes slideDown {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.agent-config-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.agent-config-row label {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-.agent-config-row select {
-  padding: 4px 8px;
-  font-size: 0.8rem;
-  min-width: 160px;
-  background: rgba(0,0,0,0.2);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-}
+
 
 /* Hermes status dot */
 .hermes-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #6e7681;
+  background: rgba(255,255,255,0.15);
   display: inline-block;
   transition: all 0.3s;
   flex-shrink: 0;
 }
-.hermes-status-dot.running {
+.hermes-status-dot.running,
+.hermes-status-dot.online {
   background: #22d3ee;
   box-shadow: 0 0 6px rgba(0, 229, 255, 0.5);
+  animation: pulse-dot 1.5s ease-in-out infinite;
 }
 .hermes-status-dot.error {
   background: #ff4444;
   box-shadow: 0 0 6px #ff4444;
 }
-
-/* Active skills list inside header */
-.active-skills-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 0 0 10px 0;
+.hermes-status-dot.offline {
+  background: rgba(255,255,255,0.15);
 }
 
-.active-skills-list .skill-tag {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--primary-color);
-    color: white;
-    padding: 3px 10px;
-    border-radius: 20px;
-    font-size: 0.7rem;
-    font-weight: 600;
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
-.active-skills-list .skill-tag .remove-skill {
-    cursor: pointer;
-    font-size: 0.85rem;
-    opacity: 0.7;
-}
-.active-skills-list .skill-tag .remove-skill:hover {
-    opacity: 1;
-}
+
 
 .chat-header-actions {
     display: flex;
@@ -4167,11 +3970,20 @@ pre code.hljs {
     font-family: inherit;
     font-size: 0.9rem;
     font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.modal-side-tab:hover {
+    background: rgba(255,255,255,0.05);
+    color: var(--text-primary);
 }
 
 .modal-side-tab.active {
     background: var(--accent-gradient);
     color: white;
+    font-weight: 600;
     box-shadow: 0 4px 12px rgba(124, 77, 255, 0.3);
 }
 
@@ -4508,21 +4320,7 @@ pre code.hljs {
     margin: 0;
 }
 
-.btn-primary-sm {
-    background: var(--primary-color);
-    color: white;
-    border: none;
-    padding: 6px 12px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: filter 0.2s;
-}
 
-.btn-primary-sm:hover {
-    filter: brightness(1.1);
-}
 
 /* Prompt Improver Diff UI */
 .prompt-diff-container {
@@ -4565,26 +4363,7 @@ pre code.hljs {
     background: #0d1117;
 }
 
-.diff-line.added {
-    background: rgba(63, 185, 80, 0.15);
-    color: #7ee787;
-    display: block;
-    padding: 2px 4px;
-}
 
-.diff-line.removed {
-    background: rgba(248, 81, 73, 0.15);
-    color: #ffa198;
-    text-decoration: line-through;
-    display: block;
-    padding: 2px 4px;
-}
-
-.diff-line.unchanged {
-    color: #8b949e;
-    display: block;
-    padding: 2px 4px;
-}
 
 /* Specific button adjustments */
 .btn-icon-subtle#improve-chat-prompt-btn {
@@ -4818,15 +4597,6 @@ pre code.hljs {
     color: #f85149 !important;
 }
 
-.chat-item-actions {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-}
-
-
-
-
 /* ─── Chat Header - Name Input ─── */
 .chat-name-input {
   background: transparent;
@@ -4935,23 +4705,7 @@ pre code.hljs {
   border-color: #ff4444;
 }
 
-.hermes-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  transition: all 0.3s;
-}
 
-.hermes-status-dot.offline {
-  background: rgba(255,255,255,0.15);
-}
-
-.hermes-status-dot.online {
-  background: #22d3ee;
-  box-shadow: 0 0 6px #22d3ee;
-  animation: pulse-dot 1.5s ease-in-out infinite;
-}
 
 /* ─── Gear Config Button ─── */
 .btn-gear-config {
@@ -4968,6 +4722,12 @@ pre code.hljs {
   transition: all 0.25s ease;
   color: var(--text-secondary);
   margin-left: 4px;
+  flex-shrink: 0;
+}
+.btn-gear-config:hover {
+  background: rgba(124, 77, 255, 0.1);
+  border-color: var(--accent-color);
+  color: white;
 }
 .btn-gear-config.active {
   background: rgba(124, 77, 255, 0.2);
@@ -4977,39 +4737,7 @@ pre code.hljs {
   transform: rotate(45deg);
 }
 
-/* ─── Agent Config Panel (collapsible) ─── */
-.agent-config-panel {
-  width: 100%;
-  padding: 14px 16px;
-  margin-top: 0;
-  border-top: 1px solid var(--border-color);
-  background: rgba(0,0,0,0.15);
-  border-radius: 0 0 12px 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  animation: slideDown 0.2s ease-out;
-}
-.agent-config-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.agent-config-row label {
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  min-width: 40px;
-}
-.agent-config-row select {
-  padding: 5px 10px;
-  font-size: 0.8rem;
-  min-width: 180px;
-  background: var(--bg-color);
-}
+
 
 /* ─── Toast Notification System ─── */
 .toast-notification {

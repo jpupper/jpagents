@@ -119,3 +119,98 @@ export function isAuthorized(userId, ownerId, authorizedList = []) {
     if (ownerId) return userId === ownerId;
     return false;
 }
+
+// ─── Notificación de agente completado vía Telegram ───
+// Centraliza TODAS las notificaciones de finalización de agentes.
+// Usada por: server.js (via hermesBridge 'agent:complete'), delegaciones, y frontend API.
+//
+// @param {object} bot - Instancia de Grammy Bot (o API-compatible con sendMessage)
+// @param {number} ownerChatId - ID del chat del dueño donde enviar
+// @param {object} info - { projectId, chatId, name, projectName, objective, responseText, tokenUsage }
+// @param {string} [source='hermes-bridge'] - Origen: 'hermes-bridge', 'legacy-agent', 'hermes-god', 'admin-agent'
+export async function sendAgentCompleteTelegram(bot, ownerChatId, info, source = 'hermes-bridge') {
+    if (!bot || !ownerChatId) return false;
+    try {
+        const { name: agentName, projectName, objective, responseText, tokenUsage } = info;
+
+        const displayName = agentName || 'Desconocido';
+        const displayProject = projectName || info.projectId || 'Desconocido';
+        const displayObjective = objective || '(tarea asignada)';
+        const preview = (responseText || '').slice(0, 400);
+
+        // ─── Construir mensaje genérico ───
+        const now = new Date();
+        const timeStr = now.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+
+        let prefix = '';
+        if (source === 'hermes-god') {
+            prefix = '👑 ';
+        } else if (source === 'legacy-agent' || source === 'admin-agent') {
+            prefix = '🤖 ';
+        } else {
+            prefix = '✅ ';
+        }
+
+        const lines = [
+            `${prefix}*${displayName}* completó su tarea`,
+            ``,
+            `━━━ 📋 RESUMEN ━━━`,
+            ``,
+            `📁 Proyecto: *${displayProject}*`,
+            `🎯 Objetivo: ${displayObjective.slice(0, 200)}`,
+        ];
+
+        if (tokenUsage && tokenUsage.total_tokens > 0) {
+            lines.push(`🔢 ${tokenUsage.total_tokens.toLocaleString()} tokens · $${(tokenUsage.estimated_cost_usd || 0).toFixed(4)}`);
+        }
+
+        lines.push(`🕐 ${timeStr}`);
+
+        if (preview) {
+            lines.push(``);
+            lines.push(`📝 Respuesta:`);
+            lines.push(preview);
+            if ((responseText || '').length > 400) {
+                lines.push(`...(truncado, ${responseText.length.toLocaleString()} chars totales)`);
+            }
+        }
+
+        lines.push(``);
+        lines.push(`━━━`);
+
+        const message = lines.join('\n');
+
+        // Split si es muy largo (>3500 chars, límite de Telegram para Markdown)
+        const MAX_TG_LEN = 3500;
+        if (message.length <= MAX_TG_LEN) {
+            await safeTelegramCall(() =>
+                bot.api.sendMessage(ownerChatId, message, { parse_mode: 'Markdown' })
+            );
+        } else {
+            // Split en partes
+            const parts = [];
+            let remaining = message;
+            while (remaining.length > 0) {
+                if (remaining.length <= MAX_TG_LEN) {
+                    parts.push(remaining);
+                    break;
+                }
+                let cut = remaining.lastIndexOf('\n\n', MAX_TG_LEN);
+                if (cut < MAX_TG_LEN / 2) cut = remaining.lastIndexOf('\n', MAX_TG_LEN);
+                if (cut < 100) cut = MAX_TG_LEN;
+                parts.push(remaining.slice(0, cut).trim());
+                remaining = remaining.slice(cut).trim();
+            }
+            for (const part of parts) {
+                await safeTelegramCall(() =>
+                    bot.api.sendMessage(ownerChatId, part, { parse_mode: 'Markdown' })
+                );
+            }
+        }
+
+        return true;
+    } catch (e) {
+        try { console.error(`[TELEGRAM-NOTIFY] Error enviando notificación: ${e.message?.slice(0, 100)}`); } catch {}
+        return false;
+    }
+}
