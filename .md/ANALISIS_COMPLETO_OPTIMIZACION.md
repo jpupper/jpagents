@@ -323,3 +323,662 @@ Semana 3+: Fase 3 (Refactor arquitectónico)
 ```
 
 **¿Cuál de estas fases querés encarar primero?** Yo arrancaría por la Fase 1 que tiene el mejor ratio impacto/riesgo.
+
+---
+
+## 10. PLAN DE MODULARIZACION DE main.js — PROPUESTA COMPLETA
+
+> **Estado actual:** `main.js` (9,069 líneas, 402 KB) es un monolito con ~100 funciones en scope global. No usa imports ES6 (salvo `matrix.js`). Las funciones se comunican via `window.*`, state global `state`, y side-effects DOM.
+>
+> **Objetivo:** Dividir en 18 archivos ES modules (`public/js/modules/`) con dependencias explícitas. Cada módulo es autónomo y testeable.
+
+---
+
+### 10.1 ARQUITECTURA PROPUESTA — DIAGRAMA DE DEPENDENCIAS
+
+```
+main.js (entry point)
+ ├── state.js  ←── todos los módulos leen/escriben acá
+ ├── dom-refs.js
+ ├── utils.js   ←── dependencia de casi todos
+ │
+ ├── api.js     ←── MCPClient, fetchWithLog, apiGet/Post/Delete
+ ├── session.js ←── saveData, loadData, sync, health checks
+ │
+ ├── chat-ui.js          ←── renderMessages, updateThinking, toast, sounds
+ ├── agent-engine.js     ←── triggerAgentLogic, processAgentActions, autoRetry, performWrite
+ ├── hermes-engine.js    ←── triggerHermesLogic, HermesTab IIFE
+ ├── admin-engine.js     ←── triggerAdminLogic, triggerGodLogic, Telegram
+ │
+ ├── project-ui.js       ←── CRUD proyectos, tabs, navegación
+ ├── terminal-ui.js      ←── Terminal emulado
+ ├── file-editor.js      ←── File explorer, diff viewer, editor
+ ├── skills-ui.js        ←── Skills CRUD
+ ├── models-ui.js        ←── Selectores de modelo, segundo agente
+ ├── image-upload.js     ←── Manejo de imágenes adjuntas
+ │
+ ├── drag-drop.js        ←── Drag & drop unificado (proyectos + tabs)
+ ├── search-filter.js    ←── Búsqueda/filtro de proyectos
+ ├── agent-table.js      ←── Tabla de monitoreo de agentes
+ ├── console-view.js     ←── Consola de errores cliente
+ │
+ └── events.js           ←── setupEventListeners (delega a sub-módulos)
+```
+
+---
+
+### 10.2 DETALLE DE CADA ARCHIVO
+
+---
+
+#### 📁 `state.js` (~80 líneas)
+**Propósito:** Único source of truth del estado de la app. Reactivo via Proxy para que los módulos reaccionen a cambios.
+
+```js
+// Estado global
+export const state = {
+    projects: [],
+    activeProjectId: null,
+    adminMessages: [],
+    godMessages: [],
+    telegramMessages: [],
+    telegramBadgeCount: 0,
+    adminIsThinking: false,
+    godIsThinking: false,
+    skills: [],
+    selectedSkill: null,
+    models: [],
+    serverModels: [],
+    mode: 'chat',
+    isAgentBusy: false,
+    consoleErrors: [],
+    clientLogs: [],
+    // Hermes
+    hermesRunningInstances: {},
+    hermesProjectStatuses: {},
+    // Drag state
+    draggedProjectId: null,
+    draggedTabId: null,
+    draggedTabType: null
+};
+```
+
+**Proviene de:** Variables globales dispersas en todo main.js: `state.projects` (línea ~1250), `amIMaster`, `mySocketId`, `syncWs`, `isSaving`, `savePending`, `draggedProjectId`, `draggedTabId`, etc.
+
+**Riesgo:** BAJO. Es simplemente mover variables a un objeto exportado.
+
+---
+
+#### 📁 `dom-refs.js` (~200 líneas)
+**Propósito:** Cache de todos los `document.getElementById()` / `querySelector()` para que ningún módulo haga búsquedas DOM crudas.
+
+```js
+export const D = {
+    chatList, chatMessages, chatInput, sendBtn, modelSelect,
+    folderPathInput, scanFolderBtn, fileList, newChatBtn,
+    tabsNav, chatTabContent, editorTabContent, editorCode,
+    editorGutter, currentFilename, diffStats, pendingActions,
+    acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle,
+    dashboardTabContent, dashboardProjectName, dashboardProjectPath,
+    statChats, statFiles, adminMonitorBtn, adminTabContent,
+    monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn,
+    stopAdminBtn, micBtn, imageInput, imagePreviewContainer,
+    attachImgBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn,
+    gitCommitMsgInput, terminalTabContent, terminalOutput,
+    terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn,
+    skillsListEl, skillEditorContainer, skillNameInput,
+    skillContentTextarea, saveSkillBtn, deleteSkillBtn,
+    newSkillBtn, agentSkillSelect, skillsSearchInput,
+    hermesOutput, hermesInput, hermesStatus, hermesStartBtn,
+    hermesStopBtn, agentBadge, telegramBadge,
+    searchInput, searchDropdown, // ... y 50+ más
+};
+```
+
+**Proviene de:** Líneas 921-1140 y referencias sueltas dentro de IIFEs (líneas 7876-7882, 8722-8725).
+
+**Riesgo:** BAJO. Sólo mover código, sin cambios de lógica.
+
+---
+
+#### 📁 `utils.js` (~250 líneas)
+**Propósito:** Funciones puras — sin side-effects, sin dependencias de UI.
+
+**Contenido:**
+| Función | Línea actual | Descripción |
+|---------|-------------|-------------|
+| `stripAnsi(text)` | 4, 154 | Elimina códigos ANSI |
+| `ansiToHtml(text)` | 162 | Convierte ANSI a HTML con spans de color |
+| `escapeHtml(text)` | 3520 | Escapa HTML (usar versión con createElement) |
+| `countLines(str)` | 3502 | Cuenta líneas de un string |
+| `getLanguage(ext)` | 3510 | Mapea extensión → lenguaje (js→javascript) |
+| `pathJoin(dir, file)` | 6670 | Join de paths cross-platform |
+| `formatLogs(logs)` | 7846 | Formatea logs cliente |
+| `formatProgressLines(raw)` | 3553 | Formatea líneas de progreso |
+| `generateId()` | 822 | ID único |
+| `generateRandomProjectName()` | 829 | Nombre aleatorio (Cosmic Red Tiger) |
+| `ADJECTIVES, COLORS, ANIMALS` | 825-827 | Constantes de nombres |
+
+**Proviene de:** Líneas 1-161, 822-829, 3497-3578, 6670-6701, 7846-7870.
+
+**Riesgo:** BAJO. Funciones puras, fácil de testear.
+
+---
+
+#### 📁 `api.js` (~250 líneas)
+**Propósito:** Toda comunicación HTTP con el backend. Un solo lugar para manejar autenticación, retries, errores.
+
+**Contenido:**
+| Elemento | Línea actual |
+|----------|-------------|
+| `API_BASE` | 231 |
+| `OLLAMA_BASE` | 264 |
+| `apiGet(path, opts)` | 240 |
+| `apiPost(path, body, opts)` | 248 |
+| `apiDelete(path, opts)` | 258 |
+| `fetchWithLog(url, opts, retries)` | 545 |
+| `MCPClient` class | 316-544 |
+| `mcpClient` instance | 508 |
+
+**Proviene de:** Líneas 231-544.
+
+**Riesgo:** MEDIO. `MCPClient` es una clase con estado interno (WebSocket, callbacks). Requiere testear que el WS de MCP se conecte bien después del refactor.
+
+---
+
+#### 📁 `session.js` (~250 líneas)
+**Propósito:** Persistencia de datos, sincronización entre pestañas, health checks, tareas periódicas.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `saveData()` | 1931 |
+| `loadData(shouldScan)` | 1539 |
+| `sanitizeProject(p)` | 1899 |
+| `clearClientLogs()` | 1998 |
+| `claimMaster()` | 2008 |
+| `isTabBusy()` | 2022 |
+| `syncUI()` | 2031 |
+| `getTaskState()` | 2048 |
+| `saveTaskState(state)` | 2057 |
+| `checkSystemHealth(data)` | 615 |
+| `performPeriodicSync()` | 644 |
+| `setAgentActive(busy)` | 292 |
+| `triggerSystemRestart()` | 304 |
+
+**Proviene de:** Líneas 615-700, 1539-1603, 1899-2070.
+
+**Riesgo:** MEDIO. `saveData()` y `loadData()` son críticas (el estado persiste en disco vía API). Los WebSocket de sync (`syncWs`) deben reconectarse correctamente.
+
+---
+
+#### 📁 `chat-ui.js` (~500 líneas)
+**Propósito:** Renderizado de la vista de chat, mensajes, indicador de "thinking", toast, sonidos.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `createChat(project, opts)` | 17 |
+| `isAgentActive(chat)` | 47 |
+| `renderMessages(shouldRenderLayout)` | 3978 |
+| `updateThinking(chat, isThinking, status, subtext)` | 4125 |
+| `formatMarkdown(text)` | 4179 |
+| `sendMessage()` | 4194 |
+| `showToast(message, type, duration)` | 4240 |
+| `playAgentCompleteSound()` | 4272 |
+| `playAgentErrorSound()` | 4291 |
+| `renderSessionSummary(changeStats, project)` | 6217 |
+| `improvePrompt(targetId, e)` | 4313 |
+| `showPromptDiffUI(targetId, orig, improved)` | 4316 |
+| `renderPromptDiff(container, orig, improved)` | 4319 |
+| `syncModeUI(mode)` | 7832 |
+| `saveChatDraft()` | 2724 |
+| `restoreChatDraft()` | 2743 |
+
+**Proviene de:** Líneas 1-51, 3978-4322, 6217-6296, 7832-7845.
+
+**Riesgo:** MEDIO. `renderMessages()` es una de las funciones más grandes (~150 líneas) con mucha lógica de layout. Hay que testear que los mensajes se rendericen igual.
+
+---
+
+#### 📁 `agent-engine.js` (~650 líneas)
+**Propósito:** Ciclo de vida del agente estándar (no-Hermes). Construcción de system prompt, ejecución de lógica, parseo de tool calls, retry, file writes.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `triggerAgentLogic(project, chat, origin)` | 4463 |
+| `processAgentActions(text, project, chat)` | 5642 |
+| `autoRetry(errorContext, project, chat, retryCount)` | 6297 |
+| `performWrite(fileName, content, project, chat)` | 6505 |
+| `performAutomaticValidation(project, chat)` | 4376 |
+| `repairJSONField(jsonStr, fieldName)` | 5611 |
+| `getDiffEngine()` | 3497 |
+| `highlightGitDiff(diffText)` | 3579 |
+
+**Proviene de:** Líneas 4463-5030, 5611-6504.
+
+**Riesgo:** ALTO. `triggerAgentLogic()` y `processAgentActions()` son el corazón del sistema de agentes — ~1,500 líneas combinadas. Requiere testing exhaustivo con múltiples flujos: streaming, non-streaming, errores, retry, validación.
+
+---
+
+#### 📁 `hermes-engine.js` (~850 líneas)
+**Propósito:** Integración completa con Hermes Agent via `/api/hermes/start` + WebSocket streaming.
+
+**Contenido:**
+| Función / Sección | Línea actual |
+|-------------------|-------------|
+| `triggerHermesLogic(project, chat, origin)` | 8140 |
+| Hermes Tab Module (IIFE completa) | 7871-8136 |
+
+Dentro de `triggerHermesLogic` (~580 líneas):
+- Construcción del mensaje con skills + auto-transformación
+- Llamada a `/api/hermes/start` con streaming
+- Procesamiento de chunks SSE → tool calls → cambios de archivo
+- Auto-naming de agentes
+- Manejo de `clarify` interactivo
+- Token counting
+- Auto-transformación (detección de reinicio, modificación de archivos del server)
+
+**Proviene de:** Líneas 7871-8717.
+
+**Riesgo:** ALTO. Es 850 líneas de lógica compleja con streaming, parseo de ANSI, WebSocket, y side-effects en el DOM. El `clarify` interactivo es particularmente frágil.
+
+---
+
+#### 📁 `admin-engine.js` (~400 líneas)
+**Propósito:** Lógica de los agentes Admin (Orquestador), God (Telegram bot), y monitor de Telegram.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `adminLog(msg)` | 5031 |
+| `renderAdminMessages()` | 5038 |
+| `renderGodMessages()` | 5105 |
+| `triggerGodLogic(retryCount)` | 5163 |
+| `renderTelegramMessages()` | 5298 |
+| `buildAdminSystemPrompt()` | 5328 |
+| `triggerAdminAgentLogic(retryCount)` | 5383 |
+| `renderAdminMonitor()` | 5514 |
+| `updateAgentBadge()` | 5553 |
+| `startBadgePolling()` | 5600 |
+| `stopBadgePolling()` | 5604 |
+| `updateTelegramBadge()` | 3538 |
+
+**Proviene de:** Líneas 5031-5610, 3538-3552.
+
+**Riesgo:** MEDIO. `renderAdminMessages()` y `renderGodMessages()` son casi idénticas (duplicación ya identificada en sección 3.3). Al modularizar, se unifican en una sola `renderAgentMessageLog()` genérica.
+
+---
+
+#### 📁 `project-ui.js` (~500 líneas)
+**Propósito:** UI de gestión de proyectos: sidebar, tabs, navegación, visibilidad de vistas, panel resize.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `renderProjectList()` | 2881 |
+| `renderTabs()` | 2947 |
+| `updateViewVisibility()` | 3225 |
+| `refreshModalSkillTags(project)` | 3132 |
+| `applyPanelState()` | 1144 |
+| `initPanelResize()` | 1189 |
+| `generateGenerativeProjectName()` | 2566 |
+| `createNewProject(customName)` | 2601 |
+| `checkProjectHealth(project)` | 2679 |
+| `checkAllProjectsHealth()` | 2694 |
+| `getActiveProject()` | 2704 |
+| `getActiveChat()` | 2713 |
+| `generateChatNameFromPrompt(prompt)` | 840 |
+
+**Proviene de:** Líneas 1144-1243, 2566-2755, 2881-3496.
+
+**Riesgo:** MEDIO. `renderProjectList()` y `renderTabs()` son ~500 líneas combinadas de HTML generation. Si se migra incorrectamente, la UI de navegación se rompe.
+
+---
+
+#### 📁 `terminal-ui.js` (~300 líneas)
+**Propósito:** Terminal emulada con streaming vía EventSource.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `appendToTerminal(text, type, projectId)` | 1604 |
+| `refreshTerminalUI()` | 1623 |
+| `updateTerminalStatusUI()` | 1645 |
+| `connectTerminalStream(projectId)` | 1675 |
+| `runTerminalCommand(command)` | 1716 |
+| `detectRunCommand(project)` | 1741 |
+| `setupTerminalEvents()` | 1765 |
+| `setupOpenFolderExplorer()` | 1851 |
+
+**Proviene de:** Líneas 1604-1898.
+
+**Riesgo:** BAJO. La terminal es relativamente autocontenida. Ya usa EventSource para streaming.
+
+---
+
+#### 📁 `file-editor.js` (~300 líneas)
+**Propósito:** File explorer, visor de archivos (CodeMirror-like), diff viewer para cambios del agente.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `handleFileClick(path, originalPath, p, opts)` | 6681 |
+| Todo el editor tab logic | disperso en eventos |
+| `getDiffEngine()` — re-export de utils | 3497 |
+
+La lógica de diff (aceptar/rechazar cambios) está actualmente dispersa entre `processAgentActions()` y `setupEventListeners()`. En el refactor se consolida acá.
+
+**Proviene de:** Líneas 6681-6701, y lógica de editor dispersa en `setupEventListeners()` y `processAgentActions()`.
+
+**Riesgo:** MEDIO. Hay que extraer la lógica de diff del medio de otras funciones.
+
+---
+
+#### 📁 `skills-ui.js` (~450 líneas)
+**Propósito:** CRUD de skills: listado, editor, búsqueda, asignación a agentes/proyectos.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `loadSkills()` | 2070 |
+| `renderSkillsList()` | 2114 |
+| `updateSkillSelects()` | 2202 |
+| `setupSkillsEventListeners()` | 2229 |
+| `renderAgentSkills()` | 2410 |
+| `renderProjectSkills()` | 2448 |
+
+**Proviene de:** Líneas 2070-2483.
+
+**Riesgo:** BAJO. El módulo de skills ya está bastante agrupado en el código actual.
+
+---
+
+#### 📁 `models-ui.js` (~150 líneas)
+**Propósito:** Selectores de modelo (chat y admin), verificación de capacidades (vision), configuración de segundo agente.
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `fetchModels()` | 2756 |
+| `renderModelSelects()` | 2771 |
+| `checkVisionCapability()` | 2835 |
+| `populateSecondAgentModelSelect()` | 2844 |
+| `checkSecondAgentHealth()` | 2857 |
+
+**Proviene de:** Líneas 2756-2880.
+
+**Riesgo:** BAJO. Autocontenido, pocas dependencias.
+
+---
+
+#### 📁 `image-upload.js` (~100 líneas)
+**Propósito:** Adjuntar imágenes al chat (para modelos con vision).
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `handleImageSelection(e)` | 7784 |
+| `addImages(files)` | 7790 |
+| `toBase64(file)` | 7803 |
+| `renderImagePreviews()` | 7812 |
+| `clearImages()` | 7827 |
+
+**Proviene de:** Líneas 7784-7831.
+
+**Riesgo:** BAJO. Módulo pequeño y aislado.
+
+---
+
+#### 📁 `drag-drop.js` (~100 líneas)
+**Propósito:** Drag & drop UNIFICADO para proyectos (sidebar) y tabs (barra superior). Elimina la duplicación actual.
+
+**Contenido (unificado):**
+```js
+export function makeDraggable(containerSelector, itemSelector, onReorder) { ... }
+export function setupProjectDragDrop() { ... }  // usa makeDraggable
+export function setupTabDragDrop() { ... }       // usa makeDraggable
+```
+
+**Proviene de:** Líneas 8835-8930 (actualmente dos implementaciones casi idénticas).
+
+**Riesgo:** BAJO. Es simplificar código existente, no añadir complejidad.
+
+---
+
+#### 📁 `search-filter.js` (~140 líneas)
+**Propósito:** Búsqueda y filtro de proyectos en la sidebar.
+
+**Proviene de:** Líneas 8931-9069 (IIFE actual).
+
+**Riesgo:** BAJO.
+
+---
+
+#### 📁 `agent-table.js` (~120 líneas)
+**Propósito:** Tabla de monitoreo de agentes activos (Admin → tabla).
+
+**Proviene de:** Líneas 8717-8834 (IIFE actual).
+
+**Riesgo:** BAJO.
+
+---
+
+#### 📁 `console-view.js` (~80 líneas)
+**Propósito:** Vista de consola de errores del cliente (Admin → consola).
+
+**Contenido:**
+| Función | Línea actual |
+|---------|-------------|
+| `getClientErrors()` | 2484 |
+| `refreshConsoleUI()` | 2495 |
+
+**Proviene de:** Líneas 2484-2565.
+
+**Riesgo:** BAJO.
+
+---
+
+#### 📁 `events.js` (~1100 líneas)
+**Propósito:** Bindear todos los event listeners del DOM. Delegar a los módulos correspondientes en vez de tener toda la lógica inline.
+
+**Estructura interna propuesta:**
+```js
+// events.js — coordina el binding
+import { setupChatEvents } from './chat-ui.js';
+import { setupTerminalEvents } from './terminal-ui.js';
+import { setupSkillsEvents } from './skills-ui.js';
+import { setupHermesTabEvents } from './hermes-engine.js';
+import { setupAdminEvents } from './admin-engine.js';
+import { setupProjectEvents } from './project-ui.js';
+import { setupModelEvents } from './models-ui.js';
+import { setupImageEvents } from './image-upload.js';
+import { setupGitEvents } from './file-editor.js';
+import { setupDragDrop } from './drag-drop.js';
+import { setupSearchFilter } from './search-filter.js';
+
+export function setupEventListeners() {
+    setupChatEvents();
+    setupTerminalEvents();
+    setupSkillsEvents();
+    setupHermesTabEvents();
+    setupAdminEvents();
+    setupProjectEvents();
+    setupModelEvents();
+    setupImageEvents();
+    setupGitEvents();
+    setupDragDrop();
+    setupSearchFilter();
+    // ... otros bindings cross-cutting
+}
+```
+
+Esto reemplaza el monstruo de 1,082 líneas (líneas 6702-7784) que actualmente tiene TODO inline.
+
+**Proviene de:** Líneas 6702-7784. Cada módulo exporta su propia `setup*Events()`.
+
+**Riesgo:** MEDIO. Hay que asegurar que los handlers de eventos sigan accediendo a los elementos DOM correctos (vía `dom-refs.js`) y al `state`.
+
+---
+
+#### 📁 `main.js` (NUEVO — ~120 líneas)
+**Propósito:** Entry point. Inicializa todo y arranca la app.
+
+```js
+// main.js — Entry point
+import { state } from './modules/state.js';
+import { initDOM } from './modules/dom-refs.js';
+import { loadSkills } from './modules/skills-ui.js';
+import { fetchModels } from './modules/models-ui.js';
+import { loadData, performPeriodicSync } from './modules/session.js';
+import { setupEventListeners } from './modules/events.js';
+import { initPanelResize } from './modules/project-ui.js';
+import { syncModeUI } from './modules/chat-ui.js';
+import { initMatrix } from './matrix.js';
+
+async function init() {
+    initDOM();                              // Cachear refs DOM
+    applyPanelState();
+    initPanelResize();
+    syncModeUI(state.mode);
+
+    await loadData();
+    await Promise.all([loadSkills(), fetchModels()]);
+
+    setupEventListeners();
+    renderProjectList();
+    renderTabs();
+    updateViewVisibility();
+
+    // WebSocket sync
+    connectSyncWS();
+
+    // Health check periódico
+    setInterval(performPeriodicSync, 15000);
+    startBadgePolling();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+```
+
+**Proviene de:** Líneas 1244-1538 (`init()` actual, simplificada).
+
+**Riesgo:** BAJO. Es mover `init()` a un archivo limpio que importa los módulos.
+
+---
+
+### 10.3 RESUMEN: 18 ARCHIVOS → 9,069 LÍNEAS REPARTIDAS
+
+| # | Archivo | Líneas estimadas | Riesgo | Dependencias |
+|---|---------|-----------------|--------|-------------|
+| 1 | `state.js` | 80 | BAJO | — |
+| 2 | `dom-refs.js` | 200 | BAJO | — |
+| 3 | `utils.js` | 250 | BAJO | — |
+| 4 | `api.js` | 250 | MEDIO | — |
+| 5 | `session.js` | 250 | MEDIO | api, state |
+| 6 | `chat-ui.js` | 500 | MEDIO | utils, dom, state |
+| 7 | `agent-engine.js` | 650 | ALTO | api, utils, state, chat-ui |
+| 8 | `hermes-engine.js` | 850 | ALTO | api, utils, state, chat-ui |
+| 9 | `admin-engine.js` | 400 | MEDIO | api, utils, state |
+| 10 | `project-ui.js` | 500 | MEDIO | utils, dom, state, api |
+| 11 | `terminal-ui.js` | 300 | BAJO | utils, dom, api |
+| 12 | `file-editor.js` | 300 | MEDIO | utils, dom, api, state |
+| 13 | `skills-ui.js` | 450 | BAJO | utils, dom, api, state |
+| 14 | `models-ui.js` | 150 | BAJO | utils, dom, api |
+| 15 | `image-upload.js` | 100 | BAJO | utils, dom |
+| 16 | `drag-drop.js` | 100 | BAJO | dom, state |
+| 17 | `search-filter.js` | 140 | BAJO | dom, state |
+| 18 | `agent-table.js` | 120 | BAJO | dom, api |
+| 19 | `console-view.js` | 80 | BAJO | dom, api |
+| 20 | `events.js` | 1,100 | MEDIO | todos |
+| 21 | `main.js` (nuevo) | 120 | BAJO | todos |
+| **TOTAL** | | **~6,790** | | |
+
+> **Nota:** El total baja de 9,069 a ~6,790 líneas porque se eliminan: (a) duplicaciones (escapeHtml ×3, drag-drop ×2, renderAdmin/God unificado, highlightGitDiff duplicado), (b) código de `window.*` bridge que ya no es necesario con imports, y (c) IIFEs redundantes.
+
+---
+
+### 10.4 ORDEN DE IMPLEMENTACIÓN RECOMENDADO
+
+```
+Fase A: Infraestructura (día 1-2)
+  ├── 1. state.js        ← Extraer variables globales
+  ├── 2. dom-refs.js     ← Centralizar referencias DOM
+  ├── 3. utils.js        ← Mover funciones puras
+  └── 4. api.js          ← Centralizar HTTP + MCP
+
+Fase B: Datos (día 2-3)
+  ├── 5. session.js      ← Persistencia + sync
+
+Fase C: Módulos independientes (día 3-5)
+  ├── 6. image-upload.js ← Más simple, buen candidato para testear el approach
+  ├── 7. drag-drop.js    ← Unificar + eliminar duplicación
+  ├── 8. search-filter.js
+  ├── 9. agent-table.js
+  ├── 10. console-view.js
+  └── 11. models-ui.js
+
+Fase D: Módulos de negocio (día 5-8)
+  ├── 12. terminal-ui.js
+  ├── 13. skills-ui.js
+  ├── 14. file-editor.js
+  └── 15. project-ui.js
+
+Fase E: Módulos críticos (día 8-12)
+  ├── 16. chat-ui.js     ← Mucha lógica de renderizado
+  ├── 17. admin-engine.js
+  ├── 18. agent-engine.js ← CORAZÓN del sistema
+  └── 19. hermes-engine.js ← CORAZÓN del sistema
+
+Fase F: Integración (día 12-14)
+  ├── 20. events.js      ← Reensamblar setupEventListeners delegando
+  └── 21. main.js        ← Nuevo entry point limpio
+```
+
+---
+
+### 10.5 PATRÓN DE MIGRACIÓN (INCREMENTAL)
+
+Cada módulo se migra con este approach para NO romper la app en ningún momento:
+
+```
+1. Crear el nuevo archivo en public/js/modules/<nombre>.js
+2. Copiar las funciones relevantes, adaptando:
+   - window.* → export
+   - Variables globales → import { state } from './state.js'
+   - document.getElementById() → import { D } from '../dom-refs.js'
+3. DEJAR las funciones originales en main.js con un wrapper:
+   function originalFunc() { return NuevoModulo.originalFunc(); }
+4. Testear que la app funciona igual
+5. Una vez verificado, ELIMINAR las funciones de main.js
+6. Commit atómico: un módulo por commit
+```
+
+**Beneficio:** Cada commit es revertible sin afectar al resto. Si `hermes-engine.js` falla, los otros 20 módulos siguen funcionando.
+
+---
+
+### 10.6 RIESGOS ESPECÍFICOS Y MITIGACIONES
+
+| Riesgo | Mitigación |
+|--------|-----------|
+| **Variables globales compartidas** (state.projects, amIMaster, etc.) | `state.js` usa un Proxy para detectar escrituras y disparar callbacks. Misma semántica, distinta implementación. |
+| **`window.X = function` para onclick inline en HTML** | `index.html` tiene `onclick="window.xxx()"` en varios botones. Se mantienen como wrappers en `main.js` que redirigen a los módulos. Migración gradual a `addEventListener`. |
+| **IIFEs que acceden a `window.API_BASE`** | `api.js` exporta `API_BASE`. Los módulos que lo necesitaban vía `window` ahora lo importan. |
+| **WebSocket `syncWs` y `godSocket`** | Quedan en `session.js`. Se exportan getters para que otros módulos puedan enviar mensajes sin acceso directo. |
+| **Timers (`setInterval`, `setTimeout`)** | Cada módulo gestiona sus propios timers. Se exportan `cleanup()` functions para `init()`. |
+| **Carga diferida de `marked.js` (CDN)** | `utils.js` verifica `window.marked` en `formatMarkdown()`. Si no está disponible, hace fallback a texto plano. |
+
+---
+
+### 10.7 MÉTRICAS DE ÉXITO
+
+Después de la modularización completa:
+
+- **main.js pasa de 9,069 líneas a ~120 líneas** (sólo entry point + init)
+- **Cada módulo < 850 líneas** (el más grande es `hermes-engine.js` con ~850)
+- **Tiempo de build:** 0 (ES modules nativos, sin bundler)
+- **Caché del browser:** Los módulos se cachean individualmente. Cambiar `skills-ui.js` no invalida el caché de `hermes-engine.js`.
+- **Testabilidad:** Cada módulo se puede testear con un HTML mínimo que sólo importe ese módulo + sus dependencias.
+- **Navegabilidad:** Un desarrollador nuevo abre `main.js` → ve 21 imports → sabe exactamente qué hace cada archivo por su nombre.

@@ -68,7 +68,8 @@
     <main class="main-content">
       <!-- VENTANA DE PROYECTO (Header) -->
       <header class="top-nav" id="ventana-de-proyecto">
-        <div class="config-group">
+        <!-- Modelo y Thinking: ocultos del header, se configuran desde el panel del agente -->
+        <div class="config-group hidden" id="header-model-group">
           <label>Modelo del Proyecto:</label>
           <select id="model-select">
             <option value="">Cargando modelos...</option>
@@ -84,7 +85,7 @@
           <div class="input-group">
             <input type="text" id="folder-path" placeholder="Pega la ruta de tu carpeta aquí o búscala..." />
             <button id="scan-folder" class="btn-icon" title="Elegir Carpeta">📁</button>
-            <button id="open-folder-explorer" class="btn-icon" title="Abrir Selector de Carpeta">📂</button>
+            <button id="open-folder-explorer" class="btn-icon" title="Abrir carpeta">📂</button>
             <button id="view-project-prompt-btn" class="btn-icon" title="Ver Prompt del Proyecto"
               onclick="window.viewActiveProjectPrompt()">📝</button>
           </div>

@@ -1852,41 +1852,28 @@ function setupOpenFolderExplorer() {
     const btn = document.getElementById('open-folder-explorer');
     if (btn) {
         btn.onclick = async () => {
-            // 1. Matar cualquier selector de carpeta que esté abierto (con retry)
-            let killed = false;
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
-                    const killCtrl = new AbortController();
-                    const killTimeout = setTimeout(() => killCtrl.abort(), 3000);
-                    const killRes = await fetch(`${API_BASE}/utils/kill-pick-folder`, {
-                        method: 'POST',
-                        signal: killCtrl.signal
-                    });
-                    clearTimeout(killTimeout);
-                    if (killRes.ok) killed = true;
-                } catch (e) {
-                    console.warn(`[setupOpenFolderExplorer] kill-pick-folder intento ${attempt + 1} falló:`, e.message);
-                }
-                if (killed) break;
-                if (attempt === 0) await new Promise(r => setTimeout(r, 400)); // esperar y reintentar
+            const folderPath = folderPathInput.value.trim();
+            if (!folderPath) {
+                alert('⚠️ No hay ninguna carpeta de proyecto seleccionada.\n\nUsá el botón 📁 "Elegir Carpeta" para seleccionar un directorio primero.');
+                return;
             }
-            if (!killed) {
-                console.warn('[setupOpenFolderExplorer] No se pudo matar el diálogo anterior — puede haber conflicto.');
-            }
-            // 2. Pequeña pausa para asegurar que el proceso anterior se limpió
-            await new Promise(r => setTimeout(r, 300));
-            // 3. Abrir un selector de carpeta NUEVO (con await para atrapar errores)
             try {
-                await window.safePickFolder();
+                const res = await fetch(`${API_BASE}/utils/open-folder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath })
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.error || `Error ${res.status}`);
+                }
             } catch (e) {
                 const errMsg = e.message || 'Error desconocido';
-                console.error('Error abriendo selector de carpeta:', errMsg);
-                alert('❌ No se pudo abrir el selector de carpetas.\n\n' +
+                console.error('Error abriendo carpeta:', errMsg);
+                alert('❌ No se pudo abrir la carpeta.\n\n' +
+                    'Ruta: ' + folderPath + '\n' +
                     'Error: ' + errMsg + '\n\n' +
-                    'Posibles causas:\n' +
-                    '• El diálogo fue cancelado o cerrado\n' +
-                    '• El servidor no respondió a tiempo\n' +
-                    '• Intentá de nuevo — suele funcionar al segundo intento.');
+                    'Verificá que la carpeta exista y esté accesible.');
             }
         };
 

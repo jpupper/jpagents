@@ -5714,23 +5714,6 @@ async function startServer() {
                 console.log(`[STATE] Resetearon ${resetCount} estados de agentes colgados (pensando/trabajando) al iniciar.`);
             }
 
-            // ─── FUEGO VIOLETA: auto-registro si falta ───
-            const hasFuego = sessions.projects?.some(p =>
-                (p.name || '').toLowerCase() === 'fuego violeta'
-            );
-            if (!hasFuego) {
-                sessions.projects = sessions.projects || [];
-                sessions.projects.push({
-                    id: 'proj-fuego-violeta-' + Date.now().toString(36),
-                    name: 'Fuego Violeta',
-                    folder: 'D:/Programacion/jpagents/proyects/fuego_violeta',
-                    model: 'deepseek-v4-flash',
-                    chats: []
-                });
-                await saveSessions(sessions);
-                console.log('[STATE] 🔥 Fuego Violeta auto-registrado durante startup.');
-            }
-
             // ─── RECOVER HERMES INSTANCES: reconstruir bridge instances ───
             try {
                 await recoverHermesInstances();
