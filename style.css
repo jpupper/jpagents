@@ -702,9 +702,6 @@ optgroup {
 .tab:hover { background: #232328; }
 .tab.active { background: var(--bg-color); color: var(--accent-color); border-top: 2px solid var(--accent-color); }
 
-.god-tab { font-weight: 600; }
-.god-tab.active { background: var(--bg-color); color: #c9a84c; border-top: 2px solid #c9a84c; }
-.god-tab:hover { background: #232328; color: #f0d67a; }
 
 .add-tab {
     background: var(--accent-gradient);
@@ -1546,10 +1543,6 @@ textarea {
   transition: all 0.2s;
 }
 
-.btn-stop.hidden {
-  display: none !important;
-}
-
 .tab-stop-btn {
     background: #f44336;
     border: none;
@@ -1980,7 +1973,7 @@ pre code.hljs {
   font-weight: 600;
   color: var(--accent-color);
 }
-.hidden { display: none !important; }
+
 .message.agent.thinking {
     background: var(--card-bg);
     border: 1px dashed var(--accent-color) !important;
@@ -2642,11 +2635,6 @@ pre code.hljs {
     font-style: italic;
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
 /* Admin Monitor Styles */
 .sidebar-monitor {
     margin-top: 1rem;
@@ -2742,91 +2730,6 @@ pre code.hljs {
     min-height: 0;
 }
 
-/* ─── 👑 HERMES GOD VIEW ─── */
-.god-chat-view {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0;
-    gap: 1rem;
-}
-.god-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-    margin-bottom: 0.5rem;
-}
-.god-header h2 {
-    margin: 0;
-    font-size: 1.2rem;
-    background: linear-gradient(135deg, #c9a84c, #f0d67a);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-.god-status-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-}
-.god-input-area {
-    display: flex;
-    gap: 0.5rem;
-    background: var(--card-bg);
-    padding: 0.75rem;
-    border-radius: 12px;
-    border: 1px solid rgba(201, 168, 76, 0.3);
-}
-.god-input-area textarea {
-    flex: 1;
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    font-family: inherit;
-    font-size: 0.85rem;
-    resize: none;
-    outline: none;
-    padding: 0.5rem;
-    line-height: 1.4;
-}
-.god-input-area textarea::placeholder {
-    color: var(--text-muted);
-    opacity: 0.6;
-}
-.god-log {
-    flex: 1;
-    min-height: 0;
-}
-#god-send-btn {
-    border-color: #b8942e;
-    transition: all 0.2s;
-}
-#god-send-btn:hover {
-    background: #d4a834;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(201, 168, 76, 0.4);
-}
-#stop-god-btn {
-    background: #f44336;
-    border: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    color: white;
-    cursor: pointer;
-    display: flex !important;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
-}
-#stop-god-btn:hover {
-    background: #d32f2f;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(244, 67, 54, 0.4);
-}
 /* ─── TELEGRAM MONITOR ─── */
 .admin-telegram-section {
     display: flex;
@@ -3195,12 +3098,6 @@ pre code.hljs {
   user-select: none;
 }
 
-.file-item:hover {
-  background: var(--card-bg);
-  color: var(--text-primary);
-  border-color: var(--border-color);
-}
-
 .file-item.directory {
   font-weight: 600;
   color: var(--text-primary);
@@ -3472,10 +3369,6 @@ pre code.hljs {
     margin-top: 10px;
     min-height: 20px;
 }
-
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-5px); }
-    to { opacity: 1; transform: translateY(0); }
 }
 
 .agent-change-summary h4 {
@@ -4276,11 +4169,6 @@ pre code.hljs {
     font-weight: 500;
 }
 
-.modal-side-tab:hover {
-    background: rgba(255,255,255,0.05);
-    color: var(--text-primary);
-}
-
 .modal-side-tab.active {
     background: var(--accent-gradient);
     color: white;
@@ -4704,11 +4592,6 @@ pre code.hljs {
     padding: 0 5px;
 }
 
-.skill-actions {
-    display: flex;
-    gap: 0.5rem;
-}
-
 /* --- COMPACT ACTION LIST STYLES (ANTIGRAVITY STYLE) --- */
 .action-list {
     display: flex;
@@ -5070,11 +4953,6 @@ pre code.hljs {
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 
-.hermes-status-dot.error {
-  background: #ff4444;
-  box-shadow: 0 0 6px #ff4444;
-}
-
 /* ─── Gear Config Button ─── */
 .btn-gear-config {
   background: rgba(255,255,255,0.03);
@@ -5090,11 +4968,6 @@ pre code.hljs {
   transition: all 0.25s ease;
   color: var(--text-secondary);
   margin-left: 4px;
-}
-.btn-gear-config:hover {
-  background: rgba(124, 77, 255, 0.1);
-  border-color: var(--accent-color);
-  color: white;
 }
 .btn-gear-config.active {
   background: rgba(124, 77, 255, 0.2);
@@ -5116,10 +4989,6 @@ pre code.hljs {
   flex-wrap: wrap;
   gap: 16px;
   animation: slideDown 0.2s ease-out;
-}
-@keyframes slideDown {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 .agent-config-row {
   display: flex;

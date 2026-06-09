@@ -45,8 +45,7 @@
       <div class="sidebar-monitor">
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
         <button id="agents-room-btn" class="btn-monitor" title="Agents Room 3D" style="margin-top: 6px;">🏰 Agents Room</button>
-        <button id="hermes-panel-btn" class="btn-monitor" title="Panel de Control Hermes" style="margin-top: 6px;">⚡ Hermes Control</button>
-        <button id="god-sidebar-btn" class="btn-monitor" title="HERMES GOD — Centro de Control Supremo" style="margin-top: 6px; border-color: #c9a84c;">👑 HERMES GOD</button>
+
       </div>
       <div class="sidebar-footer">
         <button id="global-settings-btn" class="btn-settings" title="Configuración Global">⚙️ Configuración Global</button>
@@ -293,33 +292,6 @@
             <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
           </div>
         </div>
-
-        <!-- 👑 HERMES GOD View -->
-        <div id="god-tab-content" class="tab-content hidden">
-          <div class="god-header">
-            <h2>👑 HERMES GOD <span style="font-size:0.7rem;opacity:0.6;font-weight:300;">— Centro de Control Supremo</span></h2>
-            <div class="god-status-bar">
-              <span id="god-status-text" style="font-size:0.75rem;opacity:0.7;">Disponible</span>
-              <button onclick="window.clearGodChat()" class="btn-clear-admin" title="Limpiar historial">🧹</button>
-            </div>
-          </div>
-          <div class="god-chat-view">
-            <div id="god-chat-messages" class="chat-messages god-log">
-              <div class="message system">👑 Bienvenido a HERMES GOD — el centro de control supremo de JP Agents. Podés crear proyectos, delegar tareas a agentes, o simplemente consultar el estado del sistema.</div>
-            </div>
-            <div class="god-input-area">
-              <textarea id="god-input" placeholder="Escribí tu orden para HERMES GOD..." rows="2"></textarea>
-              <button id="improve-god-prompt-btn" class="send-btn" title="Mejorar Prompt con IA" style="background: var(--primary-color); margin-right: 5px;">✨</button>
-              <button id="god-send-btn" class="send-btn" style="background: #c9a84c; border-color: #b8942e;">👑</button>
-              <button id="stop-god-btn" class="btn-stop hidden" onclick="window.stopGodAgent()" title="Detener HERMES GOD">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="6" width="12" height="12"></rect>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <!-- /👑 HERMES GOD View -->
 
         <!-- Terminal View -->
         <div id="terminal-tab-content" class="tab-content terminal-view hidden">
@@ -921,40 +893,6 @@
 
         <div class="modal-footer">
           <button id="save-global-settings" class="btn-primary">Guardar Cambios</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- HERMES CONTROL PANEL MODAL -->
-  <div id="hermes-panel-modal" class="modal-overlay hidden">
-    <div class="modal-content" style="max-width: 800px;">
-      <div class="modal-header">
-        <h2>⚡ Hermes Control</h2>
-        <button class="modal-close" id="hermes-panel-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
-          <button id="hermes-refresh-btn" class="btn-primary" style="padding: 8px 16px; font-size: 0.8rem;">🔄 Refrescar</button>
-          <button id="hermes-stop-all-btn" class="btn-danger-outline" style="padding: 8px 16px; font-size: 0.8rem;">⏹ Detener Todas</button>
-          <button id="hermes-purge-btn" class="btn-warning-outline" style="padding: 8px 16px; font-size: 0.8rem;">🧹 Limpiar Huérfanos</button>
-        </div>
-
-        <!-- Broadcast Section -->
-        <div style="margin-bottom: 16px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid var(--border-color);">
-          <label style="font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; display: block;">📢 Broadcast a TODAS las instancias</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" id="hermes-broadcast-input" placeholder="Escribí un mensaje para todas las instancias..." style="flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-family: inherit;">
-            <button id="hermes-broadcast-btn" class="btn-primary" style="padding: 8px 18px;">Enviar</button>
-          </div>
-        </div>
-
-        <!-- Instances List -->
-        <div id="hermes-instances-container">
-          <p class="empty-state" style="text-align: center; padding: 40px 0; color: var(--text-muted);">
-            No hay instancias de Hermes activas.<br>
-            <span style="font-size: 0.8rem;">Seleccioná un proyecto y abrí Hermes desde el botón en la cabecera.</span>
-          </p>
         </div>
       </div>
     </div>

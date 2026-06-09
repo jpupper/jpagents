@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently --restart-tries 3 --restart-after 2000 \"npm run server\" \"npm run mcp-server\" \"vite\"",
+    "dev": "concurrently --restart-tries 0 \"npm run server\" \"npm run mcp-server\" \"vite\"",
     "server": "node server.js",
     "mcp-server": "node mcp_server.js",
     "telegram-bridge": "node telegram-bridge.js",

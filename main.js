@@ -881,15 +881,6 @@ const adminGlobalInput = document.getElementById('admin-global-input');
 const adminSendBtn = document.getElementById('admin-send-btn');
 const stopAdminBtn = document.getElementById('stop-admin-btn');
 
-// 👑 HERMES GOD DOM refs
-const godTabContent = document.getElementById('god-tab-content');
-const godChatMessages = document.getElementById('god-chat-messages');
-const godInput = document.getElementById('god-input');
-const godSendBtn = document.getElementById('god-send-btn');
-const stopGodBtn = document.getElementById('stop-god-btn');
-const godSidebarBtn = document.getElementById('god-sidebar-btn');
-const godStatusText = document.getElementById('god-status-text');
-
 // Vision Support
 const attachImgBtn = document.getElementById('attach-img');
 const imageInput = document.getElementById('image-input');
@@ -1367,22 +1358,6 @@ async function init() {
                         });
                         renderTelegramMessages();
                     }
-                    // ─── 👑 HERMES GOD SYNC ───
-                    if (data.event === 'god:sync') {
-                        if (typeof renderGodMessages === 'function') {
-                            // También lo agregamos al GOD chat si no vino de ahí
-                            const alreadyInGod = state.godMessages.some(m => m.content === data.content && m.role === data.role);
-                            if (!alreadyInGod) {
-                                state.godMessages.push({
-                                    role: data.role === 'user' ? 'user' : 'agent',
-                                    content: data.source === 'telegram' ? `📱 ${data.content}` : data.content,
-                                    timestamp: Date.now()
-                                });
-                                renderGodMessages();
-                                saveData();
-                            }
-                        }
-                    }
                 } catch(e) {}
             };
             sysWs.onclose = () => {
@@ -1508,7 +1483,7 @@ async function loadData(shouldScan = true) {
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
             console.log("📍 Restored active project:", state.activeProjectId);
-        } else if (state.activeProjectId === 'admin' || state.activeProjectId === 'god') {
+        } else if (state.activeProjectId === 'admin') {
             console.log(`📍 Restored ${state.activeProjectId} tab`);
         } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
@@ -2880,8 +2855,6 @@ function renderTabs() {
     if (!project) {
         if (state.activeProjectId === 'admin') {
             tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
-        } else if (state.activeProjectId === 'god') {
-            tabsNav.innerHTML = `<div class="tab god-tab active">👑 HERMES GOD</div>`;
         } else {
             tabsNav.innerHTML = '';
         }
@@ -2968,14 +2941,6 @@ function renderTabs() {
     tabsHtml += `
         <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
             <span>🔀 GIT</span>
-        </div>
-    `;
-
-    // 8. 👑 GOD Tab (global, always visible)
-    const isGodActive = state.activeProjectId === 'god';
-    tabsHtml += `
-        <div class="tab god-tab ${isGodActive ? 'active' : ''}" onclick="window.switchTab('god')">
-            <span>👑 GOD</span>
         </div>
     `;
 
@@ -3177,7 +3142,6 @@ function updateViewVisibility() {
     if (hermesTabContent) hermesTabContent.classList.add('hidden');
     const gitTabContent = document.getElementById('git-tab-content');
     if (gitTabContent) gitTabContent.classList.add('hidden');
-    if (godTabContent) godTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -3244,12 +3208,6 @@ function updateViewVisibility() {
         adminBtn.classList.toggle('active', isAdminActive);
     }
 
-    // Update GOD sidebar button state
-    if (godSidebarBtn) {
-        const isGodActive = state.activeProjectId === 'god';
-        godSidebarBtn.classList.toggle('active', isGodActive);
-    }
-
     const skillsBtn = document.getElementById('skills-manager-btn');
     if (skillsBtn) {
         const isSkillsActive = state.activeProjectId === 'skills' || (project && project.activeTabId === 'skills');
@@ -3261,16 +3219,6 @@ function updateViewVisibility() {
         adminTabContent.classList.remove('hidden');
         renderAdminMonitor();
         renderAdminMessages();
-        return;
-    }
-
-    // 👑 GOD tab is a global tab, not project-scoped
-    if (state.activeProjectId === 'god') {
-        saveFileBtn.classList.add('hidden');
-        if (godTabContent) {
-            godTabContent.classList.remove('hidden');
-        }
-        renderGodMessages();
         return;
     }
 
@@ -3396,11 +3344,6 @@ function updateViewVisibility() {
         renderAdminMonitor();
         renderAdminMessages();
         // Detener health-check al salir de un chat
-        stopHealthCheck();
-    } else if (state.activeProjectId === 'god') {
-        saveFileBtn.classList.add('hidden');
-        if (godTabContent) godTabContent.classList.remove('hidden');
-        renderGodMessages();
         stopHealthCheck();
     } else if (isOpenFile) {
         saveFileBtn.classList.remove('hidden');
@@ -3666,20 +3609,6 @@ window.switchTab = (id) => {
         saveChatDraft();
         state.activeProjectId = 'admin';
         renderTabs();
-        return;
-    }
-
-    if (id === 'god') {
-        saveChatDraft();
-        state.activeProjectId = 'god';
-        renderTabs();
-        renderGodMessages();
-        return;
-    }
-
-    if (id === 'skills') {
-        // Redirect to modal if needed, but here we just return or do nothing
-        // because the sidebar button now handles opening the modal.
         return;
     }
 
@@ -7380,62 +7309,12 @@ function setupEventListeners() {
         }
     };
 
-    // ─── 👑 HERMES GOD Event Handlers ───
-    if (godSendBtn) {
-        godSendBtn.onclick = async () => {
-            const cmd = godInput.value.trim();
-            if (!cmd) return;
-
-            state.godMessages.push({ role: 'user', content: cmd, timestamp: Date.now() });
-            godInput.value = '';
-            renderGodMessages();
-
-            await triggerGodLogic();
-        };
-    }
-
-    if (godInput) {
-        godInput.onkeydown = (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (godSendBtn) godSendBtn.click();
-            }
-        };
-    }
-
-    // Improve prompt button for GOD
-    const improveGodBtn = document.getElementById('improve-god-prompt-btn');
-    if (improveGodBtn) {
-        improveGodBtn.onclick = async () => {
-            const cmd = godInput.value.trim();
-            if (!cmd) return;
-            try {
-                improveGodBtn.textContent = '⏳';
-                improveGodBtn.disabled = true;
-                const res = await fetch(`${API_BASE}/utils/improve-prompt`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: cmd })
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.improved) godInput.value = data.improved;
-                }
-            } catch (e) {
-                console.error('[GOD] Error mejorando prompt:', e);
-            } finally {
-                improveGodBtn.textContent = '✨';
-                improveGodBtn.disabled = false;
-            }
-        };
-    }
-
-    // GOD sidebar button
-    if (godSidebarBtn) {
-        godSidebarBtn.addEventListener('click', () => {
-            window.switchTab('god');
-        });
-    }
+    adminGlobalInput.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            adminSendBtn.click();
+        }
+    };
 
     window.sendDirectAgentCommand = async (projectId, chatId) => {
         const input = document.getElementById(`direct-input-${projectId}-${chatId}`);
@@ -8799,311 +8678,6 @@ window.addModelToSelect = (modelName) => {
 init();
 
 // ──────────────────────────────────────────────
-// HERMES CONTROL PANEL MODULE
-// ──────────────────────────────────────────────
-(function() {
-    const API = window.API_BASE || 'http://localhost:4699/api';
-    const panelBtn = document.getElementById('hermes-panel-btn');
-    const panelModal = document.getElementById('hermes-panel-modal');
-    const panelClose = document.getElementById('hermes-panel-close');
-    const refreshBtn = document.getElementById('hermes-refresh-btn');
-    const stopAllBtn = document.getElementById('hermes-stop-all-btn');
-    const instancesContainer = document.getElementById('hermes-instances-container');
-    const broadcastInput = document.getElementById('hermes-broadcast-input');
-    const broadcastBtn = document.getElementById('hermes-broadcast-btn');
-    const hermesStartBtn = document.getElementById('hermes-start-btn');
-
-    // WebSocket connection for live logs
-    let ws = null;
-
-    function connectWS() {
-        if (ws && ws.readyState === WebSocket.OPEN) return;
-        const wsHost = window.location.hostname;
-        try {
-            ws = new WebSocket(`ws://${wsHost}:4699/ws/hermes`);
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.event === 'hermes:log' || data.event === 'hermes:status') {
-                        refreshInstances();
-                    }
-                    if (data.event === 'god:sync') {
-                        // Sincronizar mensaje del HERMES GOD al admin chat
-                        if (typeof renderAdminMessages === 'function') {
-                            state.adminMessages.push({
-                                role: data.role === 'user' ? 'user' : 'system',
-                                content: `👑 GOD ${data.role === 'user' ? '📤' : '📥'}: ${data.content}`,
-                                timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                        }
-                        // También al GOD chat (si no vino de ahí)
-                        if (typeof renderGodMessages === 'function') {
-                            const alreadyInGod = state.godMessages.some(m => m.content === data.content && m.role === data.role);
-                            if (!alreadyInGod) {
-                                state.godMessages.push({
-                                    role: data.role === 'user' ? 'user' : 'agent',
-                                    content: data.source === 'telegram' ? `📱 ${data.content}` : data.content,
-                                    timestamp: Date.now()
-                                });
-                                renderGodMessages();
-                                saveData();
-                            }
-                        }
-                    }
-                    if (data.event === 'hermes:admin-sync' || data.event === 'god:sync') {
-                        // Sincronizar mensaje del Hermes ADMIN Bot al admin chat
-                        if (typeof renderAdminMessages === 'function') {
-                            state.adminMessages.push({
-                                role: data.role === 'user' ? 'user' : 'system',
-                                content: `📡 ${data.source === 'telegram' ? 'Telegram' : 'Sistema'}: ${data.content}`,
-                                timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                        }
-                    }
-                    if (data.event === 'system:restart') {
-                        console.log('[SYSTEM] Recibido evento de reinicio:', data.reason);
-                        // Refresh console to show restart event
-                        setTimeout(() => refreshConsoleUI(), 500);
-                    }
-                    if (data.event === 'hermes:admin:delegation-complete') {
-                        // Una delegación asincrónica terminó — mostrar en admin chat
-                        console.log(`[DELEGATION] ✅ ${data.agentName} completó tarea`);
-                        if (typeof renderAdminMessages === 'function') {
-                            const icon = data.status === 'completed' ? '✅' : '❌';
-                            state.adminMessages.push({
-                                role: 'system',
-                                content: `${icon} *Delegación Completada* — 🤖 **${data.agentName}** (${data.projectName})\n📋 ${data.task}\n\n📝 Resultado:\n${(data.result || '').slice(0, 1000)}`,
-                                timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                            saveData();
-                        }
-                        // Re-trigger admin agent para que procese el resultado
-                        if (!state.adminIsThinking && !state.adminIsStopped) {
-                            state.adminNeedsRecheck = true;
-                            setTimeout(() => {
-                                if (state.adminNeedsRecheck && !state.adminIsThinking) {
-                                    triggerAdminAgentLogic();
-                                }
-                            }, 1000);
-                        } else {
-                            state.adminNeedsRecheck = true;
-                        }
-                    }
-                } catch {}
-            };
-            ws.onclose = () => {
-                setTimeout(connectWS, 3000);
-            };
-        } catch {}
-    }
-
-    if (panelBtn) {
-        panelBtn.addEventListener('click', () => {
-            panelModal.classList.remove('hidden');
-            connectWS();
-            refreshInstances();
-        });
-    }
-    if (panelClose) {
-        panelClose.addEventListener('click', () => {
-            panelModal.classList.add('hidden');
-        });
-    }
-
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', refreshInstances);
-    }
-
-    if (stopAllBtn) {
-        stopAllBtn.addEventListener('click', async () => {
-            if (!confirm('¿Detener TODAS las instancias de Hermes?')) return;
-            try {
-                const res = await fetch(`${API}/hermes/stop/all`, { method: 'POST' });
-                await res.json();
-                refreshInstances();
-            } catch (e) {
-                alert('Error: ' + e.message);
-            }
-        });
-    }
-
-    // Botón para limpiar identity files huérfanos
-    const purgeBtn = document.getElementById('hermes-purge-btn');
-    if (purgeBtn) {
-        purgeBtn.addEventListener('click', async () => {
-            if (!confirm('¿Eliminar identidades huérfanas (chats que ya no existen)? Esto no afecta agentes activos.')) return;
-            purgeBtn.disabled = true;
-            purgeBtn.textContent = '🧹 Limpiando...';
-            try {
-                const res = await fetch(`${API}/hermes/purge-identities`, { method: 'POST' });
-                const data = await res.json();
-                alert(`🧹 Limpieza completada:\n- ${data.purged} identidades huérfanas eliminadas\n- ${data.kept} identidades válidas conservadas\n- ${data.bridgeCleaned} instancias del bridge limpiadas`);
-                refreshInstances();
-            } catch (e) {
-                alert('Error: ' + e.message);
-            } finally {
-                purgeBtn.disabled = false;
-                purgeBtn.textContent = '🧹 Limpiar Huérfanos';
-            }
-        });
-    }
-
-    if (broadcastBtn && broadcastInput) {
-        broadcastBtn.addEventListener('click', async () => {
-            const message = broadcastInput.value.trim();
-            if (!message) return;
-            broadcastBtn.disabled = true;
-            broadcastBtn.textContent = 'Enviando...';
-            try {
-                await fetch(`${API}/hermes/broadcast`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message })
-                });
-                broadcastInput.value = '';
-                refreshInstances();
-            } catch (e) {
-                alert('Error: ' + e.message);
-            } finally {
-                broadcastBtn.disabled = false;
-                broadcastBtn.textContent = 'Enviar';
-            }
-        });
-        broadcastInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') broadcastBtn.click();
-        });
-    }
-
-    if (hermesStartBtn) {
-        hermesStartBtn.addEventListener('click', async () => {
-            const project = getActiveProject();
-            if (!project) {
-                alert('Seleccioná un proyecto primero');
-                return;
-            }
-            const projectId = project.id || project.name || 'proyecto-' + Date.now();
-            const workdir = project.folder || '';
-            if (!workdir) {
-                alert('El proyecto no tiene directorio asignado');
-                return;
-            }
-            // Tomar el modelo del proyecto si eligió uno, sino el global
-            const model = project.model || state.selectedModel || '';
-            // Mostrar el tab Hermes (lo inicia si no está corriendo)
-            if (window.showHermesTab) {
-                window.showHermesTab(projectId);
-            }
-        });
-    }
-
-    window.stopHermesInstance = async function(projectId) {
-        if (!confirm(`¿Detener instancia ${projectId}?`)) return;
-        try {
-            await fetch(`${API}/hermes/stop`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId })
-            });
-            refreshInstances();
-        } catch (e) {
-            alert('Error: ' + e.message);
-        }
-    };
-
-    window.sendHermesMessage = async function(projectId) {
-        const message = prompt(`Mensaje para ${projectId}:`);
-        if (!message) return;
-        try {
-            const res = await fetch(`${API}/hermes/message`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId, message })
-            });
-            const data = await res.json();
-            if (data.response) {
-                alert(`Respuesta de ${projectId}:\n\n${data.response.slice(0, 500)}`);
-                refreshInstances();
-            }
-        } catch (e) {
-            alert('Error: ' + e.message);
-        }
-    };
-
-    async function refreshInstances() {
-        if (!instancesContainer) return;
-        try {
-            const res = await fetch(`${API}/hermes/instances`);
-            const data = await res.json();
-            renderInstances(data.instances || []);
-        } catch (e) {
-            instancesContainer.innerHTML = `
-                <p class="empty-state" style="text-align: center; padding: 20px; color: #ef4444;">
-                    ❌ Error de conexión<br>
-                    <span style="font-size: 0.8rem;">Backend en ${window.location.hostname}:4699</span>
-                </p>
-            `;
-        }
-    }
-    // Exponer globalmente para sincronización multi-pestaña
-    window.refreshHermesInstances = refreshInstances;
-
-    function renderInstances(instances) {
-        if (!instances || instances.length === 0) {
-            instancesContainer.innerHTML = `
-                <p class="empty-state" style="text-align: center; padding: 40px 0; color: var(--text-muted);">
-                    ⚡ No hay instancias de Hermes activas.<br>
-                    <span style="font-size: 0.8rem;">Seleccioná un proyecto y toca ⚡ en la cabecera.</span>
-                </p>
-            `;
-            return;
-        }
-
-        let html = '';
-        for (const inst of instances) {
-            const statusColor = inst.status === 'running' ? '#22d3ee' :
-                               inst.status === 'starting' ? '#fbbf24' :
-                               inst.status === 'error' ? '#ef4444' : '#64748b';
-            const statusLabel = inst.status === 'running' ? '● Activo' :
-                               inst.status === 'starting' ? '◐ Iniciando' :
-                               inst.status === 'exited' ? '○ Detenido' :
-                               inst.status === 'error' ? '● Error' : '○ ' + inst.status;
-            const recentLogs = (inst.logs || []).slice(-5).map(l =>
-                `<div style="color: ${l.type === 'stderr' ? '#ef4444' : '#94a3b8'};">${escapeHtml(l.text)}</div>`
-            ).join('');
-
-            html += `
-                <div style="margin-bottom: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.02);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <div>
-                            <strong style="color: var(--text-primary);">${escapeHtml(inst.id)}</strong>
-                            <span style="margin-left: 8px; font-size: 0.7rem; color: ${statusColor};">${statusLabel}</span>
-                        </div>
-                        <div style="display: flex; gap: 6px;">
-                            <button onclick="sendHermesMessage('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer;">💬</button>
-                            <button onclick="stopHermesInstance('${inst.id}')" style="padding: 4px 10px; font-size: 0.7rem; border: 1px solid #ef4444; border-radius: 4px; background: transparent; color: #ef4444; cursor: pointer;">⏹</button>
-                        </div>
-                    </div>
-                    <div style="font-size: 0.7rem; color: var(--text-muted);">📁 ${escapeHtml(inst.workdir || '—')}</div>
-                    <div style="font-size: 0.65rem; color: var(--text-muted);">🕐 ${new Date(inst.createdAt).toLocaleString()}</div>
-                    ${recentLogs ? `<div style="margin-top: 6px; padding: 6px; background: rgba(0,0,0,0.3); border-radius: 4px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 0.6rem; line-height: 1.4;">${recentLogs}</div>` : ''}
-                </div>
-            `;
-        }
-        instancesContainer.innerHTML = html;
-    }
-
-    function escapeHtml(text) {
-        if (!text) return '';
-        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    console.log('[HERMES] Panel de control cargado.');
-})();
-
-// ──────────────────────────────────────────────
 // HERMES TAB MODULE — Pestaña interactiva de Hermes
 // ──────────────────────────────────────────────
 (function() {
@@ -10018,11 +9592,6 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             console.error('[AGENT-LIST] Error:', e);
             tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#ff4444;">❌ Error: ' + e.message + '</td></tr>';
         }
-    }
-
-    function escapeHtml(text) {
-        if (!text) return '';
-        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // Init

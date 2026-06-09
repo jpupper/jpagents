@@ -6,7 +6,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import fetch from 'node-fetch';
-import { exec, execFile, spawn } from 'child_process';
+import { exec, execFile, spawn, execSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
@@ -30,6 +30,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = parseInt(process.env.JPAGENTS_PORT, 10) || 4699;
 let serverInstance = null; // Store server instance for graceful close
+let startRetryCount = 0;
+const MAX_START_RETRIES = 3;
 
 // Middlewares - DEBEN ir antes de las rutas
 app.use(cors());
@@ -6279,11 +6281,33 @@ async function startServer() {
     
     serverInstance.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
-            console.error(`[SERVER] ERROR: Puerto ${port} en uso. Reintentando en 3s...`);
+            startRetryCount++;
+            if (startRetryCount > MAX_START_RETRIES) {
+                console.error(`[SERVER] ❌ Puerto ${port} en uso tras ${MAX_START_RETRIES} intentos. Abortando.`);
+                console.error(`[SERVER]    Ejecutá: netstat -ano | findstr :${port}`);
+                console.error(`[SERVER]    Después: taskkill /f /pid <PID>`);
+                process.exit(1);
+            }
+            console.error(`[SERVER] ⚠ Puerto ${port} en uso (intento ${startRetryCount}/${MAX_START_RETRIES}). Liberando...`);
+            // Intentar matar el proceso que ocupa el puerto
+            try {
+                const findPid = execSync(`netstat -ano | findstr ":${port} " | findstr LISTENING`, { encoding: 'utf8', timeout: 3000 });
+                const pidMatch = findPid ? findPid.trim().split(/\s+/).pop() : null;
+                if (pidMatch && pidMatch !== '') {
+                    try {
+                        execSync(`taskkill /f /pid ${pidMatch}`, { encoding: 'utf8', timeout: 3000 });
+                    } catch (e2) {
+                        // taskkill en Linux podría fallar, probar kill
+                        try { execSync(`kill -9 ${pidMatch}`, { timeout: 3000 }); } catch {}
+                    }
+                }
+            } catch (e) {
+                // netstat falló (Linux sin findstr, etc.), igual reintentamos
+            }
             setTimeout(() => {
-                serverInstance.close();
+                try { serverInstance.close(); } catch {}
                 startServer();
-            }, 3000);
+            }, 2000);
         } else {
             console.error('[SERVER] Error al iniciar servidor:', err);
             writeCrashLog('serverListenError', err);
