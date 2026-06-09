@@ -21,6 +21,7 @@ const calibState = {
 let calibPanelOpen = false;
 // Guardamos originales para reset
 const CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42, showGhosts: true };
+let cleanupFrameCounter = 0; // throttle para cleanupExitedAgents() en el animate loop
 
 // ─── GEOMETRY POOL ───
 // Todas las geometrías reusables se crean UNA VEZ y se comparten entre magos.
@@ -1911,8 +1912,13 @@ window.refreshAgents = async function(forceRebuild = false) {
 
     lastAgentData = dataKey;
 
-    // ── Guardar project keys (BUGFIX: projChanged detection) ──
-    const prevProjKeys = new Set((agents || []).map(a => a.projectId || '__default__'));
+    // ── Guardar project keys ANTES de sobrescribir agents (usa datos VIEJOS del agentMap) ──
+    const prevProjKeys = new Set();
+    for (const entry of agentMap.values()) {
+      if (entry.agentData && !entry.exiting) {
+        prevProjKeys.add(entry.agentData.projectId || '__default__');
+      }
+    }
 
     // Si es el primer build o hay muchos cambios, hacer rebuild completo
     const currentIds = new Set(agentMap.keys());
@@ -1931,7 +1937,8 @@ window.refreshAgents = async function(forceRebuild = false) {
             }
         }
     }
-    const needsFullRebuild = agentMap.size === 0 || diffCount > Math.max(3, currentIds.size * 0.5) || projChanged;
+    // forceRebuild fuerza siempre un rebuild completo (usado por ghost toggle, calib reset, etc.)
+    const needsFullRebuild = forceRebuild || agentMap.size === 0 || diffCount > Math.max(3, currentIds.size * 0.5) || projChanged;
 
     if (needsFullRebuild) {
       rebuildScene();
@@ -2378,6 +2385,13 @@ function animate() {
   }
 
   controls.update();
+  // ── PERIODIC CLEANUP: remover agentes cuya animación de salida ya terminó ──
+  // Throttle: ~1 vez por segundo (evita overhead innecesario)
+  cleanupFrameCounter++;
+  if (cleanupFrameCounter > 60) {
+    cleanupFrameCounter = 0;
+    cleanupExitedAgents();
+  }
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }

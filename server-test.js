@@ -23,6 +23,7 @@ import { createChat } from './agent-utils.js';
 
 // Hermes Bridge
 import hermesBridge from './hermes-bridge.js';
+import { getToolEmoji } from './tool-emojis.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -426,15 +427,7 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
                 } else if (clean.includes('Tool call:')) {
                     const toolMatch = clean.match(/Tool call:\s*(\w+)/);
                     const toolName = toolMatch ? toolMatch[1] : '???';
-                    const emojis = {
-                        read_file: '📖', write_file: '✍️', search_files: '🔍', terminal: '💻',
-                        execute_code: '🐍', patch: '🔧', web_search: '🌐', web_extract: '📄',
-                        browser_navigate: '🌎', browser_snapshot: '📸', browser_click: '🖱️',
-                        skill_view: '📚', skill_manage: '🛠️', delegate_task: '🤖',
-                        vision_analyze: '👁️', todo: '📋', memory: '🧠',
-                        clarify: '❓', session_search: '🔎', file: '📁'
-                    };
-                    const emoji = emojis[toolName] || '⚙️';
+                    const emoji = getToolEmoji(toolName);
                     thinkingLines.push(`${emoji} ${toolName}`);
                 } else if (clean.includes('completed in') || clean.includes('Tool')) {
                     // Skip timing lines

@@ -41,6 +41,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { getToolEmoji } from './tool-emojis.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -445,15 +446,7 @@ function execHermesStream(hermesPath, args, { workdir, timeout, streaming }) {
                 } else if (clean.includes('Tool call:')) {
                     const toolMatch = clean.match(/Tool call:\s*(\w+)/);
                     const toolName = toolMatch ? toolMatch[1] : '???';
-                    const emojis = {
-                        read_file: '📖', write_file: '✍️', search_files: '🔍', terminal: '💻',
-                        execute_code: '🐍', patch: '🔧', web_search: '🌐', web_extract: '📄',
-                        browser_navigate: '🌎', browser_snapshot: '📸', browser_click: '🖱️',
-                        skill_view: '📚', skill_manage: '🛠️', delegate_task: '🤖',
-                        vision_analyze: '👁️', todo: '📋', memory: '🧠',
-                        clarify: '❓', session_search: '🔎', file: '📁'
-                    };
-                    thinkingLines.push(`${emojis[toolName] || '⚙️'} ${toolName}`);
+                    thinkingLines.push(`${getToolEmoji(toolName)} ${toolName}`);
                 } else if (!clean.includes('completed in') && !clean.includes('Tool') &&
                            !clean.includes('conversation turn') && !clean.includes('session=') &&
                            clean.length > 5) {
