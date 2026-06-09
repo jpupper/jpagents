@@ -46,7 +46,7 @@
       </div>
       <div class="sidebar-monitor">
         <button id="admin-monitor-btn" class="btn-monitor" title="Monitor de Agentes">📊 Monitor de Agentes</button>
-        <button id="agents-room-btn" class="btn-monitor" title="Agents Room 3D" style="margin-top: 6px;">🏰 Agents Room</button>
+        <button class="btn-monitor mt-6" id="agents-room-btn" title="Agents Room 3D">🏰 Agents Room</button>
 
       </div>
       <div class="sidebar-footer">
@@ -97,7 +97,7 @@
         <nav class="tabs-nav" id="tabs-nav">
           <div class="tab active" data-tab="chat">Chat</div>
           <div class="tab" data-tab="terminal">Terminal</div>
-          <div class="tab" data-tab="hermes" id="hermes-tab-nav" style="display:none;">⚡ Hermes</div>
+          <div class="tab active hidden" data-tab="hermes" id="hermes-tab-nav">⚡ Hermes</div>
           <div class="tab" data-tab="matrix">Matrix Agentic Tree</div>
           <div class="tab" data-tab="god" id="god-tab-nav">👑 GOD</div>
         </nav>
@@ -110,11 +110,10 @@
               <p id="dashboard-project-path">Sin carpeta seleccionada</p>
             </div>
             <div class="dashboard-actions">
-              <button onclick="window.addChat()" class="btn-primary" style="width: auto; padding-inline: 2rem;">➕
+              <button class="btn-primary dashboard-actions btn-auto-wide" onclick="window.addChat()">➕
                 Agregar Nuevo Agente</button>
-              <div style="margin: 1rem 0;">o</div>
-              <button onclick="document.getElementById('scan-folder').click()" class="btn-primary"
-                style="width: auto; padding-inline: 2rem; background: var(--card-bg); border: 1px solid var(--border-color);">📁
+              <div class="my-4">o</div>
+              <button class="btn-primary my-4 btn-auto-wide btn-outline-card" onclick="document.getElementById('scan-folder').click()">📁
                 Seleccionar Carpeta</button>
             </div>
 
@@ -139,17 +138,16 @@
                 </div>
                 <div class="mcp-debug-actions">
                   <button class="btn-clear-console" onclick="window.clearMCPHistory()">Limpiar Historial</button>
-                  <button class="btn-clear-console" onclick="mcpClient.connect()"
-                    style="background: var(--primary-color);">Reconectar MCP</button>
+                  <button class="btn-clear-console bg-primary" onclick="mcpClient.connect()">Reconectar MCP</button>
                 </div>
               </div>
             </div>
 
             <!-- Project Settings Section -->
             <div class="project-config-section">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <div class="project-config-section flex-row-between">
                   <h3>🎯 Skill / Instrucciones del Proyecto</h3>
-                  <button id="improve-project-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                  <button class="btn-primary-sm btn-auto-sm" id="improve-project-prompt-btn">✨ Mejorar</button>
                 </div>
               <p class="config-help">Estas instrucciones se envían al agente además del prompt global. Puedes crear un
                 archivo <code class="language-bash">skill.md</code> en la carpeta del proyecto para cargarlas
@@ -237,7 +235,7 @@
               <div class="admin-input-area">
                 <textarea id="admin-global-input" placeholder="Enviar comando global a todos los agentes..."
                   rows="2"></textarea>
-                <button id="improve-admin-prompt-btn" class="send-btn" title="Mejorar Prompt con IA" style="background: var(--primary-color); margin-right: 5px;">✨</button>
+                <button class="send-btn bg-primary mr-5" id="improve-admin-prompt-btn" title="Mejorar Prompt con IA">✨</button>
                 <button id="admin-send-btn" class="send-btn">🚀</button>
                 <button id="stop-admin-btn" class="btn-stop hidden" onclick="window.stopAdminAgent()"
                   title="Detener Orquestador">
@@ -349,7 +347,7 @@
             <div id="hermes-output" class="hermes-output">
                 <div class="hermes-line system">Presioná ▶ Iniciar para arrancar Hermes en este proyecto.</div>
             </div>
-            <div class="hermes-input-wrapper" id="hermes-input-area" style="display:none;">
+            <div class="hermes-input-wrapper hermes-line system hidden" id="hermes-input-area">
                 <input type="text" id="hermes-input" placeholder="Escribí un mensaje para Hermes..." autocomplete="off" disabled />
             </div>
         </div>
@@ -405,7 +403,7 @@
 
           <!-- Commit Tree View — fills entire remaining space -->
           <div class="git-tree-container">
-            <div class="git-zoom-controls" id="git-zoom-controls" style="display:none">
+            <div class="git-zoom-controls git-tree-container hidden" id="git-zoom-controls">
               <button class="git-zoom-btn" onclick="window.gitZoomIn()" title="Zoom In">＋</button>
               <span class="git-zoom-level" id="git-zoom-level">100%</span>
               <button class="git-zoom-btn" onclick="window.gitZoomOut()" title="Zoom Out">－</button>
@@ -414,7 +412,7 @@
             <div class="git-graph-wrapper" id="git-graph-wrapper">
             <div id="git-branch-graph" class="git-branch-graph-container"><div class="git-empty-state">Cargando historial de commits...</div></div>
             </div>
-            <div id="git-legend" class="git-legend" style="display:none"></div>
+            <div class="git-legend hidden" id="git-legend"></div>
           </div>
 
           <!-- Commit Detail Panel (shown on double-click) -->
@@ -442,12 +440,12 @@
           <!-- Push Result Overlay (success / error confirmation) -->
           <div id="git-push-result-overlay" class="git-confirm-overlay hidden">
             <div class="git-confirm-card git-push-result-card">
-              <div class="git-confirm-icon" id="git-push-result-icon" style="font-size: 2.5rem;">✅</div>
+              <div class="git-confirm-icon git-confirm-overlay hidden text-xxl" id="git-push-result-icon">✅</div>
               <h3 id="git-push-result-title">Commit & Push exitoso</h3>
-              <p id="git-push-result-msg" style="font-weight: 600; margin-bottom: 4px;"></p>
-              <pre id="git-push-result-details" style="font-size: 0.78rem; max-height: 220px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word;"></pre>
-              <div class="git-confirm-actions" style="margin-top: 16px;">
-                <button id="git-push-result-dismiss" class="git-confirm-cancel-btn" style="width: 100%;">Cerrar</button>
+              <p id="git-push-result-msg" class="git-confirm-icon fw-600 mb-4"></p>
+              <pre class="push-result-details pre-wrap-break" id="git-push-result-details"></pre>
+              <div class="git-confirm-actions mt-16">
+                <button class="git-confirm-cancel-btn w-full" id="git-push-result-dismiss">Cerrar</button>
               </div>
             </div>
           </div>
@@ -461,7 +459,7 @@
               <div id="git-push-files-preview" class="git-push-files-preview"></div>
               <div class="git-confirm-actions">
                 <button id="git-push-confirm-cancel" class="git-confirm-cancel-btn">Cancelar</button>
-                <button id="git-push-confirm-exec" class="git-confirm-checkout-btn" style="background: linear-gradient(135deg, #3fb950, #2ea043);">Commit & Push</button>
+                <button class="git-confirm-checkout-btn bg-success-gradient" id="git-push-confirm-exec">Commit & Push</button>
               </div>
             </div>
           </div>
@@ -568,7 +566,7 @@
               <button id="accept-change" class="btn-success">Aceptar ✓</button>
               <button id="reject-change" class="btn-danger">Rechazar ✕</button>
             </div>
-            <button id="save-file-btn" class="btn-primary" style="margin-left: auto;">Guardar 💾</button>
+            <button class="btn-primary ml-auto" id="save-file-btn">Guardar 💾</button>
           </div>
           <div class="editor-container">
             <div id="editor-gutter" class="editor-gutter"></div>
@@ -656,9 +654,9 @@
                 <!-- Global Prompt Pane -->
                 <div id="sub-tab-global" class="sub-tab-pane">
                   <div class="config-field">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <div class="sub-tab-pane flex-row-between">
                         <label>User System Prompt</label>
-                        <button id="improve-global-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                        <button class="btn-primary-sm btn-auto-sm" id="improve-global-prompt-btn">✨ Mejorar</button>
                     </div>
                     <p class="field-help">Este prompt se aplicará a todos los AGENTES de proyecto (no afecta al
                       orquestador).</p>
@@ -670,9 +668,9 @@
                 <!-- Orchestrator Prompt Pane -->
                 <div id="sub-tab-orchestrator" class="sub-tab-pane hidden">
                   <div class="config-field">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <div class="sub-tab-pane hidden flex-row-between">
                         <label>System Prompt del Orquestador (Admin)</label>
-                        <button id="improve-orchestrator-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                        <button class="btn-primary-sm btn-auto-sm" id="improve-orchestrator-prompt-btn">✨ Mejorar</button>
                     </div>
                     <p class="field-help">Define el comportamiento del Agente Administrador que gestiona a los demás
                       agentes.</p>
@@ -684,9 +682,9 @@
                 <!-- Improver Prompt Pane -->
                 <div id="sub-tab-improver" class="sub-tab-pane hidden">
                   <div class="config-field">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <div class="sub-tab-pane hidden flex-row-between">
                         <label>Prompt del Agente Improver (Mejorador de Prompts)</label>
-                        <button id="improve-improver-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                        <button class="btn-primary-sm btn-auto-sm" id="improve-improver-prompt-btn">✨ Mejorar</button>
                     </div>
                     <p class="field-help">Este es el prompt que usa la IA para mejorar tus propios textos cuando pulsas el botón ✨.</p>
                     <textarea id="improver-prompt" class="config-textarea" rows="12"
@@ -697,9 +695,9 @@
                 <!-- Naming Prompt Pane -->
                 <div id="sub-tab-naming" class="sub-tab-pane hidden">
                   <div class="config-field">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <div class="sub-tab-pane hidden flex-row-between">
                         <label>NAMING PROMPT (Nombres de Agentes)</label>
-                        <button id="improve-naming-prompt-btn" class="btn-primary-sm" style="width: auto; padding: 4px 10px;">✨ Mejorar</button>
+                        <button class="btn-primary-sm btn-auto-sm" id="improve-naming-prompt-btn">✨ Mejorar</button>
                     </div>
                     <p class="field-help">Este prompt se envía a <strong>Gemma4 (Ollama)</strong> cada vez que un agente recibe su primer mensaje técnico. El modelo inventa un nombre corto (2-4 palabras) para el agente. Si lo cambias, reinicia la página para que se aplique.</p>
                     <textarea id="naming-prompt" class="config-textarea" rows="12"
@@ -728,7 +726,7 @@
                     <button class="skills-source-tab active" data-skills-source="local">📁 Locales</button>
                     <button class="skills-source-tab" data-skills-source="hermes">⚡ Hermes</button>
                   </div>
-                  <button id="new-skill-btn" class="btn-primary" style="width: auto;">+ Nuevo Skill</button>
+                  <button class="btn-primary w-auto" id="new-skill-btn">+ Nuevo Skill</button>
                 </div>
                 
                 <div class="skills-container modal-layout">
@@ -745,7 +743,7 @@
                       <div class="skill-editor-header">
                         <input type="text" id="skill-name-input" placeholder="Nombre..." />
                         <div class="skill-actions">
-                          <button id="improve-skill-btn" class="btn-primary" title="Mejorar con IA" style="background: var(--accent-color); border: 1px solid rgba(255,255,255,0.2);">✨ Mejorar</button>
+                          <button class="btn-primary skill-actions btn-accent-outline" id="improve-skill-btn" title="Mejorar con IA">✨ Mejorar</button>
                           <button id="save-skill-btn" class="btn-primary">Guardar 💾</button>
                           <button id="delete-skill-btn" class="btn-danger-outline">🗑️</button>
                         </div>
@@ -804,12 +802,12 @@
 
                 <div class="config-field">
                   <label>Modelos Recomendados</label>
-                  <div class="model-quick-select" style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
-                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-v4-pro')" style="width: auto; padding: 5px 10px;">V4 Pro ✨</button>
-                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-v4-flash')" style="width: auto; padding: 5px 10px;">V4 Flash ⚡</button>
-                    <button class="btn-primary-sm" onclick="window.addModelToSelect('anthropic/claude-3.5-sonnet')" style="width: auto; padding: 5px 10px;">Claude 3.5 🧠</button>
-                    <button class="btn-primary-sm" onclick="window.addModelToSelect('deepseek-chat')" style="width: auto; padding: 5px 10px;">Chat (V3)</button>
-                    <button class="btn-primary-sm" onclick="window.addModelToSelect('gpt-4o')" style="width: auto; padding: 5px 10px;">GPT-4o</button>
+                  <div class="model-quick-select config-field flex-wrap-10">
+                    <button class="btn-primary-sm btn-auto" onclick="window.addModelToSelect('deepseek-v4-pro')">V4 Pro ✨</button>
+                    <button class="btn-primary-sm btn-auto" onclick="window.addModelToSelect('deepseek-v4-flash')">V4 Flash ⚡</button>
+                    <button class="btn-primary-sm btn-auto" onclick="window.addModelToSelect('anthropic/claude-3.5-sonnet')">Claude 3.5 🧠</button>
+                    <button class="btn-primary-sm btn-auto" onclick="window.addModelToSelect('deepseek-chat')">Chat (V3)</button>
+                    <button class="btn-primary-sm btn-auto" onclick="window.addModelToSelect('gpt-4o')">GPT-4o</button>
                   </div>
                 </div>
               </div>
@@ -839,7 +837,7 @@
             <div id="modal-tab-second-agent" class="modal-tab-content hidden">
               <div class="modal-body-content">
                 <div class="sub-tab-pane">
-                  <h3 style="margin-top: 0;">⚡ Second Agent</h3>
+                  <h3 class="modal-tab-content hidden mt-0">⚡ Second Agent</h3>
                   <p class="field-help">Agente minimal que corre en <strong>paralelo</strong> al agente principal. Se encarga de tareas livianas como nombrar agentes, validaciones rápidas y otros detalles — sin bloquear al agente principal.</p>
 
                   <div class="config-field">
@@ -858,12 +856,12 @@
                     </select>
                   </div>
 
-                  <div class="config-field" style="display: flex; gap: 20px; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 150px;">
+                  <div class="config-field flex-wrap-20">
+                    <div class="flex-field">
                       <label>Temperatura</label>
                       <input type="number" id="second-agent-temperature" class="config-input" min="0" max="2" step="0.1" value="0.7" />
                     </div>
-                    <div style="flex: 1; min-width: 150px;">
+                    <div class="config-input flex-field">
                       <label>Max Tokens</label>
                       <input type="number" id="second-agent-max-tokens" class="config-input" min="10" max="500" step="10" value="50" />
                     </div>
@@ -883,9 +881,9 @@
             <!-- Project History Tab -->
             <div id="modal-tab-project-history" class="modal-tab-content hidden">
               <div class="modal-body-content">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                  <h3 style="margin: 0;">📜 Historial de Proyectos</h3>
-                  <button class="btn-danger-outline" onclick="window.clearAllArchivedProjects()" style="padding: 4px 8px; font-size: 0.7rem;">Borrar Todo el Historial 🗑️</button>
+                <div class="modal-tab-content hidden flex-row-between-wide">
+                  <h3 class="m-0">📜 Historial de Proyectos</h3>
+                  <button class="btn-danger-outline m-0 btn-danger-xs" onclick="window.clearAllArchivedProjects()">Borrar Todo el Historial 🗑️</button>
                 </div>
                 <p class="field-help">Aquí puedes recuperar proyectos que eliminaste del panel principal o borrarlos permanentemente.</p>
                 <div id="history-list" class="history-list-container">
@@ -905,6 +903,7 @@
   </div>
 
   <script src="js/mic.js"></script>
+  <script src="js/githubmanager.js"></script>
   <script type="module" src="js/main.js"></script>
 </body>
 

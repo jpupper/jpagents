@@ -18,13 +18,12 @@
  */
 
 import 'dotenv/config';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import WebSocket from 'ws';
-import { stripAnsi } from './ansi-utils.js';
-import { RESUMEN_MANDATE } from './telegram-shared.js';
+import { spawnHermes } from './hermes-executor.js';
 
 // ─── Config ───
 const HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
@@ -227,197 +226,13 @@ async function syncPendingHistory() {
     } catch {}
 }
 
-// ─── Streaming de pensamiento ───
-
-function extractThinkingLines(stderr) {
-    const clean = stripAnsi(stderr);
-    const lines = clean.split('\n');
-    const meaningful = [];
-
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith('<<') || trimmed.startsWith('>>')) continue;
-        if (trimmed.startsWith('Tool calls:')) continue;
-        if (trimmed.match(/^\d+\. /) && trimmed.length < 5) continue;
-        if (trimmed === '...') continue;
-        if (trimmed.match(/^\d+ messages?,/)) continue;
-        if (trimmed.match(/^###/) || trimmed.match(/^```/)) continue;
-        if (trimmed.startsWith('│')) continue;
-        if (trimmed.match(/^\d{2}:\d{2}:\d{2} - /)) continue;
-        meaningful.push(trimmed);
-    }
-    return meaningful;
-}
-
-const TOOL_EMOJIS = {
-    search_files: '🔍', read_file: '📖', write_file: '✏️',
-    patch: '🔧', terminal: '💻', execute_code: '🐍',
-    web_search: '🌐', web_extract: '📄', vision_analyze: '👁️',
-    memory: '🧠', delegate_task: '👥', clarify: '❓',
-    cronjob: '⏰', send_message: '📨', text_to_speech: '🔊',
-    process: '⚙️', todo: '📋', skill_view: '📘', skill_manage: '📚',
-    browser_navigate: '🌍', browser_click: '👆', browser_type: '⌨️',
-    browser_snapshot: '📸', browser_scroll: '📜',
-    session_search: '🔎', computer_use: '🖥️',
-};
-
-function toolEmoji(name) {
-    return TOOL_EMOJIS[name] || '🔧';
-}
-
-function formatThinkingText(lines, maxLen = MAX_THINKING_LENGTH) {
-    if (lines.length === 0) return null;
-
-    const display = [];
-    for (const line of lines) {
-        // ─── Log lines del nuevo logger de Hermes ───
-        // Formato: "agent.conversation_loop - INFO [session_id] - message"
-        // Se dividen en chunks y las líneas parciales NO tienen el `[`
-        // por eso filtramos también por " - INFO", " - ERROR", etc.
-        if (line.includes(' - INFO') || line.includes(' - ERROR') || line.includes(' - WARNING')) continue;
-        if (line.match(/^\[\d{8}_\d{6}_[a-f0-9]+\]/)) continue; // session_id standalone
-        
-        // ─── Filtros existentes ───
-        if (line.includes('Enabled toolset') || line.includes('Tool unavailable')) continue;
-        if (line.includes('Final tool selection') || line.includes('Loaded')) continue;
-        if (line.includes('DEBUG') || line.includes('INFO [')) continue;
-        if (line.includes('OpenAI client') || line.includes('context compressor')) continue;
-        if (line.includes('Context limit') || line.includes('Initializing agent')) continue;
-        if (line.includes('API Request') || line.includes('API Response')) continue;
-        if (line.includes('Captured reasoning') || line.includes('Token usage')) continue;
-        if (line.includes('Total message size') || line.includes('cleanup_browser')) continue;
-        if (line.includes('some tools may not work')) continue;
-        if (line.includes('Ephemeral system prompt')) continue;
-
-        if (line.includes('[thinking]')) {
-            const thought = line.replace(/\[thinking\]\s*/g, '').trim();
-            if (thought) display.push('💭 ' + thought);
-            continue;
-        }
-        if (line.includes('Starting conversation')) {
-            display.push('💬 *Procesando mensaje...*');
-            continue;
-        }
-        if (line.includes('Conversation completed')) {
-            display.push('✅ *Respuesta lista*');
-            continue;
-        }
-        if (line.includes('┊')) {
-            const activity = line.replace(/┊/g, '').trim();
-            if (!activity) continue;
-            if (activity.startsWith('preparing') || activity.startsWith('⚙️ awaiting')) {
-                const tool = activity.replace(/preparing |⚙️ awaiting /g, '').replace('…', '').trim();
-                if (tool) display.push('  ⏳ `' + tool + '`...');
-                continue;
-            }
-            display.push('  ' + activity);
-            continue;
-        }
-        if (line.includes('Tool call:')) {
-            const m = line.match(/Tool call: (\w+)/);
-            if (m) display.push('  ' + toolEmoji(m[1]) + ' `' + m[1] + '`...');
-            continue;
-        }
-        if (line.match(/📞 Tool \d+:/)) {
-            const m = line.match(/Tool \d+: (\w+)\(/);
-            if (m) {
-                display.push('  ' + toolEmoji(m[1]) + ' `' + m[1] + '`');
-            } else {
-                display.push('  ' + line.trim());
-            }
-            continue;
-        }
-        if (line.includes('completed') && line.includes('(') && line.includes('s,')) continue;
-        if (line.startsWith('Tool result') && line.length > 150) {
-            display.push('  📦 ' + line.slice(0, 80) + '...');
-            continue;
-        }
-        if (line.includes('Tool result') && line.length < 150) {
-            display.push('  📦 ' + line.replace(/Tool result \(.*?\): /, '').trim());
-            continue;
-        }
-        const trimmed = line.trim();
-        if (trimmed.length > 3 && trimmed.length < 250) {
-            display.push('  ' + trimmed);
-        }
-    }
-
-    const recent = display.slice(-8);
-    if (recent.length === 0) return null;
-
-    let text = '💭 Procesando...\n';
-    for (const item of recent) {
-        text += item + '\n';
-    }
-    if (display.length > 8) {
-        text += '\n_... y ' + (display.length - 8) + ' pasos más_';
-    }
-    if (text.length > maxLen) {
-        text = text.slice(0, maxLen - 40) + '\n_…_';
-    }
-    return text;
-}
-
-function stripThinking(line) {
-    return line.replace(/^\[thinking\]\s*/i, '').trim();
-}
-
-function filterThinkingLines(text) {
-    if (!text) return text;
-    return text.split('\n')
-        .map(l => l.trim())
-        .filter(l => {
-            if (!l) return false;
-            if (l.startsWith('[thinking]')) return false;
-            if (l.match(/^```/)) return false;
-            return true;
-        })
-        .join('\n')
-        .trim();
-}
-
-function extractResponse(stdout) {
-    // Con -Q (quiet mode), stdout es DIRECTAMENTE la respuesta final del modelo:
-    //   - Sin banner, sin panel ╭╰, sin tool status, sin session_id (va a stderr)
-    //   - Solo el texto de la respuesta del asistente
-    //
-    // No necesitamos parsing de panel ni filtros de noise agresivos.
-    // Solo: limpiar ANSI, remover líneas [thinking] que el modelo pueda haber
-    // incluido como parte de su output, y devolver el texto limpio.
-
-    const clean = stripAnsi(stdout).trim();
-    if (!clean || clean.length < 3) return '';
-
-    // Remover session_id si por algún motivo apareció en stdout (fallback legacy)
-    const text = clean.replace(/^session_id:\s*\S+\s*/m, '').trim();
-    if (!text) return '';
-
-    // Filtrar solo líneas [thinking] que el modelo haya incluido en su output
-    // (NO filtramos 📊, ✅, ⚙️, 📝, 📋 — esos son parte del formato requerido)
-    const lines = text.split('\n')
-        .map(l => l.trim())
-        .filter(l => {
-            if (!l) return false;
-            if (l.startsWith('[thinking]')) return false;
-            if (l.match(/^```/)) return false;
-            if (l.match(/^\d+ messages?,/) || l.startsWith('Session') ||
-                l.startsWith('Tip:') || l.startsWith('Initializing') ||
-                l.startsWith('Generated') || l.startsWith('Running ')) return false;
-            return true;
-        });
-
-    if (lines.length === 0) return '';
-    const result = lines.join('\n').trim();
-    return result.length >= 5 ? result : text.slice(0, 4000);
-}
+// ─── Funciones auxiliares para formato RESUMEN (usadas por processMessage) ───
 
 /**
  * Valida que la respuesta contenga el formato RESUMEN obligatorio (📋⚙️📝📊).
  */
 function hasRequiredFormat(text) {
     if (!text || text.length < 20) return false;
-    // Check for proper RESUMEN format with labels — NOT just the emojis alone
     if (text.includes('📋 OBJETIVO') && text.includes('📊 ESTADO')) return true;
     if (text.includes('━━━ 📋 RESUMEN')) return true;
     return false;
@@ -436,20 +251,17 @@ function extractResumenData(response, originalMessage) {
         notas: 'N/A'
     };
 
-    // Extraer paths de archivos creados/modificados
     const filePaths = response.match(/[DC]:\\[^\s,;)\]]{10,}/g);
     if (filePaths) {
         const unique = [...new Set(filePaths)];
         data.modificaciones = unique.slice(0, 5);
     }
 
-    // Extraer URLs
     const urls = response.match(/https?:\/\/[^\s,;)\]]{10,}/g);
     if (urls && data.modificaciones.length < 5) {
         data.modificaciones.push(...urls.slice(0, 3));
     }
 
-    // Detectar herramientas usadas
     const toolPatterns = [
         /write_file|crea(?:r|ste)|escribí|modifiq/i,
         /terminal|ejecut|comando|npm|git/i,
@@ -471,7 +283,6 @@ function extractResumenData(response, originalMessage) {
         }
     }
 
-    // Detectar estado
     if (/error|fall[óo]|no pudo|exception/i.test(response)) {
         data.estado = '❌ Error';
     } else if (/completad|terminad|listo|✅|hecho|cread|subid/i.test(response)) {
@@ -480,35 +291,26 @@ function extractResumenData(response, originalMessage) {
         data.estado = '🔄 En progreso';
     }
 
-    // Detectar notas
     const seguirMatch = response.match(/pr[oó]ximos? paso|seguir|pendiente|falta|faltar[íi]a/i);
-    if (seguirMatch) {
-        data.notas = 'Ver detalle en respuesta arriba';
-    }
+    if (seguirMatch) data.notas = 'Ver detalle en respuesta arriba';
 
     return data;
 }
 
 /**
  * Fuerza que la respuesta SIEMPRE termine con el bloque RESUMEN formateado.
- * Si el modelo no lo generó, lo sintetiza automáticamente con datos reales.
  */
 function ensureResumen(response, originalMessage = '') {
     if (!response || response.length < 5) {
         return `━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${originalMessage || 'Consulta al asistente'}\n⚙️ REALIZACIÓN: N/A — Sin respuesta\n📝 MODIFICACIONES: Ninguna\n📊 ESTADO: Sin respuesta disponible\n📌 NOTAS: N/A`;
     }
 
-    // Si ya tiene nuestro nuevo formato, devolver tal cual
-    if (response.includes('━━━ 📋 RESUMEN ━━━')) {
-        return response;
-    }
+    if (response.includes('━━━ 📋 RESUMEN ━━━')) return response;
 
-    // Si tiene formato emoji (📋...📊) pero sin el separador nuevo
     if (hasRequiredFormat(response)) {
         const objetivoIdx = response.indexOf('📋');
         const preContent = response.slice(0, objetivoIdx).trim();
         const resumenBlock = response.slice(objetivoIdx).trim();
-
         const cleanPre = preContent
             .replace(/^.*\[thinking\].*$/gm, '')
             .replace(/^.*Conversation completed.*$/gm, '')
@@ -517,148 +319,68 @@ function ensureResumen(response, originalMessage = '') {
             .replace(/^.*Turn ended:.*$/gm, '')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
-
-        if (cleanPre.length > 10) {
-            return `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
-        }
-        return `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
+        return cleanPre.length > 10
+            ? `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`
+            : `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
     }
 
-    // No tiene formato — sintetizar con datos extraídos
     console.log('[WORKER] ⚠️ Sintetizando RESUMEN con datos extraídos...');
     const data = extractResumenData(response, originalMessage);
-
     const shortBody = response.length > 2000
         ? response.slice(0, 2000) + '\n\n[...]'
         : response;
-
     const realizacionStr = data.realizacion.length > 0
         ? [...new Set(data.realizacion)].join(', ')
         : 'Procesó la consulta';
-
     const modificacionesStr = data.modificaciones.length > 0
         ? data.modificaciones.join('\n    ')
         : 'N/A';
-
     return `${shortBody}\n\n━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${data.objetivo.slice(0, 300)}\n⚙️ REALIZACIÓN: ${realizacionStr}\n📝 MODIFICACIONES:\n    ${modificacionesStr}\n📊 ESTADO: ${data.estado}\n📌 NOTAS: ${data.notas}`;
 }
 
-// ─── Hermes con streaming de pensamiento (IPC version) ───
-function askHermesWithThinking(message, statusMsgChatId, statusMsgId, chatId) {
-    return new Promise((resolve) => {
-        console.log(`[WORKER] ▶️ Hermes: "${message.slice(0, 80)}..."`);
+// ─── Hermes con streaming de pensamiento (IPC version) via hermes-executor.js ───
+async function askHermesWithThinking(message, statusMsgChatId, statusMsgId, chatId) {
+    console.log(`[WORKER] ▶️ Hermes: "${message.slice(0, 80)}..."`);
 
-        const sessions = loadSessions();
-        const savedSession = sessions[String(chatId)];
-        const resumeId = savedSession?.sessionId || null;
-        if (resumeId) console.log(`[WORKER] 🔄 Reanudando sesión ${resumeId}`);
+    const sessions = loadSessions();
+    const savedSession = sessions[String(chatId)];
+    const resumeId = savedSession?.sessionId || null;
+    if (resumeId) console.log(`[WORKER] 🔄 Reanudando sesión ${resumeId}`);
 
-        const args = [
-            'chat', '-q', `${message}\n\n${RESUMEN_MANDATE}`, '-s', 'botadmin', '-Q', '--verbose',
-            '--source', 'hermes-god|telegram|god'
-        ];
-        if (resumeId) {
-            args.push('--resume', resumeId);
-        }
-
-        let proc;
-        try {
-            proc = spawn(HERMES_PATH, args, {
-                    cwd: JPAGENTS_DIR, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
-                    env: { ...process.env, HERMES_WORKDIR: JPAGENTS_DIR, PYTHONIOENCODING: 'utf-8' }, timeout: 3600000
-                });
-        } catch (e) {
-            resolve({ error: `Error Hermes: ${e.message}` });
-            return;
-        }
-
-        let stdout = '', stderr = '', timedOut = false;
-        let allThinkingLines = [];
-        let lastUpdateText = '';
-
-        const timer = setTimeout(() => {
-            timedOut = true;
-            try { proc.kill(); } catch {}
-        }, 3600000);
-
-        proc.stdout.on('data', d => { stdout += d.toString(); });
-
-        proc.stderr.on('data', d => {
-            const chunk = d.toString();
-            stderr += chunk;
-            const newLines = extractThinkingLines(chunk);
-            if (newLines.length > 0) {
-                allThinkingLines = allThinkingLines.concat(newLines);
-                if (allThinkingLines.length > 100) {
-                    allThinkingLines = allThinkingLines.slice(-100);
-                }
-            }
-        });
-
-        // Thinking updates via IPC
-        const thinkingTimer = setInterval(() => {
-            if (timedOut) {
-                clearInterval(thinkingTimer);
-                return;
-            }
-            const thinkingText = formatThinkingText(allThinkingLines);
-            if (thinkingText && thinkingText !== lastUpdateText) {
-                lastUpdateText = thinkingText;
+    const result = await spawnHermes({
+        query: message,
+        workdir: JPAGENTS_DIR,
+        skill: 'botadmin',
+        source: 'hermes-god|telegram|god',
+        resumeSession: resumeId,
+        mode: 'stream',
+        timeout: 3600000,
+        streaming: {
+            onThinking: (text) => {
                 sendEvent('thinking', {
                     chatId: statusMsgChatId,
                     messageId: statusMsgId,
-                    text: thinkingText,
+                    text,
                     options: { parse_mode: 'Markdown' }
                 });
             }
-        }, THINKING_UPDATE_INTERVAL);
-
-        proc.on('error', err => {
-            clearTimeout(timer);
-            clearInterval(thinkingTimer);
-            resolve({ error: err.message });
-        });
-
-        // Usar 'close' en vez de 'exit' para garantizar que todo stdout
-        // se haya capturado antes de procesar la respuesta (fix race condition
-        // donde exit fireaba antes del último chunk de stdout).
-        proc.on('close', code => {
-            clearTimeout(timer);
-            clearInterval(thinkingTimer);
-
-            if (timedOut) {
-                resolve({ error: '⏱️ Timeout después de 1 hora', text: '' });
-                return;
-            }
-
-            let newSessionId = null;
-            let cleanStdout = stdout;
-            // En modo -Q, session_id va a stderr (cli.py line 15078).
-            // Buscar en ambos: stdout (modo legacy) y stderr (modo -Q).
-            const sidMatch = stdout.match(/^session_id:\s*(\S+)/m);
-            const sidMatchStderr = stderr.match(/session_id:\s*(\S+)/);
-            if (sidMatch) {
-                newSessionId = sidMatch[1];
-                cleanStdout = stdout.replace(/^session_id:\s*\S+\s*/m, '').trim();
-            } else if (sidMatchStderr) {
-                newSessionId = sidMatchStderr[1];
-                // session_id en stderr, no contamina stdout
-            }
-
-            if (newSessionId && chatId) {
-                saveSession(chatId, newSessionId);
-                console.log(`[WORKER] 💾 Sesión guardada ${newSessionId} para chat ${chatId}`);
-            }
-
-            const response = extractResponse(cleanStdout);
-            resolve({
-                text: response,
-                exitCode: code,
-                stderr: stderr.slice(-1000),
-                sessionId: newSessionId
-            });
-        });
+        }
     });
+
+    const { response, stderr, sessionId, error, exitCode } = result;
+
+    if (sessionId && chatId) {
+        saveSession(chatId, sessionId);
+        console.log(`[WORKER] 💾 Sesión guardada ${sessionId} para chat ${chatId}`);
+    }
+
+    return {
+        text: response,
+        exitCode,
+        stderr: (stderr || '').slice(-1000),
+        sessionId,
+        error
+    };
 }
 
 // ─── Status ───

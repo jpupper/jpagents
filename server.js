@@ -20,8 +20,7 @@ import { agentApp } from './agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
 import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger.js';
 import { createChat } from './agent-utils.js';
-
-// Hermes Bridge
+import { spawnHermes, findHermesPath } from './hermes-executor.js';
 import hermesBridge from './hermes-bridge.js';
 
 const execAsync = promisify(exec);
@@ -296,70 +295,15 @@ function telegramBroadcast(event, data = {}) {
  * FIX: try-catch en console.error para evitar EPIPE → 500.
  */
 async function callHermesAdmin(message, history = []) {
-    const hermesPath = await hermesBridge._findHermesPath(process.cwd());
-    let finalMsg = message;
-    if (history && history.length > 0) {
-        // ─── TRUNCAR HISTORY para evitar ENAMETOOLONG en Windows ───
-        // Límite de seguridad: mantener total < 15KB para CLI args
-        const MAX_HISTORY_MSGS = 10;
-        const MAX_MSG_LENGTH = 2000;
-        const truncated = history.slice(-MAX_HISTORY_MSGS).map(m => ({
-            role: m.role,
-            content: m.content.length > MAX_MSG_LENGTH
-                ? m.content.slice(0, MAX_MSG_LENGTH) + '...[truncado]'
-                : m.content
-        }));
-        const historyBlock = truncated
-            .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
-            .join('\n\n');
-        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}\n\n${RESUMEN_MANDATE}`;
-        // Safety: si finalMsg > 20KB, no pasamos history y mandamos solo el mensaje actual
-        if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
-            console.warn(`[ADMIN-HERMES] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual con mandate`);
-            finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
-        }
-    } else {
-        // Sin history: agregar mandate directo
-        finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
-    }
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '-Q', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
-    const { stdout, stderr } = await execFileAsync(hermesPath, args, {
-        cwd: process.cwd(), timeout: 600000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env, HERMES_WORKDIR: process.cwd() }
-    }).catch(err => {
-        // Hermes puede fallar por timeout, clarify en no-interactivo, o errores del modelo
-        // Devolvemos stderr/stdout parcial si está disponible
-        const partial = { stdout: err.stdout || '', stderr: err.stderr || '' };
-        if (err.killed || err.code === 'ETIMEDOUT') {
-            partial.stderr += '\n[TIMEOUT] Hermes tardó demasiado (límite 10 min).';
-        }
-        // FIX: try-catch para evitar que console.error con EPIPE rompa el catch handler
-        try { console.error(`[ADMIN-HERMES] Hermes falló: ${err.message}`); } catch (logErr) {}
-        return partial;
+    return spawnHermes({
+        query: message,
+        workdir: process.cwd(),
+        history,
+        skill: 'botadmin',
+        source: 'jpagents-admin-chat|admin|admin',
+        mode: 'oneshot',
+        timeout: 600000,
     });
-    const clean = stdout.replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
-    const lines = clean.split('\n');
-    let panelStart = -1, panelEnd = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].includes('╰') && panelEnd === -1) panelEnd = i;
-        if (lines[i].includes('╭') && lines[i].includes('Hermes') && panelStart === -1) {
-            panelStart = i;
-            if (panelEnd === -1) panelEnd = lines.length;
-            break;
-        }
-    }
-    let response = clean.trim();
-    if (panelStart !== -1 && panelEnd !== -1 && panelStart < panelEnd) {
-        response = lines.slice(panelStart + 1, panelEnd)
-            .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
-            .join('\n').trim();
-    }
-    const sessionIdMatch = stderr?.match(/session_id:\s*(\S+)/i);
-    return { response, sessionId: sessionIdMatch ? sessionIdMatch[1] : null };
 }
 
 /**
@@ -369,159 +313,17 @@ async function callHermesAdmin(message, history = []) {
  *   Debe retornar una Promise<string> con la respuesta del usuario (o null si no disponible).
  */
 async function callHermesAdminStreaming(message, onThinking, history = [], onClarify = null) {
-    const hermesPath = await hermesBridge._findHermesPath(process.cwd());
-    let finalMsg = message;
-    if (history && history.length > 0) {
-        // ─── TRUNCAR HISTORY (mismo fix que callHermesAdmin) ───
-        const MAX_HISTORY_MSGS = 10;
-        const MAX_MSG_LENGTH = 2000;
-        const truncated = history.slice(-MAX_HISTORY_MSGS).map(m => ({
-            role: m.role,
-            content: m.content.length > MAX_MSG_LENGTH
-                ? m.content.slice(0, MAX_MSG_LENGTH) + '...[truncado]'
-                : m.content
-        }));
-        const historyBlock = truncated
-            .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
-            .join('\n\n');
-        finalMsg = `[Contexto de conversación]:\n${historyBlock}\n\n[Mensaje actual]:\n${message}\n\n${RESUMEN_MANDATE}`;
-        if (Buffer.byteLength(finalMsg, 'utf-8') > 20000) {
-            console.warn(`[ADMIN-HERMES-STREAMING] finalMsg demasiado grande (${Buffer.byteLength(finalMsg, 'utf-8')} bytes), usando solo mensaje actual con mandate`);
-            finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
-        }
-    } else {
-        // Sin history: agregar mandate directo
-        finalMsg = `${message}\n\n${RESUMEN_MANDATE}`;
-    }
-    const { spawn } = await import('child_process');
-    const args = ['chat', '-q', finalMsg, '-s', 'botadmin', '-Q', '--verbose', '--source', 'jpagents-admin-chat|admin|admin'];
-    
-    return new Promise((resolve) => {
-        const proc = spawn(hermesPath, args, {
-            cwd: process.cwd(),
-            env: { ...process.env, HERMES_WORKDIR: process.cwd() },
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        let stdout = '';
-        let stderr = '';
-        let thinkingLines = [];
-        let thinkingTimer = null;
-        const THINKING_INTERVAL = 3000; // 3 segundos entre updates
-
-        proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-
-        proc.stderr.on('data', (chunk) => {
-            const text = chunk.toString();
-            stderr += text;
-
-            // Extraer líneas significativas para thinking
-            const lines = text.split('\n');
-            for (const rawLine of lines) {
-                // Limpiar ANSI codes y timestamps
-                const clean = rawLine
-                    .replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '')
-                    .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-                    .replace(/^\d{2}:\d{2}:\d{2}\s*-\s*/, '')
-                    .trim();
-                
-                if (!clean) continue;
-                
-                // Filtrar líneas de debug/ruido
-                if (clean.includes('DEBUG') || clean.includes('Auxiliary') || 
-                    clean.includes('OpenAI client') || clean.includes('tcp_force_closed') ||
-                    clean.includes('Total message size') || clean.includes('Last message role') ||
-                    clean.includes('API Request') || clean.includes('Token usage') ||
-                    clean.startsWith('│') || clean.startsWith('╰') || clean.startsWith('╭')) continue;
-
-                // Categorizar
-                let prefix = '';
-                if (clean.includes('[thinking]')) {
-                    prefix = '💭 ';
-                    const thinkingContent = clean.replace(/.*\[thinking\]\s*/, '').slice(0, 100);
-                    thinkingLines.push(prefix + thinkingContent);
-                } else if (clean.includes('Tool call:')) {
-                    const toolMatch = clean.match(/Tool call:\s*(\w+)/);
-                    const toolName = toolMatch ? toolMatch[1] : '???';
-                    const emojis = {
-                        read_file: '📖', write_file: '✍️', search_files: '🔍', terminal: '💻',
-                        execute_code: '🐍', patch: '🔧', web_search: '🌐', web_extract: '📄',
-                        browser_navigate: '🌎', browser_snapshot: '📸', browser_click: '🖱️',
-                        skill_view: '📚', skill_manage: '🛠️', delegate_task: '🤖',
-                        vision_analyze: '👁️', todo: '📋', memory: '🧠',
-                        clarify: '❓', session_search: '🔎', file: '📁'
-                    };
-                    const emoji = emojis[toolName] || '⚙️';
-                    thinkingLines.push(`${emoji} ${toolName}`);
-                } else if (clean.includes('completed in') || clean.includes('Tool')) {
-                    // Skip timing lines
-                } else if (clean.includes('conversation turn') || clean.includes('session=')) {
-                    // Skip session info
-                } else if (clean.length > 5) {
-                    thinkingLines.push(clean.slice(0, 120));
-                }
-            }
-        });
-
-        // Timer para enviar updates de pensamiento cada 3 segundos
-        thinkingTimer = setInterval(() => {
-            if (thinkingLines.length > 0 && onThinking) {
-                const lastLines = thinkingLines.slice(-8);  // Últimas 8 líneas
-                onThinking(lastLines.join('\n'));
-            }
-        }, THINKING_INTERVAL);
-
-        // Timeout de 10 minutos
-        const timeout = setTimeout(() => {
-            if (thinkingTimer) clearInterval(thinkingTimer);
-            proc.kill();
-            stderr += '\n[TIMEOUT] Hermes tardó demasiado (límite 10 min).';
-            const clean = (stdout || '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
-            resolve({ response: clean.trim() || '(timeout)', stderr });
-        }, 600000);
-
-        proc.on('close', (code) => {
-            if (thinkingTimer) clearInterval(thinkingTimer);
-            clearTimeout(timeout);
-            
-            const cleanStdout = (stdout || '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
-            
-            // Con -Q (quiet mode): stdout es texto plano directamente.
-            // Sin -Q: stdout tiene panel TUI con ╭/╰.
-            // Intentar panel extraction primero, fallback a raw.
-            let response = cleanStdout.trim();
-            
-            // Limpiar session_id del stdout
-            response = response.replace(/^session_id:\s*\S+/m, '').trim();
-            
-            // Intentar extraer panel (para compatibilidad si sacamos -Q en futuro)
-            const lines = cleanStdout.split('\n');
-            let panelStart = -1, panelEnd = -1;
-            for (let i = lines.length - 1; i >= 0; i--) {
-                if (lines[i].includes('╰') && panelEnd === -1) panelEnd = i;
-                if (lines[i].includes('╭') && lines[i].includes('Hermes') && panelStart === -1) {
-                    panelStart = i;
-                    if (panelEnd === -1) panelEnd = lines.length;
-                    break;
-                }
-            }
-            if (panelStart !== -1 && panelEnd !== -1 && panelStart < panelEnd) {
-                response = lines.slice(panelStart + 1, panelEnd)
-                    .map(l => l.replace(/^[││]\s*/, '').replace(/\s*[││]$/, ''))
-                    .join('\n').trim();
-            }
-            
-            resolve({ response, stderr, exitCode: code });
-        });
-
-        proc.on('error', (err) => {
-            if (thinkingTimer) clearInterval(thinkingTimer);
-            clearTimeout(timeout);
-            resolve({ response: `❌ Error: ${err.message}`, stderr, exitCode: -1 });
-        });
+    return spawnHermes({
+        query: message,
+        workdir: process.cwd(),
+        history,
+        skill: 'botadmin',
+        source: 'jpagents-admin-chat|admin|admin',
+        mode: 'stream',
+        timeout: 600000,
+        streaming: { onThinking, onClarify },
     });
 }
-
 /**
  * Limpia la respuesta de Hermes: quita [thinking], metadatos de sesión,
  * líneas de resumen (Conversation completed, Session:, Duration:, etc.)

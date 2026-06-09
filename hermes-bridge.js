@@ -9,135 +9,19 @@
  * - Detener instancias
  */
 
-import { spawn, execFile } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
 import sqlite3 from 'sqlite3';
 import os from 'os';
-import { stripAnsi } from './ansi-utils.js';
+import { spawnHermes, findHermesPath, extractPanelResponse, extractSessionId } from './hermes-executor.js';
 
-function stripPanelIndentation(lines) {
-    let minIndent = Infinity;
-    for (const line of lines) {
-        if (!line.trim()) continue;
-        const match = line.match(/^( *)/);
-        if (match) {
-            const indent = match[1].length;
-            if (indent < minIndent) {
-                minIndent = indent;
-            }
-        }
-    }
-    
-    if (minIndent === Infinity) return lines;
-    
-    return lines.map(line => {
-        if (line.length >= minIndent) {
-            return line.slice(minIndent);
-        }
-        return line.trim();
-    });
-}
-
+/**
+ * Extrae la respuesta limpia del stdout de Hermes.
+ * Ahora delega a extractPanelResponse del módulo unificado.
+ */
 function extractCleanResponseFromStdout(stdout) {
-    const clean = stripAnsi(stdout);
-    const lines = clean.split('\n');
-    let panelStartIdx = -1;
-    let panelEndIdx = -1;
-    
-    // ─── Buscar panel ╭─ Hermes ─...╮ (puede no tener ╰ de cierre) ───
-    for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        // ╰ es el borde inferior del panel. Si no existe, usar fin del archivo
-        if (line.includes('╰') && panelEndIdx === -1) {
-            panelEndIdx = i;
-        }
-        if (line.includes('╭') && line.includes('Hermes') && panelStartIdx === -1) {
-            panelStartIdx = i;
-            // Si no encontramos ╰, el panel llega hasta el final (o hasta [thinking])
-            if (panelEndIdx === -1) {
-                // Buscar el último [thinking] después del panel como límite
-                for (let j = lines.length - 1; j > panelStartIdx; j--) {
-                    if (lines[j].includes('[thinking]')) {
-                        panelEndIdx = j;
-                        break;
-                    }
-                }
-                // Si no hay [thinking] ni ╰, tomar hasta el final
-                if (panelEndIdx === -1) {
-                    panelEndIdx = lines.length;
-                }
-            }
-            break;
-        }
-    }
-    
-    if (panelStartIdx !== -1 && panelEndIdx !== -1 && panelStartIdx < panelEndIdx) {
-        const panelLines = lines.slice(panelStartIdx + 1, panelEndIdx);
-        const strippedLines = stripPanelIndentation(panelLines);
-        const result = strippedLines.map(l => {
-            let content = l;
-            if (content.trim().startsWith('│')) {
-                content = content.replace(/^\s*│/, '');
-            }
-            if (content.trim().endsWith('│')) {
-                content = content.replace(/│\s*$/, '');
-            }
-            return content;
-        }).join('\n').trim();
-        if (result) return result;
-    }
-    
-    // ─── Fallback: buscar último bloque [thinking] y tomar lo ANTERIOR ───
-    // En verbose mode, la respuesta suele venir ANTES del último [thinking],
-    // no después. Ej: "texto respuesta\n  [thinking] piensa..."
-    let lastThinkingIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes('[thinking]')) {
-            lastThinkingIdx = i;
-        }
-    }
-    
-    if (lastThinkingIdx !== -1) {
-        // Tomar contenido ANTES del último [thinking] como la respuesta
-        if (lastThinkingIdx > 0) {
-            const beforeThinking = lines.slice(0, lastThinkingIdx);
-            // Filtrar líneas de metadata/progreso
-            const filtered = beforeThinking.filter(l => {
-                const lower = l.toLowerCase();
-                return !lower.includes('resume this session') && 
-                       !lower.includes('session:') && 
-                       !lower.includes('duration:') && 
-                       !lower.includes('messages:') &&
-                       !lower.includes('last progress:') &&
-                       !lower.includes('initializing agent') &&
-                       !lower.includes('enabled toolset') &&
-                       !lower.includes('final tool selection') &&
-                       !lower.includes('context limit') &&
-                       !l.includes('🤖 AI Agent initialized') &&
-                       !l.includes('Starting conversation');
-            });
-            const result = filtered.join('\n').trim();
-            if (result) return result;
-        }
-        // Si lo anterior está vacío, intentar después del último [thinking]
-        if (lastThinkingIdx < lines.length - 1) {
-            const afterThinking = lines.slice(lastThinkingIdx + 1);
-            const filtered = afterThinking.filter(l => {
-                const lower = l.toLowerCase();
-                return !lower.includes('resume this session') && 
-                       !lower.includes('session:') && 
-                       !lower.includes('duration:') && 
-                       !lower.includes('messages:') &&
-                       !lower.includes('last progress:');
-            });
-            const result = filtered.join('\n').trim();
-            if (result) return result;
-        }
-    }
-    
-    return clean;
+    return extractPanelResponse(stdout);
 }
 
 async function getLastAssistantMessage(sessionId) {
@@ -234,30 +118,15 @@ class HermesBridge extends EventEmitter {
     }
 
     /**
-     * Encuentra el path a hermes.exe
+     * Encuentra el path a hermes.exe (delega a hermes-executor.js)
      */
     async _findHermesPath(workdir) {
-        const fs = await import('fs/promises');
-        const safeWorkdir = workdir || process.cwd() || 'D:/Programacion/jpagents';
-        const possiblePaths = [
-            // Ruta directa al .exe del Hermes Agent principal
-            'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe',
-            // En .venv del proyecto
-            path.join(safeWorkdir, '.venv', 'Scripts', 'hermes.exe'),
-            path.join(safeWorkdir, 'venv', 'Scripts', 'hermes.exe'),
-        ];
-        for (const p of possiblePaths) {
-            try {
-                await fs.access(p);
-                return p;
-            } catch {}
-        }
-        // Fallback: buscar en PATH real (no funciona con shell:false en cmd.exe)
-        return 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
+        return findHermesPath(workdir);
     }
 
     /**
-     * Spawnea Hermes en modo oneshot (consulta única, sin TTY).
+     * Spawnea Hermes en modo detached (consulta única, sobrevive a restart).
+     * Usa hermes-executor.js para la lógica de spawn, mantiene poll+lifecycle en bridge.
      * @param {string} instanceKey - "projectId:chatId"
      * @param {string} projectId
      * @param {string} workdir
@@ -266,105 +135,41 @@ class HermesBridge extends EventEmitter {
      * @returns {Promise<{stdout: string, stderr: string}>}
      */
     async _runHermesQuery(instanceKey, projectId, workdir, query, model = null) {
-        const hermesPath = await this._findHermesPath(workdir);
         const chatId = instanceKey.split(':')[1];
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        const identityPath = path.join(hermesHome, 'jpagents-identity', `identity-${chatId}.json`);
 
-        // ─── JP AGENTS IDENTITY ───
-        let identityBlock = '';
+        // ─── Guardar task en identity file (bridge metadata) ───
         try {
             const fsp = await import('fs/promises');
-            const identityPath = path.join(
-                process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
-                'jpagents-identity', `identity-${chatId}.json`
-            );
-            const content = await fsp.readFile(identityPath, 'utf-8').catch(() => null);
-            if (content) {
-                const id = JSON.parse(content);
-                if (id?.agentName) {
-                    identityBlock = `\n\n=== 🌐 JP AGENTS IDENTITY ===\nSos el agente "${id.agentName}" del proyecto "${id.projectName}" (ID: ${projectId}), chat ${chatId} en JP Agents.\n=============================\n\n`;
-                }
-            }
-        } catch {}
-
-        const augmentedQuery = identityBlock ? identityBlock + query : query;
-
-        // ─── TRUNCAR para evitar ENAMETOOLONG en Windows (límite ~32K CLI args) ───
-        // FIX: Si el mensaje combinado es muy largo, spawn() tira ENAMETOOLONG.
-        //      callHermesAdmin() en server.js ya tiene este fix; acá faltaba.
-        if (Buffer.byteLength(augmentedQuery, 'utf-8') > 20000) {
-            console.warn(`[HERMES-BRIDGE] ⚠️ augmentedQuery muy grande (${Buffer.byteLength(augmentedQuery, 'utf-8')} bytes), truncando para evitar ENAMETOOLONG...`);
-            const identityLen = identityBlock ? Buffer.byteLength(identityBlock, 'utf-8') : 0;
-            const maxQueryLen = 18000 - identityLen;
-            if (maxQueryLen > 500) {
-                const truncated = query.slice(0, maxQueryLen - 50) + '\n\n...[TRUNCADO: mensaje muy largo para CLI de Windows]';
-                query = truncated;
-            } else {
-                // Identity block ya es enorme — truncar el conjunto entero
-                query = query.slice(0, 19000 - identityLen) + '...[TRUNCADO]';
-            }
-            augmentedQuery = identityBlock ? identityBlock + query : query;
-        }
-
-        // ─── Guardar task en identity file ───
-        try {
-            const fsp = await import('fs/promises');
-            const identityPath = path.join(
-                process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
-                'jpagents-identity', `identity-${chatId}.json`
-            );
             const existing = await fsp.readFile(identityPath, 'utf-8').catch(() => '{}');
             const id = JSON.parse(existing);
             id.lastTask = query.slice(0, 500);
             id.lastTaskAt = Date.now();
+            id.projectId = projectId;
             await fsp.writeFile(identityPath, JSON.stringify(id, null, 2));
         } catch {}
 
-        const args = ['chat', '-q', augmentedQuery, '--verbose'];
-        if (model && model !== '' && model !== 'default') args.push('--model', model);
-        args.push('--source', `jpagents|${projectId}|${chatId}`);
+        // ─── Spawn via executor modo detached ───
+        const result = await spawnHermes({
+            query,
+            workdir,
+            model,
+            source: `jpagents|${projectId}|${chatId}`,
+            mode: 'detached',
+            identityPath,
+            resumenMandate: false,  // Los agentes NO usan RESUMEN_MANDATE
+        });
 
-        // ─── OUTPUT FILES: sobreviven al restart del servidor ───
-        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
-        const outputDir = path.join(hermesHome, 'jpagents-output');
-        try { if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true }); } catch {}
-
-        const outFilePath = path.join(outputDir, `${chatId}-out.log`);
-        const errFilePath = path.join(outputDir, `${chatId}-err.log`);
-        const outFd = fs.openSync(outFilePath, 'w');  // 'w' = truncar, no acumular runs anteriores
-        const errFd = fs.openSync(errFilePath, 'w');
-
-        const taskMarker = `\n=== TASK START: ${new Date().toISOString()} ===\n`;
-        fs.writeSync(outFd, taskMarker);
-
-        // ─── SPAWN: detached + file descriptors = sobrevive al restart ───
-        // stdin en pipe para poder responder preguntas de Hermes (clarify)
-        let proc;
-        try {
-            proc = spawn(hermesPath, args, {
-                cwd: workdir,
-                detached: true,
-                stdio: ['pipe', outFd, errFd],
-                windowsHide: true,
-                env: { ...process.env, HERMES_WORKDIR: workdir, HERMES_JPAGENTS: '1' }
-            });
-        } catch (spawnErr) {
-            console.error(`[HERMES-BRIDGE] ❌ spawn falló para ${instanceKey}:`, spawnErr.message);
-            // Cerrar file descriptors para no acumular
-            try { fs.closeSync(outFd); } catch {}
-            try { fs.closeSync(errFd); } catch {}
-            return { stdout: '', stderr: `Error al iniciar Hermes: ${spawnErr.message}`, exitCode: -1 };
+        const { proc, outputFiles } = result;
+        if (!proc) {
+            return { stdout: '', stderr: result.stderr || 'Error al spawn Hermes', exitCode: -1 };
         }
-        proc.unref();
 
-        // ─── PID MAP: archivo compartido que sobrevive al restart ───
-        try {
-            const pidMapPath = path.join(hermesHome, 'jpagents-identity', 'pid-map.json');
-            let pidMap = {};
-            try { pidMap = JSON.parse(fs.readFileSync(pidMapPath, 'utf-8')); } catch {}
-            pidMap[String(proc.pid)] = { projectId, chatId, startedAt: new Date().toISOString() };
-            fs.writeFileSync(pidMapPath, JSON.stringify(pidMap, null, 2));
-        } catch {}
+        const outFilePath = outputFiles.outFile;
+        const errFilePath = outputFiles.errFile;
 
+        // ─── Vincular proc + file paths a la instancia ───
         const instance = this.instances.get(instanceKey);
         if (instance) {
             instance.proc = proc;
@@ -402,7 +207,6 @@ class HermesBridge extends EventEmitter {
                         if (line.trim() && !finalized) {
                             const trimmed = line.trim();
                             this._broadcastLog(instanceKey, projectId, 'progress', trimmed + '\n');
-
                             // ─── AUTO-RESPONDER preguntas de Hermes (clarify) ───
                             if (
                                 trimmed.includes('❓') ||
@@ -414,9 +218,7 @@ class HermesBridge extends EventEmitter {
                                 try {
                                     proc.stdin.write('yes\n');
                                     console.log(`[HERMES-BRIDGE] 📝 Auto-respuesta a clarify: "yes"`);
-                                } catch (stdinErr) {
-                                    // stdin puede estar cerrado si Hermes no esperaba input
-                                }
+                                } catch (stdinErr) {}
                             }
                         }
                     }
@@ -425,11 +227,6 @@ class HermesBridge extends EventEmitter {
         }, 500);
 
         // ─── ESPERAR a que Hermes termine ───
-        // BUGFIX CRÍTICO: Antes se usaba tasklist /FI "PID eq X" para detectar fin,
-        // pero en Windows tasklist devuelve exit code 0 incluso para PIDs inexistentes
-        // (solo dice "INFO: No tasks are running"). El check `if (err)` nunca se cumplía
-        // y la promesa quedaba colgada hasta el timeout de 10 minutos.
-        // Ahora usamos el evento 'exit' del child process, que es confiable.
         return new Promise((resolve) => {
             proc.on('exit', (code, signal) => {
                 if (finalized) return;
