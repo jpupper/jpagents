@@ -132,14 +132,6 @@
                 </div>
               </div>
 
-              <div class="dashboard-console">
-                <h3>🖥️ Consola del Frontend (Logs Recientes)</h3>
-                <div id="frontend-console-output" class="console-output">
-                  Esperando logs...
-                </div>
-                <button class="btn-clear-console" onclick="window.clearConsoleUI()">Limpiar Consola</button>
-              </div>
-
               <div class="dashboard-console mcp-debug">
                 <h3>🔌 MCP Protocol Debugger (Real-time Traffic)</h3>
                 <div id="mcp-debug-output" class="console-output mcp-log">
@@ -268,6 +260,15 @@
               <div id="telegram-messages" class="telegram-messages-container">
                 <div class="telegram-placeholder">Esperando mensajes de Telegram...</div>
               </div>
+            </div>
+
+            <!-- Frontend Console -->
+            <div class="dashboard-console">
+              <h3>🖥️ Consola del Frontend (Logs Recientes)</h3>
+              <div id="frontend-console-output" class="console-output">
+                Esperando logs...
+              </div>
+              <button class="btn-clear-console" onclick="window.clearConsoleUI()">Limpiar Consola</button>
             </div>
           </div>
         </div>

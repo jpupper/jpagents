@@ -7327,7 +7327,7 @@ function setupEventListeners() {
     const agentsRoomBtn = document.getElementById('agents-room-btn');
     if (agentsRoomBtn) {
         agentsRoomBtn.onclick = () => {
-            const url = `${window.location.origin}/static/agents-room.html?_=${Date.now()}`;
+            const url = `${window.location.origin}/agents-room.html?_=${Date.now()}`;
             window.open(url, '_blank');
         };
     }
