@@ -1,49 +1,170 @@
 /**
  * project-ui.js — UI de proyectos: sidebar, tabs, navegación.
  */
-import { chatList, tabsNav, dashboardTabContent, adminTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, chatTabContent, editorTabContent, terminalTabContent } from './dom-refs.js';
-import { state, generateId } from './state.js';
-import { escapeHtml, generateRandomProjectName } from './utils.js';
-import { sanitizeProject } from './session.js';
+import { chatList, tabsNav, chatTabContent, editorTabContent, dashboardTabContent, adminTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, terminalTabContent, matrixTabContent, skillsTabContent, saveFileBtn, terminalInput, currentFilename } from './dom-refs.js';
+import { state, pendingDeletes, generateId } from './state.js';
+import { escapeHtml, isAgentActive } from './utils.js';
+import { sanitizeProject, getActiveProject } from './session.js';
 
+// ─── renderProjectList ───
 export function renderProjectList() {
     if (!chatList) return;
-    if (!state.projects.length) { chatList.innerHTML = '<div class="empty-projects">No hay proyectos aún.</div>'; return; }
-    chatList.innerHTML = state.projects.map(p => {
-        const active = p.id === state.activeProjectId;
-        const n = (p.chats||[]).filter(c => c.isThinking||c.isRunning).length;
-        return `<div class="chat-item ${active?'active':''}" draggable="true" onclick="window.switchProject('${p.id}')" data-id="${p.id}">
-            <div class="chat-item-main"><span class="session-name">${escapeHtml(p.name)}</span>
-            <span class="chat-item-actions">${n ? `<span class="agent-badge" style="position:static;display:inline-flex;margin-right:4px">${n}</span>` : ''}
-            <button onclick="event.stopPropagation();window.handleDeleteClick('${p.id}',event)" class="btn-icon-small">🗑️</button></span></div>
-            ${p.folder ? `<div class="chat-folder-path">${escapeHtml(p.folder)}</div>` : ''}</div>`;
+    chatList.innerHTML = state.projects.map((p, idx) => {
+        const isThinking = p.chats && p.chats.some(c => isAgentActive(c));
+        const corruptedClass = p.isCorrupted ? 'corrupted' : '';
+        const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
+        const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
+        const summonedClass = p.isNew ? 'summoned-anim' : '';
+        if (p.isNew) setTimeout(() => { p.isNew = false; }, 3000);
+
+        const isPending = pendingDeletes.has(p.id);
+        const deleteBtnHtml = isPending 
+            ? `<button class="btn-item-action btn-confirm-delete" title="Confirmar borrado" onclick="window.handleDeleteClick('${p.id}', event)">SI</button>
+               <button class="btn-item-action btn-cancel-delete" title="Cancelar" onclick="window.cancelDelete('${p.id}', event)">NO</button>`
+            : `<button class="btn-item-action btn-delete" title="Eliminar proyecto" onclick="window.handleDeleteClick('${p.id}', event)">🗑️</button>`;
+
+        return `
+            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
+                 data-id="${p.id}" 
+                 data-idx="${idx}"
+                 title="${corruptedTitle}"
+                 draggable="true"
+                 ondragstart="window.onProjectDragStart(event, '${p.id}')"
+                 ondragend="window.onProjectDragEnd(event)"
+                 ondragover="window.onProjectDragOver(event)"
+                 ondragleave="window.onProjectDragLeave(event)"
+                 ondrop="window.onProjectDrop(event, '${p.id}')"
+                 onclick="window.switchProject('${p.id}', event)">
+                <span class="drag-grip" title="Arrastrar para reordenar">⠿</span>
+                <div class="chat-item-main">
+                    <div class="name-row">
+                        <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
+                        ${corruptedBadge}
+                    </div>
+                    <div class="dot ${isThinking ? 'busy' : ''} ${p.isCorrupted ? 'error' : ''}"></div>
+                </div>
+                <div class="chat-item-actions">
+                    ${deleteBtnHtml}
+                </div>
+            </div>
+        `;
     }).join('');
+
+    // Editable session names
+    document.querySelectorAll('.session-name').forEach(name => {
+        name.onblur = () => {
+            const project = state.projects.find(p => p.id === name.dataset.id);
+            if (project) {
+                project.name = name.textContent.trim() || 'Proyecto sin nombre';
+            }
+            window.saveData();
+            if (state.activeProjectId === name.dataset.id) {
+                const dashboardName = document.getElementById('dashboard-project-name');
+                if (dashboardName) dashboardName.textContent = project?.name;
+            }
+        };
+        name.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); name.blur(); }
+        };
+    });
 }
 
+// ─── renderTabs ───
 export function renderTabs() {
-    if (!tabsNav) return;
-    const p = window.getActiveProject?.();
-    if (!p) { tabsNav.innerHTML = '<div class="no-tabs">Seleccioná un proyecto</div>'; return; }
-    const chats = p.chats || [];
-    tabsNav.innerHTML = chats.map(c => {
-        const a = c.id === p.activeTabId;
-        return `<div class="tab ${a?'active':''} ${c.isThinking?'thinking':''}" onclick="window.switchTab('${c.id}')" draggable="true" data-id="${c.id}">
-            <span class="tab-name">${escapeHtml(c.name)}${c.isThinking?' 💭':''}</span>
-            <span class="tab-close" onclick="event.stopPropagation();window.deleteChat('${c.id}')">✕</span></div>`;
-    }).join('') + `<div class="tab add-tab" onclick="window.addChat()">➕</div>`;
-    if (chatTabContent) chatTabContent.style.display = p.activeTabId && chats.some(c => c.id === p.activeTabId) ? '' : 'none';
-    if (editorTabContent) editorTabContent.style.display = p.activeTabId === 'editor' ? '' : 'none';
-    if (terminalTabContent) terminalTabContent.style.display = p.activeTabId === 'terminal' ? '' : 'none';
-}
+    const project = getActiveProject();
 
-export function updateViewVisibility() {
-    const pid = state.activeProjectId;
-    const p = window.getActiveProject?.();
-    const isAdmin = pid === 'admin' || (p?.activeTabId === 'admin');
-    if (dashboardTabContent) dashboardTabContent.classList.toggle('hidden', !pid || isAdmin || pid === 'matrix');
-    if (adminTabContent) adminTabContent.classList.toggle('hidden', !isAdmin);
-    if (dashboardProjectName) dashboardProjectName.textContent = isAdmin ? '📊 Monitor de Agentes' : (p?.name || 'Proyecto');
-    if (dashboardProjectPath) dashboardProjectPath.textContent = isAdmin ? 'Centro de control' : (p?.folder || 'Sin carpeta seleccionada');
-    if (statChats) statChats.textContent = state.projects.reduce((s, pp) => s + (pp.chats||[]).filter(c => c.isThinking||c.isRunning).length, 0);
-    if (statFiles) statFiles.textContent = state.projects.reduce((s, pp) => s + (pp.openFiles||[]).length, 0);
+    if (!project) {
+        if (state.activeProjectId === 'admin') {
+            tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
+        } else {
+            tabsNav.innerHTML = '';
+        }
+        return;
+    }
+
+    let tabsHtml = '';
+
+    // 1. New Chat Button first
+    tabsHtml += `<div class="tab add-tab" title="Nuevo Agente" onclick="window.addChat()">+</div>`;
+
+    // 2. Chats Tabs
+    const chats = project.chats || [];
+    chats.forEach((chat, idx) => {
+        const summonedClass = chat.isNew ? 'summoned-anim' : '';
+        if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
+
+        tabsHtml += `
+            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" 
+                 data-tab-id="${chat.id}"
+                 data-tab-type="chat"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${chat.id}', 'chat')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
+                 onclick="window.switchTab('${chat.id}')">
+                <span>🤖 ${escapeHtml(chat.name)}</span>
+                <div class="dot ${isAgentActive(chat) ? 'busy' : ''}"></div>
+                <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">✕</span>
+            </div>
+        `;
+    });
+
+    // 3. File Tabs
+    const openFiles = project.openFiles || [];
+    openFiles.forEach((file, idx) => {
+        const sanitizedPath = file.path.replace(/\\\\/g, '/');
+        tabsHtml += `
+            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
+                 data-tab-id="${sanitizedPath}"
+                 data-tab-type="file"
+                 data-tab-idx="${idx}"
+                 draggable="true"
+                 ondragstart="window.onTabDragStart(event, '${sanitizedPath}', 'file')"
+                 ondragend="window.onTabDragEnd(event)"
+                 ondragover="window.onTabDragOver(event)"
+                 ondragleave="window.onTabDragLeave(event)"
+                 ondrop="window.onTabDrop(event, '${sanitizedPath}', 'file')"
+                 onclick="window.switchTab('${sanitizedPath}')">
+                <span>📄 ${file.name}</span>
+                <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">✕</span>
+            </div>
+        `;
+    });
+
+    // 4. Terminal Tab
+    tabsHtml += `
+        <div class="tab terminal-tab ${project.activeTabId === 'terminal' ? 'active' : ''}" onclick="window.switchTab('terminal')">
+            <span>🖥️ Terminal</span>
+        </div>
+    `;
+
+    // 5. Hermes Tab
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
+        tabsHtml += `
+            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
+                <span>⚡ Hermes</span>
+            </div>
+        `;
+    }
+
+    // 6. Matrix Tab
+    tabsHtml += `
+        <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
+            <span>🕸️ Matrix</span>
+        </div>
+    `;
+
+    // 7. GIT Tab
+    tabsHtml += `
+        <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
+            <span>🔀 GIT</span>
+        </div>
+    `;
+
+    tabsNav.innerHTML = tabsHtml;
+    window.updateViewVisibility?.();
 }

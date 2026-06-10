@@ -23,7 +23,7 @@ export function createChat(project, opts = {}) {
     const {
         name = 'Agente ' + ((project.chats?.length || 0) + 1),
         useHermes = true,
-        model = project?.model || 'deepseek-v4-pro',
+        model = project?.model || 'deepseek-v4-flash',
         skills,
         mode = 'auto'
     } = opts;

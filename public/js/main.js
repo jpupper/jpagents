@@ -3,6 +3,12 @@ import { initMatrix } from './matrix.js';
 import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachImgBtn, imageInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
 if (editorCode) editorCode.contentEditable = true;
 import { stripAnsi, ansiToHtml, escapeHtml, createChat, isAgentActive, getDiffEngine, countLines, getLanguage, formatProgressLines, highlightGitDiff, formatMarkdown, pathJoin } from './modules/utils.js';
+import { API_BASE, OLLAMA_BASE, sessions, skills, hermes, agentsApi, execute, files, prompts, modelsApi, system, utils as apiUtils } from './modules/api.js';
+import { sanitizeProject, isTabBusy, getActiveProject, getActiveChat, saveChatDraft, restoreChatDraft } from './modules/session.js';
+window.getActiveProject = getActiveProject;
+window.getActiveChat = getActiveChat;
+import { renderProjectList, renderTabs } from './modules/project-ui.js';
+import { renderMessages, showToast, playAgentCompleteSound, playAgentErrorSound, updateThinking } from './modules/chat-ui.js';
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
 let terminalEventSource = null;
@@ -128,43 +134,6 @@ marked.setOptions({
 // Función local definida arriba.
 
 // ── ANSI to HTML Converter ──
-// Convierte secuencias de escape ANSI (colores, bold, etc.) en <span> con estilo CSS.
-// Soporta: colores 30-37, 90-97 (fg), 40-47, 100-107 (bg), bold(1), dim(2), italic(3), underline(4)
-
-const API_BASE = (() => {
-    const host = window.location.hostname;
-    const port = 4699; // Backend siempre en 4699
-    return `http://${host}:${port}/api`;
-})();
-window.API_BASE = API_BASE;
-
-// ─── API Helpers ───
-// Elimina ~200 líneas de fetch repetidos en todo el código
-const apiGet = async (path, options = {}) => {
-    const res = await fetch(`${API_BASE}${path}`, {
-        headers: options.headers || {},
-        ...options.fetchOptions
-    });
-    if (!res.ok && !options.silent) console.warn(`[API] GET ${path} → ${res.status}`);
-    return options.raw ? res : res.json().catch(() => null);
-};
-const apiPost = async (path, body = {}, options = {}) => {
-    const res = await fetch(`${API_BASE}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...options.headers },
-        body: JSON.stringify(body),
-        ...options.fetchOptions
-    });
-    if (!res.ok && !options.silent) console.warn(`[API] POST ${path} → ${res.status}`);
-    return options.raw ? res : res.json().catch(() => null);
-};
-const apiDelete = async (path, options = {}) => {
-    const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...options.fetchOptions });
-    if (!res.ok && !options.silent) console.warn(`[API] DELETE ${path} → ${res.status}`);
-    return options.raw ? res : res.json().catch(() => null);
-};
-
-const OLLAMA_BASE = 'http://localhost:11434/api'; // Ollama solo corre localmente
 
 // PROMPTS MANAGEMENT
 let promptsCache = {
@@ -958,7 +927,10 @@ async function init() {
                         }
                     } else if (data.event === 'sync:stateUpdated') {
                         console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
-                        if (isTabBusy()) {
+                        // ─── BUGFIX: Si hay un delete en curso, no recargar estado ───
+                        if (state._isDeletingProjectIds && state._isDeletingProjectIds.size > 0) {
+                            console.log('[DELETE] ⏭️ sync:stateUpdated ignorado durante operación de borrado');
+                        } else if (isTabBusy()) {
                             console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
                         } else {
                             console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
@@ -1202,10 +1174,24 @@ async function loadData(shouldScan = true) {
         const res = await fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
 
+        // ─── BUGFIX: No restaurar proyectos que están siendo eliminados ───
+        // Si hay un window.deleteProject en curso, state._isDeletingProjectIds contiene
+        // los IDs que NO deben restaurarse desde el servidor (evita race condition WS vs delete)
+        const _skipDeleteIds = state._isDeletingProjectIds;
+        const _filterDeleting = (p) => {
+            if (_skipDeleteIds && _skipDeleteIds.size > 0) {
+                if (_skipDeleteIds.has(p.id || p.projectId)) {
+                    console.log(`[DELETE] ⏭️ loadData skipping deleted project: ${p.id || p.projectId}`);
+                    return false;
+                }
+            }
+            return true;
+        };
+
         if (Array.isArray(data)) {
-            state.projects = data.map(sanitizeProject);
+            state.projects = data.map(sanitizeProject).filter(_filterDeleting);
         } else if (data && typeof data === 'object') {
-            state.projects = (data.projects || []).map(sanitizeProject);
+            state.projects = (data.projects || []).map(sanitizeProject).filter(_filterDeleting);
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
             state.namingPrompt = data.namingPrompt || DEFAULT_NAMING_PROMPT;
             state.secondAgentConfig = data.secondAgentConfig || {
@@ -1231,8 +1217,8 @@ async function loadData(shouldScan = true) {
             state.openrouterApiKey = data.openrouterApiKey || '';
             state.customApiBase = data.customApiBase || '';
             state.deepseekThinking = data.deepseekThinking !== undefined ? data.deepseekThinking : true;
-            state.selectedModel = data.selectedModel || '';
-            state.selectedAdminModel = data.selectedAdminModel || '';
+            state.selectedModel = data.selectedModel || 'deepseek-v4-flash';
+            state.selectedAdminModel = data.selectedAdminModel || 'deepseek-v4-flash';
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -1542,36 +1528,6 @@ function setupOpenFolderExplorer() {
 
 
 
-function sanitizeProject(p) {
-    const id = p.id || generateId();
-    return {
-        id: id,
-        name: p.name || 'Proyecto sin nombre',
-        folder: p.folder || '',
-        model: p.model || '', // Preserve project model
-        chats: Array.isArray(p.chats) ? p.chats.map(c => ({
-            ...c,
-            mode: c.mode || 'auto',
-            lastProgress: c.lastProgress || Date.now(),
-            isStopped: false,
-            validationRetries: 0,
-            model: c.model || p.model || '', // Agent model
-            skills: Array.isArray(c.skills) ? c.skills : [] // Agent skills
-        })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [] }
-        ],
-        openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
-        sessionChanges: p.sessionChanges || [],
-        activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
-        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
-        projectPrompt: p.projectPrompt || '',
-        skills: Array.isArray(p.skills) ? p.skills : [], // Project skills
-        isCorrupted: p.isCorrupted || false,
-        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
-    };
-}
-
-
 async function saveData() {
     console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2]);
     if (!amIMaster) {
@@ -1659,15 +1615,6 @@ function claimMaster() {
 window.addEventListener('mousedown', claimMaster);
 window.addEventListener('keydown', claimMaster);
 window.addEventListener('touchstart', claimMaster);
-
-function isTabBusy() {
-    if (isSaving) return true;
-    if (state.adminIsThinking) return true;
-    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => isAgentActive(c)))) {
-        return true;
-    }
-    return false;
-}
 
 function syncUI() {
     const project = getActiveProject();
@@ -2343,58 +2290,6 @@ async function checkAllProjectsHealth() {
     renderProjectList();
 }
 
-function getActiveProject() {
-    let p = state.projects.find(p => p.id === state.activeProjectId);
-    if (!p && state.projects.length > 0) {
-        state.activeProjectId = state.projects[0].id;
-        p = state.projects[0];
-    }
-    return p;
-}
-window.getActiveProject = getActiveProject;
-function getActiveChat() {
-    const p = getActiveProject();
-    if (!p || !Array.isArray(p.chats)) return null;
-    const chat = p.chats.find(c => c.id === p.activeTabId);
-    if (chat) return chat;
-    // If not a chat tab, return the first one as fallback for messaging context
-    return p.chats[0];
-}
-
-// ─── Draft Persistence: guarda el texto del input en el chat activo ───
-// SOLO guarda si el activeTabId actual realmente es un chat (no fallback de getActiveChat)
-function saveChatDraft() {
-    const p = getActiveProject();
-    if (!p || !Array.isArray(p.chats)) return;
-    // Verificar que el tab activo realmente sea un chat (no terminal/hermes/git/etc)
-    const isCurrentlyOnChat = p.chats.some(c => c.id === p.activeTabId);
-    if (!isCurrentlyOnChat) return;
-    const chat = p.chats.find(c => c.id === p.activeTabId);
-    if (chat) {
-        // Siempre guardar, incluso strings vacíos, para poder "borrar" drafts
-        if (chatInput.value) {
-            chat.draftInput = chatInput.value;
-        } else {
-            delete chat.draftInput; // Si el usuario borró todo, eliminar el draft
-        }
-    }
-}
-
-// ─── Draft Persistence: restaura el texto del input desde el chat activo ───
-// SOLO restaura si el activeTabId realmente es un chat
-function restoreChatDraft() {
-    const p = getActiveProject();
-    const isOnChat = p && Array.isArray(p.chats) && p.chats.some(c => c.id === p.activeTabId);
-    if (isOnChat) {
-        const chat = p.chats.find(c => c.id === p.activeTabId);
-        chatInput.value = (chat && chat.draftInput) ? chat.draftInput : '';
-    } else {
-        chatInput.value = '';
-    }
-    // Disparar evento input para que los handlers de slash/autocomplete se actualicen
-    chatInput.dispatchEvent(new Event('input'));
-}
-
 async function fetchModels() {
     try {
         const res = await fetchWithLog(`${API_BASE}/models`);
@@ -2412,8 +2307,8 @@ async function fetchModels() {
 
 function renderModelSelects() {
     const cloudModels = [
-        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro ✨', type: 'cloud', provider: 'deepseek' },
         { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash ⚡', type: 'cloud', provider: 'deepseek' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro ✨', type: 'cloud', provider: 'deepseek' },
         { id: 'deepseek-chat', name: 'DeepSeek Chat (V3) ☁️', type: 'cloud', provider: 'deepseek' },
         { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner (R1) ☁️', type: 'cloud', provider: 'deepseek' },
         { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet 🧠', type: 'cloud', provider: 'openrouter' },
@@ -2520,178 +2415,7 @@ async function checkSecondAgentHealth() {
 
 // Imported Chat Summary (Chat History) Functions
 
-function renderProjectList() {
-    chatList.innerHTML = state.projects.map((p, idx) => {
-        const isThinking = p.chats && p.chats.some(c => isAgentActive(c));
-        const corruptedClass = p.isCorrupted ? 'corrupted' : '';
-        const corruptedTitle = p.isCorrupted ? 'Carpeta no encontrada o inaccesible' : '';
-        const corruptedBadge = p.isCorrupted ? '<span class="corrupted-badge">CORRUPTO</span>' : '';
-        const summonedClass = p.isNew ? 'summoned-anim' : '';
-        if (p.isNew) setTimeout(() => { p.isNew = false; }, 3000); // Clear after animation
-
-        const isPending = pendingDeletes.has(p.id);
-        const deleteBtnHtml = isPending 
-            ? `<button class="btn-item-action btn-confirm-delete" title="Confirmar borrado" onclick="window.handleDeleteClick('${p.id}', event)">SI</button>
-               <button class="btn-item-action btn-cancel-delete" title="Cancelar" onclick="window.cancelDelete('${p.id}', event)">NO</button>`
-            : `<button class="btn-item-action btn-delete" title="Eliminar proyecto" onclick="window.handleDeleteClick('${p.id}', event)">🗑️</button>`;
-
-        return `
-            <div class="chat-item ${p.id === state.activeProjectId ? 'active' : ''} ${corruptedClass} ${summonedClass}" 
-                 data-id="${p.id}" 
-                 data-idx="${idx}"
-                 title="${corruptedTitle}"
-                 draggable="true"
-                 ondragstart="window.onProjectDragStart(event, '${p.id}')"
-                 ondragend="window.onProjectDragEnd(event)"
-                 ondragover="window.onProjectDragOver(event)"
-                 ondragleave="window.onProjectDragLeave(event)"
-                 ondrop="window.onProjectDrop(event, '${p.id}')"
-                 onclick="window.switchProject('${p.id}', event)">
-                <span class="drag-grip" title="Arrastrar para reordenar">⠿</span>
-                <div class="chat-item-main">
-                    <div class="name-row">
-                        <span contenteditable="true" class="session-name" data-id="${p.id}">${p.name}</span>
-                        ${corruptedBadge}
-                    </div>
-                    <div class="dot ${isThinking ? 'busy' : ''} ${p.isCorrupted ? 'error' : ''}"></div>
-                </div>
-                <div class="chat-item-actions">
-                    ${deleteBtnHtml}
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    document.querySelectorAll('.session-name').forEach(name => {
-        name.onblur = () => {
-            const project = state.projects.find(p => p.id === name.dataset.id);
-            if (project) {
-                project.name = name.textContent.trim() || 'Proyecto sin nombre';
-            }
-            saveData();
-            // We don't renderProjectList here to avoid losing focus if user is tabbing, 
-            // but we might need to update the name in the dashboard if it's active.
-            if (state.activeProjectId === name.dataset.id) {
-                const dashboardName = document.getElementById('dashboard-project-name');
-                if (dashboardName) dashboardName.textContent = project.name;
-            }
-        };
-
-        name.onkeydown = (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                name.blur();
-            }
-        };
-    });
-}
-
-function renderTabs() {
-    const project = getActiveProject();
-
-    if (!project) {
-        if (state.activeProjectId === 'admin') {
-            tabsNav.innerHTML = `<div class="tab active">📊 Monitor de Agentes</div>`;
-        } else {
-            tabsNav.innerHTML = '';
-        }
-        return;
-    }
-
-    let tabsHtml = '';
-
-    // 1. New Chat Button first (A la izquierda total)
-    tabsHtml += `<div class="tab add-tab" title="Nuevo Agente" onclick="window.addChat()">+</div>`;
-
-    // 2. Chats Tabs
-    const chats = project.chats || [];
-    chats.forEach((chat, idx) => {
-        const summonedClass = chat.isNew ? 'summoned-anim' : '';
-        if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
-
-        tabsHtml += `
-            <div class="tab chat-tab ${project.activeTabId === chat.id ? 'active' : ''} ${summonedClass}" 
-                 data-tab-id="${chat.id}"
-                 data-tab-type="chat"
-                 data-tab-idx="${idx}"
-                 draggable="true"
-                 ondragstart="window.onTabDragStart(event, '${chat.id}', 'chat')"
-                 ondragend="window.onTabDragEnd(event)"
-                 ondragover="window.onTabDragOver(event)"
-                 ondragleave="window.onTabDragLeave(event)"
-                 ondrop="window.onTabDrop(event, '${chat.id}', 'chat')"
-                 onclick="window.switchTab('${chat.id}')">
-                <span>🤖 ${escapeHtml(chat.name)}</span>
-                <div class="dot ${isAgentActive(chat) ? 'busy' : ''}"></div>
-                <span class="tab-close" onclick="event.stopPropagation(); window.deleteChat('${chat.id}')">✕</span>
-            </div>
-        `;
-    });
-
-    // 3. File Tabs
-    const openFiles = project.openFiles || [];
-    openFiles.forEach((file, idx) => {
-        const sanitizedPath = file.path.replace(/\\/g, '/');
-        tabsHtml += `
-            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
-                 data-tab-id="${sanitizedPath}"
-                 data-tab-type="file"
-                 data-tab-idx="${idx}"
-                 draggable="true"
-                 ondragstart="window.onTabDragStart(event, '${sanitizedPath}', 'file')"
-                 ondragend="window.onTabDragEnd(event)"
-                 ondragover="window.onTabDragOver(event)"
-                 ondragleave="window.onTabDragLeave(event)"
-                 ondrop="window.onTabDrop(event, '${sanitizedPath}', 'file')"
-                 onclick="window.switchTab('${sanitizedPath}')">
-                <span>📄 ${file.name}</span>
-                <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">✕</span>
-            </div>
-        `;
-    });
-
-    // 4. Terminal Tab
-    tabsHtml += `
-        <div class="tab terminal-tab ${project.activeTabId === 'terminal' ? 'active' : ''}" onclick="window.switchTab('terminal')">
-            <span>🖥️ Terminal</span>
-        </div>
-    `;
-
-    // 5. Hermes Tab (si está visible)
-    const hermesTabNav = document.getElementById('hermes-tab-nav');
-    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
-        tabsHtml += `
-            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
-                <span>⚡ Hermes</span>
-            </div>
-        `;
-    }
-
-    // 6. Matrix Agentic Tree (Global/Project Context)
-    tabsHtml += `
-        <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
-            <span>🕸️ Matrix</span>
-        </div>
-    `;
-
-    // 7. GIT Tab
-    tabsHtml += `
-        <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
-            <span>🔀 GIT</span>
-        </div>
-    `;
-
-    tabsNav.innerHTML = tabsHtml;
-    // We only update visibility if we're not inside a recursive call
-    updateViewVisibility();
-}
-
-window.viewActiveProjectPrompt = () => {
-    const project = getActiveProject();
-    if (project) {
-        window.viewProjectPrompt(project.id);
-    }
-};
+window.updateViewVisibility = updateViewVisibility;
 
 window.viewProjectPrompt = (projectId) => {
     const project = state.projects.find(p => p.id === projectId);
@@ -3324,6 +3048,13 @@ window.deleteProject = async (id) => {
             return;
         }
 
+        // --- BLOQUEAR WS SYNC durante la operación de borrado ---
+        // Evita que loadData() vía WebSocket restore el proyecto
+        // mientras estamos en medio del delete (race condition)
+        if (!state._isDeletingProjectIds) state._isDeletingProjectIds = new Set();
+        state._isDeletingProjectIds.add(id);
+        console.log(`[DELETE] 🔒 Bloqueado WS sync para: ${id}`);
+
         // --- OPTIMISTIC UI: Remove from active list immediately ---
         const projectIndex = state.projects.findIndex(p => p.id === id);
         if (projectIndex !== -1) {
@@ -3383,6 +3114,15 @@ window.deleteProject = async (id) => {
 
     } catch (e) {
         console.error("[DELETE] Error crítico en deleteProject:", e);
+    } finally {
+        // --- DESBLOQUEAR WS SYNC ---
+        if (state._isDeletingProjectIds) {
+            state._isDeletingProjectIds.delete(id);
+            if (state._isDeletingProjectIds.size === 0) {
+                delete state._isDeletingProjectIds;
+            }
+        }
+        console.log(`[DELETE] 🔓 Desbloqueado WS sync para: ${id}`);
     }
 };
 
@@ -3497,6 +3237,12 @@ window.handleDeleteAllClick = (event) => {
 window.deleteAllProjects = async () => {
     adminLog(`⏳ Borrando todos los proyectos (${state.projects.length})...`);
 
+    // ─── Bloquear WS sync para todos los proyectos ───
+    const allIds = state.projects.map(p => p.id).filter(Boolean);
+    if (!state._isDeletingProjectIds) state._isDeletingProjectIds = new Set();
+    for (const id of allIds) state._isDeletingProjectIds.add(id);
+    console.log(`[DELETE] 🔒 Bloqueados ${allIds.length} proyectos de WS sync`);
+
     // Archive each project
     for (const project of state.projects) {
         try {
@@ -3516,6 +3262,9 @@ window.deleteAllProjects = async () => {
     renderProjectList();
     renderTabs();
     await saveData();
+    // Desbloquear WS sync
+    delete state._isDeletingProjectIds;
+    console.log('[DELETE] 🔓 Desbloqueados todos proyectos de WS sync');
     adminLog(`🗑️ Todos los proyectos han sido eliminados del panel principal.`);
 };
 
@@ -3533,115 +3282,6 @@ window.clearAllArchivedProjects = async () => {
         console.error("Error clearing all history:", e);
     }
 };
-
-function renderMessages(shouldRenderLayout = false) {
-    const chat = getActiveChat();
-    if (!chat) return;
-
-    // Sync agent-specific model selector
-    const agentModelSelect = document.getElementById('agent-model-select');
-    if (agentModelSelect) {
-        agentModelSelect.value = chat.model || "";
-    }
-
-    let thinkingHtml = '';
-    if (chat.isThinking) {
-        const status = chat.thinkingStatus || "El agente está pensando...";
-        const subtext = chat.thinkingSubtext || "Procesando...";
-        thinkingHtml = `
-            <div class="message agent thinking">
-                <div class="thinking-bubble-content">
-                    <div class="spinner"></div>
-                    <div class="thinking-text-wrapper">
-                        <div class="thinking-status">${status}</div>
-                        <div class="thinking-subtext">${subtext}</div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    if (shouldRenderLayout) {
-        renderProjectList();
-        renderTabs();
-    }
-
-    if (chat.messages.length === 0) {
-        chatMessages.innerHTML = `<div class="welcome-screen"><h2>Hilo de contexto limpio</h2><p>Este agente está listo para recibir instrucciones.</p></div>`;
-        return;
-    }
-
-    chatMessages.innerHTML = '';
-    chat.messages.forEach(m => {
-        // Saltar mensajes de progreso ya finalizados — se muestran minimizados
-        if (m.isProgress && m.finished && m._hidden) return;
-
-        const div = document.createElement('div');
-        div.className = `message ${m.role}`;
-
-        let imageHtml = '';
-        if (m.images && m.images.length > 0) {
-            imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
-        }
-
-        // Si es un mensaje de progreso de Hermes (activo o finalizado)
-        if (m.isProgress) {
-            div.id = m.id;
-            const isMinimized = m.minimized === true;
-            const isFinished = m.finished === true;
-            const progressLines = m.content.split('\n').filter(l => l.trim());
-            const summary = progressLines[0] || '⚡ Procesando...';
-            // Si está finalizado, buscar la línea de "✅ Tarea completada" o error
-            const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
-            const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
-            const displaySummary = errorLine || doneLine || summary;
-            const detailContent = progressLines.slice(1).join('\n');
-            const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
-            div.className = `message system hermes-progress ${stateClass}`;
-            div.innerHTML = `
-                <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="toggleProgress(this)">
-                    <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
-                    <span class="progress-summary">${escapeHtml(displaySummary)}</span>
-                </div>
-                <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
-                    <pre>${formatProgressLines(detailContent)}</pre>
-                </div>
-            `;
-        } else {
-            div.innerHTML = imageHtml + formatMarkdown(m.content);
-        }
-
-        // Si hay cambios de archivo y es assistant
-        if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
-            const changesDiv = document.createElement('div');
-            changesDiv.className = 'file-changes';
-            m.fileChanges.forEach(change => {
-                changesDiv.innerHTML += `<span class="file-change ${change.type}">${change.type === 'add' ? '+' : '-'} ${change.file}</span>`;
-            });
-            div.appendChild(changesDiv);
-        }
-
-        chatMessages.appendChild(div);
-    });
-
-    if (thinkingHtml) {
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = thinkingHtml;
-        if (tempDiv.firstElementChild) {
-            chatMessages.appendChild(tempDiv.firstElementChild);
-        }
-    }
-    
-    // Highlight code blocks
-    if (window.hljs) {
-        chatMessages.querySelectorAll('pre code').forEach((block) => {
-            window.hljs.highlightElement(block);
-        });
-    }
-
-    setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 50);
-
-}
 
 // Función para toggle del progreso de Hermes
 window.toggleProgress = function(el) {
@@ -3667,74 +3307,6 @@ window.toggleActionGroup = (header) => {
         group.classList.toggle('expanded');
     }
 };
-
-// Debouncer para renderizados pesados de layout durante streaming
-let _thinkingLayoutTimer = null;
-const _debounceThinkingLayout = () => {
-    if (_thinkingLayoutTimer) clearTimeout(_thinkingLayoutTimer);
-    _thinkingLayoutTimer = setTimeout(() => {
-        _thinkingLayoutTimer = null;
-        renderProjectList();
-        renderAdminMonitor();
-        renderTabs();
-        updateAgentBadge();
-    }, 200);
-};
-
-function updateThinking(chat, isThinking, status = "", subtext = "") {
-    if (!chat) return;
-    const prevThinking = chat.isThinking;
-    chat.isThinking = isThinking;
-    chat.thinkingStatus = status;
-    chat.thinkingSubtext = subtext;
-
-    if (!isThinking) {
-        chat.isStopped = false; // Reset stop state when finished
-        if (typeof triggerAdminAgentLogic === 'function') {
-            console.log(`[ADMIN REINFORCEMENT] Agent ${chat.name} finished. Re-triggering admin logic...`);
-            triggerAdminAgentLogic();
-        }
-    }
-
-    // Update main chat header if this is the active chat
-    const activeChat = getActiveChat();
-    if (activeChat && activeChat.id === chat.id) {
-        const stopBtn = document.getElementById('stop-btn');
-        const thinkingInd = document.getElementById('chat-thinking-indicator');
-        const statusSpan = document.getElementById('chat-thinking-status');
-
-        if (isThinking) {
-            if (stopBtn) stopBtn.classList.remove('hidden');
-            if (thinkingInd) thinkingInd.classList.remove('hidden');
-            if (statusSpan) statusSpan.textContent = status || "Pensando...";
-        } else {
-            if (stopBtn) stopBtn.classList.add('hidden');
-            if (thinkingInd) thinkingInd.classList.add('hidden');
-        }
-    }
-
-    if (isThinking) {
-        chat.lastProgress = Date.now();
-        // If we are in admin view, refresh it
-        const project = getActiveProject();
-        if (project && project.activeTabId === 'admin') renderAdminMonitor();
-    }
-    renderMessages(false);
-    // Layout updates (sidebar dots, tabs, admin monitor) are debounced to avoid cascade
-    _debounceThinkingLayout();
-
-    // ─── MULTI-TAB SYNC: Persistir y notificar cuando cambia el estado de thinking ───
-    if (prevThinking !== isThinking) {
-        saveData();
-        // Notificar vía BroadcastChannel para sincronización inmediata entre pestañas
-        try {
-            const bc = new BroadcastChannel('jp-agents-sync');
-            bc.postMessage({ type: 'thinking-changed', chatId: chat.id, isThinking, timestamp: Date.now() });
-            bc.close();
-        } catch(e) {}
-    }
-}
-
 
 async function sendMessage() {
     const content = chatInput.value.trim();
@@ -3780,79 +3352,6 @@ async function sendMessage() {
         bc.close();
     } catch(e) {}
 }
-
-// ─── Toast / Notification System ───
-function showToast(message, type = 'info', duration = 4000) {
-    const existing = document.querySelector('.toast-notification');
-    if (existing) existing.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = `toast-notification toast-${type}`;
-    
-    const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
-    toast.innerHTML = `<span class="toast-icon">${icons[type] || 'ℹ️'}</span><span class="toast-text">${escapeHtml(message)}</span>`;
-    
-    document.body.appendChild(toast);
-    
-    // Animate in
-    requestAnimationFrame(() => toast.classList.add('show'));
-    
-    setTimeout(() => {
-        toast.classList.remove('show');
-        toast.classList.add('hide');
-        setTimeout(() => toast.remove(), 300);
-    }, duration);
-}
-window.showToast = showToast;
-
-// ─── Notification Sounds (Web Audio API) ───
-let _audioCtx = null;
-function _getAudioCtx() {
-    if (!_audioCtx) {
-        try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
-    }
-    return _audioCtx;
-}
-
-function playAgentCompleteSound() {
-    const ctx = _getAudioCtx();
-    if (!ctx) return;
-    // Pleasant ascending chime: C-E-G arpeggio
-    const now = ctx.currentTime;
-    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
-    notes.forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0, now + i * 0.12);
-        gain.gain.linearRampToValueAtTime(0.15, now + i * 0.12 + 0.05);
-        gain.gain.linearRampToValueAtTime(0, now + i * 0.12 + 0.35);
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.start(now + i * 0.12); osc.stop(now + i * 0.12 + 0.35);
-    });
-}
-
-function playAgentErrorSound() {
-    const ctx = _getAudioCtx();
-    if (!ctx) return;
-    // Harsh descending buzz: two dissonant tones
-    const now = ctx.currentTime;
-    const notes = [440, 370, 311]; // A4, F#4, Eb4 — tense descending
-    notes.forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0, now + i * 0.1);
-        gain.gain.linearRampToValueAtTime(0.1, now + i * 0.1 + 0.03);
-        gain.gain.linearRampToValueAtTime(0, now + i * 0.1 + 0.3);
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.start(now + i * 0.1); osc.stop(now + i * 0.1 + 0.3);
-    });
-}
-window.playAgentCompleteSound = playAgentCompleteSound;
-window.playAgentErrorSound = playAgentErrorSound;
 
 // ─── improvePrompt delegado a improveprompt.js ───
 async function improvePrompt(targetElementId, e) {

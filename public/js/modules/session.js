@@ -4,89 +4,96 @@
  */
 import { state, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId } from './state.js';
 import { sessions as api } from './api.js';
+import { chatInput } from './dom-refs.js';
 
 // ─── Sanitize Project ───
 export function sanitizeProject(p) {
     const id = p.id || generateId();
     return {
-        id,
-        name: p.name || 'Nuevo Proyecto',
+        id: id,
+        name: p.name || 'Proyecto sin nombre',
         folder: p.folder || '',
+        model: p.model || '',
         chats: Array.isArray(p.chats) ? p.chats.map(c => ({
-            id: c.id || 'chat-' + generateId(),
-            name: c.name || 'Agente 1',
-            messages: Array.isArray(c.messages) ? c.messages : [],
-            isThinking: !!c.isThinking,
-            isRunning: !!c.isRunning,
-            isStreaming: !!c.isStreaming,
-            isStopped: !!c.isStopped,
+            ...c,
             mode: c.mode || 'auto',
             lastProgress: c.lastProgress || Date.now(),
-            model: c.model || '',
-            useHermes: c.useHermes !== false,
-            skills: Array.isArray(c.skills) ? c.skills : [],
-            totalTokens: c.totalTokens || 0,
-            totalInputTokens: c.totalInputTokens || 0,
-            totalOutputTokens: c.totalOutputTokens || 0,
-            totalApiCalls: c.totalApiCalls || 0,
-            _errored: !!c._errored,
-            validationRetries: c.validationRetries || 0,
-            isNew: c.isNew !== false
-        })) : [{ id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [] }],
-        model: p.model || '',
-        skills: Array.isArray(p.skills) ? p.skills : [],
-        prompt: p.prompt || '',
-        activeTabId: p.activeTabId || (Array.isArray(p.chats) && p.chats.length > 0 ? p.chats[0].id : null),
+            isStopped: false,
+            validationRetries: 0,
+            model: c.model || p.model || '',
+            skills: Array.isArray(c.skills) ? c.skills : []
+        })) : [
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [] }
+        ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
-        description: p.description || '',
-        createdAt: p.createdAt || Date.now(),
-        updatedAt: p.updatedAt || Date.now()
+        sessionChanges: p.sessionChanges || [],
+        activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
+        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
+        projectPrompt: p.projectPrompt || '',
+        skills: Array.isArray(p.skills) ? p.skills : [],
+        isCorrupted: p.isCorrupted || false,
+        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
     };
 }
 
 // ─── isTabBusy ───
 export function isTabBusy() {
-    if (state.__isSaving) return true;
     if (state.adminIsThinking) return true;
-    if (state.godIsThinking) return true;
-    if (state.hermesRunningInstances && Object.keys(state.hermesRunningInstances).length > 0) return true;
-    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => c.isThinking || c.isRunning))) return true;
+    if (state.projects && state.projects.some(p => p.chats && p.chats.some(c => c.isThinking || c.isRunning))) {
+        return true;
+    }
     return false;
 }
 
 // ─── getActiveProject ───
 export function getActiveProject() {
-    if (!state.activeProjectId) return null;
-    return state.projects.find(p => p.id === state.activeProjectId) || null;
+    let p = state.projects.find(p => p.id === state.activeProjectId);
+    if (!p && state.projects.length > 0) {
+        state.activeProjectId = state.projects[0].id;
+        p = state.projects[0];
+    }
+    return p;
 }
 
 // ─── getActiveChat ───
 export function getActiveChat() {
-    const project = getActiveProject();
-    if (!project) return null;
-    if (!project.activeTabId) return (project.chats || [])[0];
-    return project.chats.find(c => c.id === project.activeTabId) || (project.chats || [])[0];
+    const p = getActiveProject();
+    if (!p || !Array.isArray(p.chats)) return null;
+    const chat = p.chats.find(c => c.id === p.activeTabId);
+    if (chat) return chat;
+    // If not a chat tab, return the first one as fallback for messaging context
+    return p.chats[0];
 }
 
 // ─── saveChatDraft ───
 export function saveChatDraft() {
-    const chat = getActiveChat();
-    if (!chat) return;
-    const input = document.getElementById('chat-input');
-    if (input) {
-        try { sessionStorage.setItem(`chat-draft-${chat.id}`, input.value); } catch {}
+    const p = getActiveProject();
+    if (!p || !Array.isArray(p.chats)) return;
+    // Solo guardar si el tab activo realmente es un chat
+    const isCurrentlyOnChat = p.chats.some(c => c.id === p.activeTabId);
+    if (!isCurrentlyOnChat) return;
+    const chat = p.chats.find(c => c.id === p.activeTabId);
+    if (chat) {
+        if (chatInput.value) {
+            chat.draftInput = chatInput.value;
+        } else {
+            delete chat.draftInput;
+        }
     }
 }
 
 // ─── restoreChatDraft ───
 export function restoreChatDraft() {
-    const chat = getActiveChat();
-    if (!chat) return;
-    const input = document.getElementById('chat-input');
-    if (input) {
-        try {
-            const draft = sessionStorage.getItem(`chat-draft-${chat.id}`);
-            if (draft) input.value = draft;
-        } catch {}
+    const p = getActiveProject();
+    const isOnChat = p && Array.isArray(p.chats) && p.chats.some(c => c.id === p.activeTabId);
+    if (isOnChat) {
+        const chat = p.chats.find(c => c.id === p.activeTabId);
+        chatInput.value = (chat && chat.draftInput) ? chat.draftInput : '';
+    } else {
+        chatInput.value = '';
     }
+    chatInput.dispatchEvent(new Event('input'));
 }
+
+// ─── saveData is NOT extracted yet — remains in main.js ───
+// ─── loadData is NOT extracted yet — remains in main.js ───
