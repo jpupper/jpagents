@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, appendFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import fetch from 'node-fetch';
@@ -27,6 +27,13 @@ import { createSseParser } from './lib/sse-parser.js';
 import { ToolProgressManager } from './lib/tool-progress-formatter.js';
 import { formatMessage, escapeMarkdownV2, stripMarkdownV2 } from './lib/markdown-v2.js';
 import { stripAnsi } from './ansi-utils.js';
+
+// ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
+// Previene crashes cuando stdout/stderr pipe se rompe (ej: concurrently cierra stream)
+const __origConsole = { log: console.log, error: console.error, warn: console.warn };
+console.log = (...args) => { try { __origConsole.log.apply(console, args); } catch (_) { try { process.stderr.write('[EPIPE]\n'); } catch {} } };
+console.error = (...args) => { try { __origConsole.error.apply(console, args); } catch (_) { try { process.stderr.write('[EPIPE]\n'); } catch {} } };
+console.warn = (...args) => { try { __origConsole.warn.apply(console, args); } catch (_) { try { process.stderr.write('[EPIPE]\n'); } catch {} } };
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -933,7 +940,9 @@ setInterval(() => {
     const now = Date.now();
     for (const [chatId, pending] of pendingClarifies) {
         if (now - pending.timestamp > 300000) { // 5 min timeout
-            pending.resolve('(timeout - sin respuesta)');
+            if (typeof pending.resolve === 'function') {
+                pending.resolve('(timeout - sin respuesta)');
+            }
             pendingClarifies.delete(chatId);
         }
     }
@@ -5215,12 +5224,19 @@ function writeCrashLog(source, error) {
         const entry = {
             time: new Date().toISOString(),
             source,
-            message: error?.message || String(error),
+            message: error?.message || String(error || 'Unknown'),
             stack: error?.stack || '',
             pid: process.pid,
-            memory: process.memoryUsage()
+            memory: process.memoryUsage(),
+            uptime: process.uptime()
         };
-        fs.appendFile(crashFile, JSON.stringify(entry) + '\n').catch(() => {});
+        // Usar appendFileSync (sincrono) porque el event loop puede estar comprometido
+        try {
+                        appendFileSync(crashFile, JSON.stringify(entry) + '\n');
+        } catch (_) {
+            // Fallback: si crash.log no se puede escribir, intentar stderr
+            try { process.stderr.write('[CRASH] ' + JSON.stringify(entry) + '\n'); } catch {}
+        }
     } catch (_) {
         // best effort
     }
@@ -5234,13 +5250,70 @@ process.on('warning', (warning) => {
     }
 });
 
+// ─── Graceful Shutdown ───
+// Cierra el server HTTP limpiamente en SIGTERM/SIGINT para evitar conexiones colgadas
+async function gracefulShutdown(signal) {
+    console.log('[SHUTDOWN] Recibido ' + signal + ' \u2014 cerrando servidor graceful...');
+
+    // Cerrar WebSocket server primero
+    if (wss) {
+        try {
+            for (const client of wss.clients) {
+                try { client.close(1001, 'Server shutting down'); } catch {}
+            }
+            wss.close();
+        } catch (_) {}
+    }
+
+    // Cerrar HTTP server
+    if (serverInstance) {
+        try {
+            await new Promise((resolve) => {
+                serverInstance.close(resolve);
+                // Timeout de 5s: si no cierra, forzar
+                setTimeout(() => resolve(), 5000);
+            });
+            console.log('[SHUTDOWN] \u2713 Server HTTP cerrado');
+        } catch (e) {
+            console.warn('[SHUTDOWN] \u26a0\ufe0f Error cerrando server:', e.message);
+        }
+    }
+
+    // Matar procesos hijos conocidos
+    if (pickFolderChild && !pickFolderChild.killed) {
+        try { pickFolderChild.kill(); } catch {}
+    }
+    for (const [_, pd] of activeProcesses) {
+        if (pd.proc && !pd.proc.killed) {
+            try { pd.proc.kill(); } catch {}
+        }
+    }
+
+    // Cerrar Hermes Bridge
+    if (typeof hermesBridge?.destroy === 'function') {
+        try { hermesBridge.destroy(); } catch {}
+    }
+
+    console.log('[SHUTDOWN] \u2713 Shutdown completo');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle common signals that should not crash the process
+process.on('SIGPIPE', () => {
+    // SIGPIPE es normal cuando un pipe se rompe \u2014 no es fatal
+});
+
 const trackedHermesProcesses = new Map(); // pid -> { projectId, chatId, sessionId, workdir }
 
 function startHermesProcessSyncMonitor() {
     console.log('[HERMES-SYNC] Iniciando monitor de procesos de Hermes en segundo plano.');
-    setInterval(async () => {
-        try {
-            // Helper function to query the status directory for a PID and its descendants
+    setInterval(() => {
+        (async () => {
+            try {
+                // Helper function to query the status directory for a PID and its descendants
             const getSessionIdForPid = async (parentPid) => {
                 try {
                     const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
@@ -5491,6 +5564,7 @@ function startHermesProcessSyncMonitor() {
         } catch (e) {
             console.error('[HERMES-SYNC] Error in sync loop:', e.message);
         }
+        })().catch(() => {});
     }, 30000); // Reducido de 5s a 30s — ahora los WS events cubren los cambios en tiempo real
 }
 
