@@ -150,110 +150,85 @@ class HermesBridge extends EventEmitter {
             await fsp.writeFile(identityPath, JSON.stringify(id, null, 2));
         } catch {}
 
-        // ─── Spawn via executor modo detached ───
-        const result = await spawnHermes({
-            query,
-            workdir,
-            model,
-            source: `jpagents|${projectId}|${chatId}`,
-            mode: 'detached',
-            identityPath,
-            resumenMandate: false,  // Los agentes NO usan RESUMEN_MANDATE
-        });
+        // ─── Usar HTTP API del Gateway en vez de spawn ───
+        const { createHermesClient } = await import('./lib/hermes-gateway-client.js');
+        const client = createHermesClient();
+        
+        let accumulatedStdout = '';
+        let accumulatedStderr = '';
 
-        const { proc, outputFiles } = result;
-        if (!proc) {
-            return { stdout: '', stderr: result.stderr || 'Error al spawn Hermes', exitCode: -1 };
-        }
-
-        const outFilePath = outputFiles.outFile;
-        const errFilePath = outputFiles.errFile;
-
-        // ─── Vincular proc + file paths a la instancia ───
+        // Obtener session ID previa (para mantener contexto entre mensajes)
         const instance = this.instances.get(instanceKey);
-        if (instance) {
-            instance.proc = proc;
-            instance._outFile = outFilePath;
-            instance._errFile = errFilePath;
-            instance._outPos = fs.statSync(outFilePath).size;
+        const prevSessionId = instance?._sessionId || undefined;
+
+        // Construir mensajes: system con workdir, luego user query
+        const messages = [];
+        if (workdir) {
+            messages.push({
+                role: 'system',
+                content: `El directorio de trabajo actual del proyecto es: ${workdir}. Si necesitás leer, crear o ejecutar archivos, usá rutas absolutas bajo este directorio.`
+            });
         }
+        messages.push({ role: 'user', content: query });
 
-        // ─── FILE POLLING: live streaming desde los archivos ───
-        let outPos = fs.statSync(outFilePath).size;
-        let errPos = fs.statSync(errFilePath).size;
-        let finalized = false;
-        const pollInterval = setInterval(() => {
-            if (finalized) return;
-            try {
-                const cos = fs.statSync(outFilePath).size;
-                if (cos > outPos) {
-                    const buf = Buffer.alloc(cos - outPos);
-                    const fd = fs.openSync(outFilePath, 'r');
-                    fs.readSync(fd, buf, 0, buf.length, outPos);
-                    fs.closeSync(fd);
-                    outPos = cos;
-                    const text = buf.toString('utf-8');
-                    if (text.trim()) this._broadcastLog(instanceKey, projectId, 'stdout', text);
-                }
-                const ces = fs.statSync(errFilePath).size;
-                if (ces > errPos) {
-                    const buf = Buffer.alloc(ces - errPos);
-                    const fd = fs.openSync(errFilePath, 'r');
-                    fs.readSync(fd, buf, 0, buf.length, errPos);
-                    fs.closeSync(fd);
-                    errPos = ces;
-                    const lines = buf.toString('utf-8').split('\n');
-                    for (const line of lines) {
-                        if (line.trim() && !finalized) {
-                            const trimmed = line.trim();
-                            this._broadcastLog(instanceKey, projectId, 'progress', trimmed + '\n');
-                            // ─── AUTO-RESPONDER preguntas de Hermes (clarify) ───
-                            if (
-                                trimmed.includes('❓') ||
-                                trimmed.includes('Question:') ||
-                                trimmed.includes('Pregunta:') ||
-                                /\[CLARIFY\]|\[clarify\]/.test(trimmed) ||
-                                /Do\s+you\s+(want|need|agree)/i.test(trimmed)
-                            ) {
-                                try {
-                                    proc.stdin.write('yes\n');
-                                    console.log(`[HERMES-BRIDGE] 📝 Auto-respuesta a clarify: "yes"`);
-                                } catch (stdinErr) {}
-                            }
+        try {
+            const result = await client.chat(
+                messages,
+                {
+                    onChunk: (text) => {
+                        accumulatedStdout += text;
+                        // Broadcast igual que el file polling original
+                        if (text.trim()) {
+                            this._broadcastLog(instanceKey, projectId, 'stdout', text);
                         }
-                    }
+                    },
+                    onToolEvent: (toolEvent) => {
+                        const emoji = toolEvent.emoji || '⚡';
+                        const preview = toolEvent.preview || '';
+                        const line = preview
+                            ? `${emoji} ${toolEvent.name}: "${preview.slice(0, 80)}"`
+                            : `${emoji} ${toolEvent.name}...`;
+                        this._broadcastLog(instanceKey, projectId, 'progress', line + '\n');
+                        accumulatedStderr += `Tool call: ${toolEvent.name} with args: ${JSON.stringify(toolEvent)}\n`;
+                    },
+                    onReasoningChunk: (text) => {
+                        if (text.trim()) {
+                            this._broadcastLog(instanceKey, projectId, 'progress', `🤔 ${text.slice(0, 200)}\n`);
+                        }
+                    },
+                    onError: (err) => {
+                        this._broadcastLog(instanceKey, projectId, 'error', `❌ Error: ${err}\n`);
+                    },
+                },
+                {
+                    model: model || 'hermes-agent',
+                    stream: true,
+                    sessionId: prevSessionId,
                 }
-            } catch {}
-        }, 500);
+            );
 
-        // ─── ESPERAR a que Hermes termine ───
-        return new Promise((resolve) => {
-            proc.on('exit', (code, signal) => {
-                if (finalized) return;
-                finalized = true;
-                clearInterval(pollInterval);
-                console.log(`[HERMES-BRIDGE] ✅ Proceso ${instanceKey} terminó (code=${code}, signal=${signal})`);
-                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
-            });
+            // Almacenar session ID en la instancia para próximo mensaje
+            if (result.sessionId && instance) {
+                instance._sessionId = result.sessionId;
+            }
 
-            proc.on('error', (err) => {
-                if (finalized) return;
-                finalized = true;
-                clearInterval(pollInterval);
-                console.error(`[HERMES-BRIDGE] ❌ Error en proceso ${instanceKey}:`, err.message);
-                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
-            });
+            // Broadcast completado
+            this._broadcastLog(instanceKey, projectId, 'stdout',
+                `\n✅ [COMPLETADO] sessionId=${result.sessionId || 'N/A'}`);
 
-            // Timeout de seguridad: 10 minutos
-            setTimeout(() => {
-                if (finalized) return;
-                finalized = true;
-                clearInterval(pollInterval);
-                console.warn(`[HERMES-BRIDGE] ⏱️ Timeout ${instanceKey} (10min)`);
-                try { process.kill(proc.pid); } catch {}
-                this._finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve);
-            }, 600000);
-        });
+            return {
+                stdout: accumulatedStdout || '(sin respuesta)',
+                stderr: accumulatedStderr,
+                exitCode: 0,
+                sessionId: result.sessionId || null,
+                usage: result.usage || null,
+            };
+
+        } catch (err) {
+            console.error(`[HERMES-BRIDGE] ❌ Error en _runHermesQuery ${instanceKey}:`, err.message);
+            this._broadcastLog(instanceKey, projectId, 'error', `❌ Error HTTP: ${err.message}\n`);
+            return { stdout: '', stderr: `Error: ${err.message}`, exitCode: -1 };
+        }
     }
 
     _finalizeHermesQuery(instanceKey, projectId, outFilePath, errFilePath, resolve) {
@@ -541,7 +516,8 @@ class HermesBridge extends EventEmitter {
             }
 
             // ─── Extraer session ID y token usage ───
-            const sessionId = this._extractSessionId(result.stderr, result.stdout);
+            // Con HTTP API, el sessionId viene del gateway
+            const sessionId = result.sessionId || this._extractSessionId(result.stderr, result.stdout);
             let tokenUsage = null;
 
             if (sessionId) {

@@ -71,17 +71,17 @@ export async function safeTelegramCall(fn, fallbackMsg = null) {
 }
 
 // ─── Enviar respuesta larga a Telegram (split en partes) ───
-export async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, MAX_LEN = 3500) {
+export async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, MAX_LEN = 3500, parseMode = '') {
     if (!text) text = '✅ Listo.';
 
     if (text.length <= MAX_LEN) {
         if (thinkingMsg) {
             const edited = await safeTelegramCall(() =>
-                bot.api.editMessageText(chatId, thinkingMsg.message_id, text, { parse_mode: '' })
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, text, { parse_mode: parseMode })
             );
             if (edited !== null) return;
         }
-        await safeTelegramCall(() => ctx.reply(text, { parse_mode: '' }));
+        await safeTelegramCall(() => ctx.reply(text, { parse_mode: parseMode }));
     } else {
         const parts = [];
         let remaining = text;
@@ -96,17 +96,17 @@ export async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, 
         }
         if (thinkingMsg) {
             const edited = await safeTelegramCall(() =>
-                bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: '' })
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: parseMode })
             );
             if (edited === null) {
-                await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: '' }));
+                await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: parseMode }));
             }
         } else {
-            await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: '' }));
+            await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: parseMode }));
         }
         for (let i = 1; i < parts.length; i++) {
             await safeTelegramCall(() =>
-                bot.api.sendMessage(chatId, parts[i], { parse_mode: '' })
+                bot.api.sendMessage(chatId, parts[i], { parse_mode: parseMode })
             );
         }
     }

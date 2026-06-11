@@ -1188,6 +1188,16 @@ async function loadData(shouldScan = true) {
             return true;
         };
 
+        // ─── 🐛 BUGFIX: Preservar terminalLogs runtime ───
+        // loadData() reemplaza state.projects con objetos nuevos del servidor.
+        // terminalLogs es runtime (se llena via SSE) y se pierde al reemplazar.
+        const _oldTerminalLogs = new Map();
+        for (const old of state.projects) {
+            if (Array.isArray(old.terminalLogs) && old.terminalLogs.length > 0) {
+                _oldTerminalLogs.set(old.id, old.terminalLogs);
+            }
+        }
+
         if (Array.isArray(data)) {
             state.projects = data.map(sanitizeProject).filter(_filterDeleting);
         } else if (data && typeof data === 'object') {
@@ -1219,6 +1229,15 @@ async function loadData(shouldScan = true) {
             state.deepseekThinking = data.deepseekThinking !== undefined ? data.deepseekThinking : true;
             state.selectedModel = data.selectedModel || 'deepseek-v4-flash';
             state.selectedAdminModel = data.selectedAdminModel || 'deepseek-v4-flash';
+        }
+
+        // ─── 🐛 BUGFIX: Restaurar terminalLogs runtime perdidos por loadData() ───
+        // Los proyectos nuevos del servidor no tienen terminalLogs (es runtime-only).
+        // Los preservamos antes de reemplazar y los restauramos ahora.
+        for (const p of state.projects) {
+            if (_oldTerminalLogs.has(p.id)) {
+                p.terminalLogs = _oldTerminalLogs.get(p.id);
+            }
         }
 
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
@@ -1323,14 +1342,10 @@ function connectTerminalStream(projectId) {
         terminalEventSource.close();
     }
 
-    const project = state.projects.find(p => p.id === projectId);
-    if (project) {
-        project.terminalLogs = [];
-        if (state.activeProjectId === projectId) {
-            terminalOutput.innerHTML = '';
-        }
-    }
-
+    // ⚠️ IMPORTANTE: No limpiar terminalLogs al conectar stream.
+    // El clear se maneja en runTerminalCommand al presionar Play.
+    // Si se limpia aquí, se pierden los logs al switchear proyectos
+    // porque connectTerminalStream se llama desde updateTerminalStatusUI.
     terminalEventSource = new EventSource(`${API_BASE}/execute/stream/${projectId}`);
 
     terminalEventSource.addEventListener('stdout', (e) => {
@@ -5865,7 +5880,24 @@ function setupEventListeners() {
         { cmd: '/git', desc: 'Estado del repositorio Git', action: 'git', icon: '🔀' },
         { cmd: '/export', desc: 'Exportar conversación actual', action: 'export', icon: '💾' },
         { cmd: '/file', desc: 'Abrir archivo en el editor', action: 'file', icon: '📝' },
-        { cmd: '/skills', desc: 'Abrir panel de skills del proyecto', action: 'skills', icon: '🧩' }
+        { cmd: '/skills', desc: 'Abrir panel de skills del proyecto', action: 'skills', icon: '🧩' },
+        // ─── Hermes Agent commands ───
+        { cmd: '/web', desc: 'Buscar en la web', action: 'hermes_prefix', icon: '🔍', prefix: '[Usá web_search para buscar información actualizada]' },
+        { cmd: '/code', desc: 'Enfocado en código/desarrollo', action: 'hermes_prefix', icon: '💻', prefix: '[Priorizá herramientas de código: terminal, execute_code, read_file, write_file, patch]' },
+        { cmd: '/shell', desc: 'Ejecutar comandos en terminal', action: 'hermes_prefix', icon: '🖥️', prefix: '[Usá terminal para ejecutar comandos]' },
+        { cmd: '/browse', desc: 'Navegar a una URL', action: 'hermes_prefix', icon: '🌐', prefix: '[Usá browser_navigate para abrir URLs]' },
+        { cmd: '/image', desc: 'Generar o analizar imágenes', action: 'hermes_prefix', icon: '🎨', prefix: '[Usá image_generate o vision_analyze para trabajar con imágenes]' },
+        { cmd: '/steer', desc: 'Dar instrucción de fondo sin interrumpir', action: 'hermes_prefix', icon: '🧭', prefix: '[INSTRUCCIÓN DE FONDO — ejecutala sin cambiar lo que estás haciendo]' },
+        { cmd: '/fast', desc: 'Modo rápido (sin razonamiento)', action: 'hermes_prefix', icon: '⚡', prefix: '[Modo rápido — respondé directamente sin análisis extenso]' },
+        { cmd: '/retry', desc: 'Reintentar última respuesta', action: 'hermes_prefix', icon: '🔄', prefix: '[Reintentá dando una respuesta diferente a la anterior]' },
+        { cmd: '/undo', desc: 'Deshacer último intercambio', action: 'undo', icon: '↩️' },
+        { cmd: '/model', desc: 'Cambiar modelo', action: 'model', icon: '🧠' },
+        { cmd: '/debug', desc: 'Activar modo debug', action: 'hermes_prefix', icon: '🐛', prefix: '[Modo debug — mostrá todo el detalle técnico]' },
+        { cmd: '/reasoning', desc: 'Nivel de razonamiento (low/medium/high)', action: 'hermes_prefix', icon: '🤔', prefix: '[Razonamiento detallado — analizá paso a paso]' },
+        { cmd: '/compact', desc: 'Respuesta concisa', action: 'hermes_prefix', icon: '📦', prefix: '[Respuesta compacta — sé breve y directo]' },
+        { cmd: '/compress', desc: 'Comprimir contexto', action: 'hermes_prefix', icon: '🗜️', prefix: '[Comprimí el contexto eliminando detalles innecesarios]' },
+        { cmd: '/voice', desc: 'Alternar modo voz', action: 'hermes_prefix', icon: '🎤', prefix: '[Respondé en formato texto plano]' },
+        { cmd: '/yolo', desc: 'Modo sin confirmación', action: 'hermes_prefix', icon: '🔥', prefix: '[Ejecutá comandos sin pedir confirmación]' },
     ];
 
     function showSlashDropdown(filter = '') {
@@ -6021,6 +6053,36 @@ function setupEventListeners() {
                     showToast('Panel de skills abierto 🧩', 'info');
                 } else {
                     showToast('Panel de skills no disponible', 'warning');
+                }
+                break;
+            case 'hermes_prefix':
+                // Inyectar el prefijo + resto del texto como mensaje normal
+                const cmd = SLASH_COMMANDS.find(c => c.action === 'hermes_prefix' && chatInput.value.startsWith(c.cmd));
+                if (cmd) {
+                    const rest = chatInput.value.slice(cmd.cmd.length).trim();
+                    chatInput.value = `${cmd.prefix}\n\n${rest}`;
+                    setTimeout(() => sendMessage(), 50);
+                    hideSlashDropdown();
+                    return;
+                }
+                break;
+            case 'undo':
+                // Deshacer: eliminar último assistant + user message
+                if (chat && chat.messages.length >= 2) {
+                    chat.messages.pop();
+                    chat.messages.pop();
+                    renderMessages();
+                    saveData();
+                    showToast('Último intercambio deshecho ↩️', 'info');
+                } else {
+                    showToast('No hay mensajes para deshacer', 'warning');
+                }
+                break;
+            case 'model':
+                // Focus en el selector de modelo
+                if (modelSelect) {
+                    modelSelect.focus();
+                    showToast('Seleccioná un modelo ☝️', 'info');
                 }
                 break;
         }
@@ -7247,58 +7309,72 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 const processedText = data.text.replace(/\\n/g, '\n');
                                 // Strip full ANSI (not just SGR) — handle OSC, CSI, etc.
                                 const rawText = processedText.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[\d;]*[A-Za-z@-_]/g, '').replace(/\x1b./g, '');
-                                const lines = rawText.split('\n').filter(l => l.trim());
-                                for (const line of lines) {
-                                    const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-                                    if (clean) {
-                                        // Detectar tipo de línea y formatear sin truncar
-                                        let formatted = '';
-                                        // Check for diff additions/deletions first to preserve diff formatting
-                                        if (clean.startsWith('+')) {
-                                            formatted = line; // Preserve original line with indentation
-                                        } else if (clean.startsWith('-')) {
-                                            formatted = line; // Preserve original line with indentation
-                                        }
-                                        // Tool calls
-                                        else if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
-                                            const detail = clean.replace(/.*(?:tool_call|handle_function_call)[^:]*:\s*/i, '').trim();
-                                            formatted = '🛠️ ' + (detail.length > 120 ? detail.slice(0, 117) + '...' : detail);
-                                        }
-                                        // File reads/writes
-                                        else if (clean.match(/read_file|write_file|patch|search_files|execute_code/) && clean.match(/['"][^'"]+['"]/)) {
-                                            const fileMatch = clean.match(/['"]([^'"]+)['"]/);
-                                            const action = clean.match(/read_file|write_file|patch|search_files|execute_code/)[0];
-                                            const file = fileMatch ? fileMatch[1].split('/').pop().split('\\').pop() : '';
-                                            formatted = (action === 'read_file' ? '📖' : action === 'write_file' ? '📝' : action === 'patch' ? '🔧' : action === 'search_files' ? '🔍' : '⚙️') + ' ' + (file || clean.slice(0, 60));
-                                        }
-                                        // Tool results / status
-                                        else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
-                                            formatted = '✅ ' + clean.slice(0, 150);
-                                        }
-                                        // Thinking/processing steps — handle both [thinking] prefixed and plain
-                                        const thinkingMatch = clean.match(/\[thinking\]\s*(.*)/i);
-                                        const thinkContent = thinkingMatch ? thinkingMatch[1].trim() : null;
-                                        const isThinkingLine = thinkContent && thinkContent.length > 3;
 
-                                        if (isThinkingLine) {
-                                            formatted = '🤔 ' + thinkContent.slice(0, 150);
-                                            // Update thinking-subtext DATA on the chat object (always)
-                                            chat.thinkingSubtext = thinkContent.slice(0, 150);
-                                        } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
-                                            formatted = '🤔 ' + clean.slice(0, 150);
-                                            // Update thinking-subtext DATA on the chat object (always)
-                                            chat.thinkingSubtext = clean.slice(0, 150);
-                                        }
-                                        // Error-like lines
-                                        else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
-                                            formatted = '❌ ' + clean.slice(0, 150);
-                                        }
-                                        // Plain lines — show verbatim (no truncation)
-                                        else {
-                                            formatted = line.slice(0, 200);
-                                        }
-                                        if (formatted) {
-                                            progressChatMsg.content += formatted + '\n';
+                                if (data.type === 'stdout') {
+                                    // Assistant streaming text: SSE deltas arrive as tiny character chunks.
+                                    // Accumulate as continuous text — do NOT split into lines per WebSocket message,
+                                    // or each character/syllable fragment becomes its own <pre> line.
+                                    progressChatMsg.content += rawText;
+                                } else {
+                                    // Progress/status lines: each message is a semantic line (tool call, thinking, etc.)
+                                    const lines = rawText.split('\n').filter(l => l.trim());
+                                    for (const line of lines) {
+                                        const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+                                        if (clean) {
+                                            // Detectar tipo de línea y formatear sin truncar
+                                            let formatted = '';
+                                            // Check for diff additions/deletions first to preserve diff formatting
+                                            if (clean.startsWith('+')) {
+                                                formatted = line; // Preserve original line with indentation
+                                            } else if (clean.startsWith('-')) {
+                                                formatted = line; // Preserve original line with indentation
+                                            }
+                                            // Tool calls
+                                            else if (clean.includes('tool_call') || clean.includes('handle_function_call')) {
+                                                const detail = clean.replace(/.*(?:tool_call|handle_function_call)[^:]*:\s*/i, '').trim();
+                                                formatted = '🛠️ ' + (detail.length > 120 ? detail.slice(0, 117) + '...' : detail);
+                                            }
+                                            // File reads/writes
+                                            else if (clean.match(/read_file|write_file|patch|search_files|execute_code/) && clean.match(/['"][^'"]+['"]/)) {
+                                                const fileMatch = clean.match(/['"]([^'"]+)['"]/);
+                                                const action = clean.match(/read_file|write_file|patch|search_files|execute_code/)[0];
+                                                const file = fileMatch ? fileMatch[1].split('/').pop().split('\\').pop() : '';
+                                                formatted = (action === 'read_file' ? '📖' : action === 'write_file' ? '📝' : action === 'patch' ? '🔧' : action === 'search_files' ? '🔍' : '⚙️') + ' ' + (file || clean.slice(0, 60));
+                                            }
+                                            // Tool results / status
+                                            else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
+                                                formatted = '✅ ' + clean.slice(0, 150);
+                                            }
+                                            // Thinking/processing steps — handle both [thinking] prefixed and plain
+                                            const thinkingMatch = clean.match(/\[thinking\]\s*(.*)/i);
+                                            const thinkContent = thinkingMatch ? thinkingMatch[1].trim() : null;
+                                            const isThinkingLine = thinkContent && thinkContent.length > 3;
+
+                                            if (isThinkingLine) {
+                                                formatted = '🤔 ' + thinkContent.slice(0, 150);
+                                                // Update thinking-subtext DATA on the chat object (always)
+                                                chat.thinkingSubtext = thinkContent.slice(0, 150);
+                                            } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
+                                                formatted = '🤔 ' + clean.slice(0, 150);
+                                                // Update thinking-subtext DATA on the chat object (always)
+                                                chat.thinkingSubtext = clean.slice(0, 150);
+                                            }
+                                            // ANY tool emoji prefix → update thinking-subtext (💻🔍📄✏️🔧 etc.)
+                                            else if (clean.match(/^[💻🔍📄✏️🔧🔎🌐👆⌨️🐍📋❓🧠⏰👁️🎨🔊⚡⚙️📖📝🤔✅❌]/u)) {
+                                                formatted = clean.slice(0, 200);
+                                                chat.thinkingSubtext = clean.replace(/^.[^\w]*/, '').trim().slice(0, 150);
+                                            }
+                                            // Error-like lines
+                                            else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
+                                                formatted = '❌ ' + clean.slice(0, 150);
+                                            }
+                                            // Plain lines — show verbatim (no truncation)
+                                            else {
+                                                formatted = line.slice(0, 200);
+                                            }
+                                            if (formatted) {
+                                                progressChatMsg.content += formatted + '\n';
+                                            }
                                         }
                                     }
                                 }

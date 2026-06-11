@@ -22,6 +22,11 @@ import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger
 import { createChat } from './agent-utils.js';
 import { spawnHermes, findHermesPath } from './hermes-executor.js';
 import hermesBridge from './hermes-bridge.js';
+import { createHermesClient } from './lib/hermes-gateway-client.js';
+import { createSseParser } from './lib/sse-parser.js';
+import { ToolProgressManager } from './lib/tool-progress-formatter.js';
+import { formatMessage, escapeMarkdownV2, stripMarkdownV2 } from './lib/markdown-v2.js';
+import { stripAnsi } from './ansi-utils.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -290,39 +295,99 @@ function telegramBroadcast(event, data = {}) {
 }
 
 /**
- * Llama a Hermes con skill BOTADMIN y devuelve la respuesta.
- * FIX: Trunca history para evitar ENAMETOOLONG en Windows (límite ~32K CLI args).
- * FIX: try-catch en console.error para evitar EPIPE → 500.
+ * callHermesAdmin — Llama a Hermes ADMIN vía API HTTP REST del gateway.
+ * Reemplaza spawnHermes() CLI con HTTP POST /v1/chat/completions.
  */
 async function callHermesAdmin(message, history = []) {
-    return spawnHermes({
-        query: message,
-        workdir: process.cwd(),
-        history,
-        skill: 'botadmin',
-        source: 'jpagents-admin-chat|admin|admin',
-        mode: 'oneshot',
-        timeout: 600000,
-    });
+    const client = createHermesClient();
+    const messages = [
+        { role: 'system', content: RESUMEN_MANDATE },
+        ...(history || []).map(m => ({ role: m.role || 'user', content: m.content })),
+        { role: 'user', content: message },
+    ];
+    try {
+        const result = await client.chat(messages, {}, {
+            model: 'hermes-agent',
+            stream: false,
+        });
+        return { response: result.response, stderr: '', exitCode: 0 };
+    } catch (err) {
+        slog.error(`[HERMES-ADMIN] ❌ Error HTTP:`, err.message);
+        return { response: '', stderr: `Error: ${err.message}`, exitCode: -1 };
+    }
 }
 
 /**
- * Llama a Hermes con streaming de stderr (para mostrar pensamiento en tiempo real en Telegram).
- * onThinking(stderrLine) se llama por cada línea significativa de stderr.
- * onClarify(question, choices) se llama si Hermes intenta usar la herramienta clarify.
- *   Debe retornar una Promise<string> con la respuesta del usuario (o null si no disponible).
+ * callHermesAdminStreaming — Llama a Hermes ADMIN con streaming de tool events.
+ * onThinking(text) se llama por cada tool event o reasoning chunk.
+ * Los tool progress se muestran con emojis y previews formateados.
  */
 async function callHermesAdminStreaming(message, onThinking, history = [], onClarify = null) {
-    return spawnHermes({
-        query: message,
-        workdir: process.cwd(),
-        history,
-        skill: 'botadmin',
-        source: 'jpagents-admin-chat|admin|admin',
-        mode: 'stream',
-        timeout: 600000,
-        streaming: { onThinking, onClarify },
+    const client = createHermesClient();
+    const messages = [
+        { role: 'system', content: RESUMEN_MANDATE },
+        ...(history || []).map(m => ({ role: m.role || 'user', content: m.content })),
+        { role: 'user', content: message },
+    ];
+
+    let accumulatedResponse = '';
+    let accumulatedStderr = '';
+
+    return new Promise((resolve, reject) => {
+        client.chat(messages, {
+            onChunk(text) {
+                accumulatedResponse += text;
+            },
+            onToolEvent(toolEvent) {
+                const emoji = toolEvent.emoji || getToolEmoji(toolEvent.name);
+                const preview = toolEvent.preview || '';
+                const line = preview
+                    ? `${emoji} ${toolEvent.name}: "${preview.slice(0, 80)}"`
+                    : `${emoji} ${toolEvent.name}...`;
+                if (onThinking) onThinking(line);
+                accumulatedStderr += `Tool call: ${toolEvent.name} with args: ${JSON.stringify(toolEvent)}\n`;
+
+                // Detectar clarify tool
+                if (toolEvent.name === 'clarify' && toolEvent.preview && onClarify) {
+                    try {
+                        const args = JSON.parse(toolEvent.preview);
+                        const question = args.question || toolEvent.preview;
+                        const choices = args.choices || [];
+                        onClarify(question, choices).catch(() => {});
+                    } catch {}
+                }
+            },
+            onReasoningChunk(text) {
+                if (onThinking && text.trim()) {
+                    onThinking(`🤔 ${text.slice(0, 150)}`);
+                }
+            },
+            onError(error) {
+                reject(new Error(error));
+            },
+        }, {
+            model: 'hermes-agent',
+            stream: true,
+        }).then(result => {
+            resolve({
+                response: accumulatedResponse || result.response,
+                stderr: accumulatedStderr,
+                exitCode: 0,
+            });
+        }).catch(reject);
     });
+}
+
+function getToolEmoji(toolName) {
+    const emojis = {
+        terminal: '💻', web_search: '🔍', read_file: '📄',
+        write_file: '✏️', patch: '🔧', search_files: '🔎',
+        browser_navigate: '🌐', execute_code: '🐍',
+        delegate_task: '📋', clarify: '❓', memory: '🧠',
+        cronjob: '⏰', vision_analyze: '👁️', image_generate: '🎨',
+        text_to_speech: '🔊',
+    };
+    return emojis[toolName] || '⚡';
 }
 /**
  * Limpia la respuesta de Hermes: quita [thinking], metadatos de sesión,
@@ -602,22 +667,40 @@ function initTelegramBot() {
         slog.log(`[TELEGRAM] 📩 ${userName}: "${userMsg.slice(0, 80)}..."`);
         telegramBroadcast('telegram:incoming', { chatId, from: userName, text: userMsg, messageId: ctx.message.message_id });
 
-        // Mensaje "pensando..."
+        // ─── Tool Progress Manager para este mensaje ───
+        const progressMgr = new ToolProgressManager(
+            // sendFn: enviar mensaje de progreso
+            async (text) => {
+                const msg = await ctx.reply(text, { parse_mode: '' });
+                return { message_id: msg.message_id };
+            },
+            // editFn: editar mensaje de progreso
+            async (messageId, text) => {
+                await bot.api.editMessageText(chatId, messageId, text, { parse_mode: '' });
+            },
+            // deleteFn: eliminar mensaje de progreso
+            async (messageId) => {
+                await bot.api.deleteMessage(chatId, messageId).catch(() => {});
+            },
+            { previewMaxLen: 40 }
+        );
+
         let thinkingMsg = null;
         try { thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...'); } catch {}
         telegramBroadcast('telegram:thinking', { chatId, messageId: thinkingMsg?.message_id });
 
         try {
             const { response, stderr: hermesStderr } = await callHermesAdminStreaming(userMsg, (thinkingText) => {
+                // Tool progress: editar el mensaje de thinking con la tool actual
                 if (thinkingMsg && thinkingText) {
-                    const statusText = `👑 HERMES GOD está pensando...\n\n${thinkingText}`;
+                    const statusText = `👑 HERMES GOD\n\n${thinkingText}`;
                     safeTelegramCall(() =>
                         bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
                     );
                 }
             });
 
-            // ─── Clarify detection ───
+            // ─── Clarify detection (desde el stderr acumulado) ───
             if (hermesStderr && hermesStderr.includes('Tool call: clarify')) {
                 const clarifyMatch = hermesStderr.match(/Tool call: clarify with args:\s*(\{[^}]+\})/);
                 if (clarifyMatch) {
@@ -633,7 +716,7 @@ function initTelegramBot() {
                             pendingClarifies.set(`clarify:${chatId}`, { question, choices, timestamp: Date.now() });
                             safeTelegramCall(() =>
                                 ctx.reply(
-                                    `❓ ${question}\n\n(Elegí una opción — Hermes ya terminó, pero tu respuesta se usará en el próximo mensaje)`,
+                                    `❓ ${question}\n\n(Elegí una opción — tu respuesta se usará en el próximo mensaje)`,
                                     { reply_markup: { inline_keyboard: buttons } }
                                 )
                             );
@@ -649,13 +732,11 @@ function initTelegramBot() {
                 }
             }
 
-            // ─── Extraer resumen estructurado (force RESUMEN) y ejecutar comandos ───
+            // ─── Extraer resumen estructurado y ejecutar comandos ───
             const cleanResponse = ensureResumen(response, userMsg) || '(sin respuesta)';
             let executions = [];
             try {
-                // Pasar source='telegram' y chatId para notificaciones async
                 const execPromise = executeAdminCommands(response, 'telegram', chatId);
-                // Timeout reducido porque @AgentName ya no bloquea
                 const execTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Timeout (60s)')), 60000));
                 executions = await Promise.race([execPromise, execTimeout]);
             } catch (execErr) {
@@ -670,7 +751,7 @@ function initTelegramBot() {
                         if (ex.response) return `  ✅ ${ex.command}: ${ex.target}\n     📝 ${ex.response.slice(0, 500)}`;
                         return `  ✅ ${ex.command}: ${ex.target}`;
                     }
-                    if (ex.status === 'delegated') return `  🤖 ${ex.command}: ${ex.target} — ✅ DELEGADO (recibirás notificación cuando termine)`;
+                    if (ex.status === 'delegated') return `  🤖 ${ex.command}: ${ex.target} — ✅ DELEGADO`;
                     if (ex.status === 'error') return `  ❌ ${ex.command}: ${ex.target} — ${ex.error}`;
                     if (ex.status === 'skipped') return `  ⏭️ ${ex.command}: ${ex.target} — ${ex.reason}`;
                     if (ex.message) return `  ℹ️ ${ex.command}: ${ex.target} — ${ex.message}`;
@@ -679,9 +760,14 @@ function initTelegramBot() {
                 finalResponse += '\n\n⚙️ Comandos ejecutados:\n' + execLines.join('\n');
             }
 
-            // ─── Enviar respuesta a Telegram ───
+            // ─── Limpiar mensaje de thinking ───
+            await progressMgr.cleanup();
+
+            // ─── Enviar respuesta a Telegram con MarkdownV2 ───
             const MAX_LEN = 3500;
-            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, finalResponse, MAX_LEN);
+            const formattedResponse = formatMessage(finalResponse);
+            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, formattedResponse, MAX_LEN, 'MarkdownV2');
+            
             slog.log(`[TELEGRAM] ✅ Respondido (${finalResponse.length} chars), ${executions.length} comandos ejecutados`);
             telegramBroadcast('telegram:outgoing', {
                 chatId, text: finalResponse.slice(0, 500) + (finalResponse.length > 500 ? '...' : ''),
@@ -689,6 +775,7 @@ function initTelegramBot() {
             });
         } catch (err) {
             slog.error(`[TELEGRAM] ❌ Error:`, err.message);
+            await progressMgr.cleanup();
             await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, `❌ Error: ${err.message.slice(0, 500)}`, 3500);
             telegramBroadcast('telegram:error', { chatId, error: err.message });
         }

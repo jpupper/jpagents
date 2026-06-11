@@ -115,7 +115,7 @@ export function renderTabs() {
     // 3. File Tabs
     const openFiles = project.openFiles || [];
     openFiles.forEach((file, idx) => {
-        const sanitizedPath = file.path.replace(/\\\\/g, '/');
+        const sanitizedPath = file.path.replace(/\\/g, '/');
         tabsHtml += `
             <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
                  data-tab-id="${sanitizedPath}"

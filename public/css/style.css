@@ -834,12 +834,14 @@ optgroup {
 }
 .hermes-progress-detail pre {
     margin: 0;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     color: #8b949e;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: break-word;
     font-family: inherit;
     line-height: 1.5;
+    width: 100%;
+    max-width: 100%;
 }
 .hermes-progress-detail pre .tool-line {
     color: #58a6ff;
@@ -1820,19 +1822,24 @@ pre code.hljs {
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
 }
 
 .thinking-stream {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
     margin-top: 4px;
-    line-height: 1.3;
+    line-height: 1.4;
     max-height: 100px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
+    max-width: 100%;
+    width: 100%;
 }
 .thinking-stream div {
     padding: 1px 0;

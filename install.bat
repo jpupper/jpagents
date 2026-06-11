@@ -71,7 +71,7 @@ echo.
 echo  ╔══════════════════════════════════════════════════════════╗
 echo  ║  Para arrancar JP Agents:                               ║
 echo  ║                                                          ║
-echo  ║    run.bat          → Inicia todo (server + frontend)    ║
+echo  ║    run.bat          → Inicia TODO                        ║
 echo  ║                                                          ║
 echo  ║  Acceso rapido:                                         ║
 echo  ║    http://localhost:4699    → JP Agents Dashboard        ║
