@@ -10,7 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logAgentTrace, updateAgentTrace } from "./agent_trace_logger.js";
 import { validateCodeSyntax, validateObjective, validateFilesCreated, validateConsoleLogs } from "./validator_routines.js";
-import { getCollection } from "./db.js";
+import { getCollection } from "../db/db.js";
 import { queryVectorStore } from "./rag_manager.js";
 import * as Diff from 'diff';
 

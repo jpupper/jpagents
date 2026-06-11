@@ -26,22 +26,71 @@ export async function triggerHermesLogic(project, chat, origin = 'user') {
     }
 }
 
+/**
+ * Maneja eventos de estado de agentes Hermes vía WebSocket.
+ * Los eventos WS usan instanceKey="projId:chatId" y status="running|starting|idle|stopped|error|off".
+ * Incluye el bugfix de resync para no overridear isThinking local durante reconexión.
+ */
 export function handleHermesStatus(data) {
-    const { chatId, status, response, error, tokens } = data;
+    const { instanceKey, status, response, error, tokens, resync } = data;
+
+    // Parsear instanceKey: "projectId:chatId"
+    let targetProjId = null;
+    let targetChatId = null;
+    if (instanceKey && instanceKey !== '*') {
+        const parts = instanceKey.split(':');
+        targetProjId = parts[0];
+        targetChatId = parts[1];
+    } else if (data.chatId) {
+        // Fallback para eventos que usen chatId directo
+        targetChatId = data.chatId;
+    }
+    if (!targetChatId) return;
+
     for (const p of state.projects) {
-        const chat = (p.chats||[]).find(c => c.id === chatId);
+        // Match por projectId (o proj- fallback)
+        if (targetProjId && p.id !== targetProjId && p.id !== `proj-${targetProjId}`) continue;
+        const chat = (p.chats || []).find(c => c.id === targetChatId);
         if (!chat) continue;
-        if (status === 'started') { chat.isThinking = true; chat.isRunning = true; chat.isStreaming = true; renderMessages(); }
-        else if (status === 'completed' || status === 'stopped') {
-            chat.isThinking = false; chat.isRunning = false; chat.isStreaming = false;
-            if (response) chat.messages.push({ role: 'assistant', content: response, timestamp: Date.now() });
-            if (tokens) { chat.totalTokens = (chat.totalTokens||0)+(tokens.total||0); chat.totalInputTokens = (chat.totalInputTokens||0)+(tokens.input||0); chat.totalOutputTokens = (chat.totalOutputTokens||0)+(tokens.output||0); chat.totalApiCalls = (chat.totalApiCalls||0)+1; }
-            renderMessages();
-        } else if (status === 'error') {
-            chat.isThinking = false; chat.isRunning = false; chat.isStreaming = false;
-            if (error) chat.messages.push({ role: 'assistant', content: `❌ ${error}`, timestamp: Date.now() });
-            renderMessages();
+
+        const isRunning = status === 'running' || status === 'starting';
+        const isStopped = status === 'stopped' || status === 'idle' || status === 'error' || status === 'off';
+
+        if (isRunning) {
+            chat.isThinking = true;
+            chat.isRunning = true;
+            chat.thinkingStatus = 'Procesando...';
+            chat.thinkingSubtext = resync ? 'Hermes trabajando (resync)' : 'Hermes trabajando';
+            chat.isStreaming = true;
+        } else if (isStopped && chat.isThinking) {
+            // 🐛 BUGFIX: Resync 'idle' NO debe overridear el estado local
+            if (resync) {
+                console.log(`[WS-HERMES] Resync '${status}' ignorado para ${instanceKey} — agente marcado como activo localmente`);
+                return; // No tocar el estado
+            }
+            chat.isThinking = false;
+            chat.isRunning = false;
+            chat.isStreaming = false;
+            if (response) {
+                chat.messages.push({ role: 'assistant', content: response, timestamp: Date.now() });
+            }
+            if (tokens) {
+                chat.totalTokens = (chat.totalTokens || 0) + (tokens.total || 0);
+                chat.totalInputTokens = (chat.totalInputTokens || 0) + (tokens.input || 0);
+                chat.totalOutputTokens = (chat.totalOutputTokens || 0) + (tokens.output || 0);
+                chat.totalApiCalls = (chat.totalApiCalls || 0) + 1;
+            }
+        } else if (isStopped) {
+            chat.isThinking = false;
+            chat.isRunning = false;
+            chat.isStreaming = false;
         }
+
+        if (status === 'error' && error) {
+            chat.messages.push({ role: 'assistant', content: `❌ ${error}`, timestamp: Date.now() });
+        }
+
+        renderMessages();
         break;
     }
 }

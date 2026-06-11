@@ -3,7 +3,7 @@ import { ChatOllama } from "@langchain/ollama";
 import { logAgentTrace } from "./agent_trace_logger.js";
 import fs from 'fs/promises';
 import path from 'path';
-import { getCollection } from './db.js';
+import { getCollection } from '../db/db.js';
 
 
 

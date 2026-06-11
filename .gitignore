@@ -37,3 +37,9 @@ rag_uploads/
 
 # Temp images for Hermes
 temp_images/
+
+# Server-side data (moved from root)
+db/checkpoints.db
+db/checkpoints.db-shm
+db/checkpoints.db-wal
+logs/

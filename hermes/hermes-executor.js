@@ -41,7 +41,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { getToolEmoji } from './tool-emojis.js';
+import { getToolEmoji } from '../shared/tool-emojis.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -214,7 +214,7 @@ let _resumenMandate = null;
 async function getResumenMandateFromShared() {
     if (_resumenMandate) return _resumenMandate;
     try {
-        const shared = await import('./telegram-shared.js');
+        const shared = await import('../shared/telegram-shared.js');
         _resumenMandate = shared.RESUMEN_MANDATE;
     } catch {
         _resumenMandate = getResumenMandate();

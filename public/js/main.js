@@ -1,22 +1,24 @@
-import { state, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
+import { state, syncWs, amIMaster, mySocketId, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
 import { initMatrix } from './matrix.js';
 import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachImgBtn, imageInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
 if (editorCode) editorCode.contentEditable = true;
 import { stripAnsi, ansiToHtml, escapeHtml, createChat, isAgentActive, getDiffEngine, countLines, getLanguage, formatProgressLines, highlightGitDiff, formatMarkdown, pathJoin } from './modules/utils.js';
 import { API_BASE, OLLAMA_BASE, sessions, skills, hermes, agentsApi, execute, files, prompts, modelsApi, system, utils as apiUtils } from './modules/api.js';
 import { sanitizeProject, isTabBusy, getActiveProject, getActiveChat, saveChatDraft, restoreChatDraft } from './modules/session.js';
+import { setupWebSocket, claimMaster } from './modules/events.js';
 window.getActiveProject = getActiveProject;
 window.getActiveChat = getActiveChat;
 import { renderProjectList, renderTabs } from './modules/project-ui.js';
+window.renderTabs = renderTabs;
+window.renderProjectList = renderProjectList;
 import { renderMessages, showToast, playAgentCompleteSound, playAgentErrorSound, updateThinking } from './modules/chat-ui.js';
+import { refreshConsoleUI } from './modules/console-view.js';
+import { addImages, renderImagePreviews, clearImages, handleImageSelection, toBase64 } from './modules/image-upload.js';
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
 let terminalEventSource = null;
 let isSaving = false;
 let savePending = false;
-let amIMaster = false;
-let mySocketId = null;
-let syncWs = null;
 let draggedProjectId = null;
 let draggedTabId = null;
 let draggedTabType = null;
@@ -807,13 +809,13 @@ function applyPanelState() {
     }
 }
 
+window.applyPanelState = applyPanelState;
+
 window.toggleSidebar = function() {
     state.sidebarVisible = !state.sidebarVisible;
     applyPanelState();
     saveData();
 };
-
-;
 
 function initPanelResize() {
     const sidebarHandle = document.getElementById('sidebar-resize-handle');
@@ -887,203 +889,35 @@ async function init() {
     // ─── Auto-transformación
     // (Eliminado: refreshConsoleUI cada 10s — ahora se actualiza vía WS events)
     
-    // WebSocket global para eventos del sistema y sincronización MASTER/SLAVE
-    function connectGlobalWS() {
-        const wsHost = window.location.hostname;
-        const wsPort = 4699;
-        try {
-            const sysWs = new WebSocket(`ws://${wsHost}:${wsPort}/ws/hermes`);
-            syncWs = sysWs;
-            
-            sysWs.onmessage = async (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.event === 'system:restart') {
-                        console.log('[SYS] 🔄 Reinicio del servidor detectado:', data.reason);
-                        refreshConsoleUI();
-                    } else if (data.event === 'sync:connected') {
-                        mySocketId = data.socketId;
-                        console.log(`[WS-SYNC] Conectado al servidor de sincronización. Socket ID: ${mySocketId}`);
-                        // Cargar estado inicial al conectar (solo si no hay agente activo)
-                        if (isTabBusy()) {
-                            console.log('[SYNC] ⏭️ sync:connected — omitiendo loadData porque hay agente activo');
-                        } else {
-                            await loadData(false);
-                            syncUI();
-                            checkSystemHealth();
-                            fetchModels();
-                            // ─── Cargar instancias Hermes iniciales ───
-                            if (window.refreshHermesInstances) {
-                                window.refreshHermesInstances();
-                            }
-                        }
-                    } else if (data.event === 'sync:masterClaimed') {
-                        const wasMaster = amIMaster;
-                        amIMaster = (data.socketId === mySocketId);
-                        console.log(`[SYNC-FLOW] 👑 sync:masterClaimed. socketId = ${data.socketId}, mySocketId = ${mySocketId}, amIMaster = ${amIMaster}`);
-                        if (wasMaster !== amIMaster) {
-                            console.log(`[WS-SYNC] Cambio de rol. ¿Soy MASTER?: ${amIMaster}`);
-                        }
-                    } else if (data.event === 'sync:stateUpdated') {
-                        console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
-                        // ─── BUGFIX: Si hay un delete en curso, no recargar estado ───
-                        if (state._isDeletingProjectIds && state._isDeletingProjectIds.size > 0) {
-                            console.log('[DELETE] ⏭️ sync:stateUpdated ignorado durante operación de borrado');
-                        } else if (isTabBusy()) {
-                            console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
-                        } else {
-                            console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
-                            await loadData(false);
-                            syncUI();
-                        }
-                        // Siempre refrescar badge, consola e instancias Hermes cuando cambia el estado
-                        updateAgentBadge();
-                        refreshConsoleUI();
-                        if (window.refreshHermesInstances) {
-                            window.refreshHermesInstances();
-                        }
-                    } else if (data.event === 'hermes:status' || data.event === 'hermes:agent:started' || data.event === 'hermes:agent:completed' || data.event === 'hermes:agent:stopped') {
-                        // ─── Evento WS: estado de agente Hermes cambió ───
-                        console.log(`[WS-HERMES] Evento ${data.event}${data.resync?' (RESYNC)':''}: ${data.instanceKey} → ${data.status || 'N/A'}`);
 
-                        // BUGFIX: Actualizar chat.isThinking según el estado real del bridge
-                        // El bridge es la FUENTE DE VERDAD. Siempre actualizar isThinking
-                        // sin importar el valor actual (para que resync funcione correctamente).
-                        if (data.instanceKey && data.instanceKey !== '*') {
-                            const [wsProjId, wsChatId] = data.instanceKey.split(':');
-                            if (wsProjId && wsChatId) {
-                                for (const proj of state.projects) {
-                                    if (proj.id === wsProjId || proj.id === `proj-${wsProjId}`) {
-                                        const chat = proj.chats?.find(c => c.id === wsChatId);
-                                        if (chat) {
-                                            const isRunning = data.status === 'running' || data.status === 'starting';
-                                            const isStopped = data.status === 'stopped' || data.status === 'idle' || data.status === 'error' || data.status === 'off';
-                                            if (isRunning) {
-                                                // Siempre marcar como pensando si el bridge dice running
-                                                if (!chat.isThinking) {
-                                                    updateThinking(chat, true, 'Procesando...', 'Hermes trabajando');
-                                                } else {
-                                                    // Actualizar subtext aunque ya esté pensando (resync)
-                                                    chat.thinkingStatus = 'Procesando...';
-                                                    chat.thinkingSubtext = 'Hermes trabajando (resync)';
-                                                }
-                                            } else if (isStopped && chat.isThinking) {
-                                                // 🐛 BUGFIX: Resync 'idle' NO debe overridear el estado local
-                                                // Cuando el frontend arranca un agente via triggerHermesLogic(),
-                                                // setea chat.isThinking=true ANTES de conectar el WS.
-                                                // Al conectarse, el bridge hace resync y manda 'idle' (status inicial)
-                                                // porque el bridge aún no recibió el mensaje.
-                                                // Ese 'idle' de resync NO debe borrar el flag de pensando
-                                                // porque el agente YA arrancó del lado del frontend.
-                                                if (data.resync) {
-                                                    console.log(`[WS-HERMES] Resync 'idle' ignorado para ${data.instanceKey} — agente marcado como activo localmente`);
-                                                } else {
-                                                    updateThinking(chat, false);
-                                                }
-                                            }
-                                            // Si el bridge dice idle/stopped y isThinking es false → no hacer nada (correcto)
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        updateAgentBadge();
-                        refreshConsoleUI();
-                        // Refrescar panel Hermes si está abierto
-                        if (window.refreshHermesInstances) {
-                            window.refreshHermesInstances();
-                        }
-                        // Si hay un chat activo, actualizar su UI Hermes
-                        const activeChat = getActiveChat();
-                        const activeProject = getActiveProject();
-                        if (activeChat && activeProject) {
-                            updateHermesUI(activeProject.id, activeChat.id);
-                        }
-                    }
-                    // ─── TELEGRAM MONITOR EVENTS ───
-                    if (data.event === 'telegram:incoming') {
-                        state.telegramMessages.push({
-                            type: 'incoming', chatId: data.chatId,
-                            from: data.from, text: data.text, timestamp: Date.now()
-                        });
-                        if (typeof renderAdminMessages === 'function') {
-                            state.adminMessages.push({
-                                role: 'user', content: `📱 Telegram (${data.from}): ${data.text}`, timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                        }
-                        renderTelegramMessages();
-                        updateTelegramBadge();
-                    }
-                    if (data.event === 'telegram:outgoing') {
-                        state.telegramMessages.push({
-                            type: 'outgoing', chatId: data.chatId,
-                            text: data.text, timestamp: Date.now()
-                        });
-                        if (typeof renderAdminMessages === 'function') {
-                            state.adminMessages.push({
-                                role: 'system', content: `📱 HERMES GOD → Telegram: ${data.text}`, timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                        }
-                        renderTelegramMessages();
-                    }
-                    if (data.event === 'telegram:thinking') {
-                        state.telegramMessages.push({
-                            type: 'thinking', chatId: data.chatId,
-                            text: 'HERMES GOD está pensando...', timestamp: Date.now()
-                        });
-                        renderTelegramMessages();
-                    }
-                    if (data.event === 'telegram:error') {
-                        state.telegramMessages.push({
-                            type: 'error', chatId: data.chatId, error: data.error, timestamp: Date.now()
-                        });
-                        if (typeof renderAdminMessages === 'function') {
-                            state.adminMessages.push({
-                                role: 'system', content: `❌ Telegram Error: ${data.error}`, timestamp: Date.now()
-                            });
-                            renderAdminMessages();
-                        }
-                        renderTelegramMessages();
-                    }
-                    if (data.event === 'telegram:status') {
-                        const dot = document.getElementById('telegram-status-dot');
-                        const text = document.getElementById('telegram-status-text');
-                        if (dot) dot.className = `telegram-dot ${data.connected ? 'online' : 'offline'}`;
-                        if (text) text.textContent = data.connected ? `🟢 @${data.username || 'Conectado'}` : '🔴 Desconectado';
-                        state.telegramMessages.push({
-                            type: 'status',
-                            text: data.connected ? `Bot @${data.username || ''} conectado` : 'Bot desconectado',
-                            timestamp: Date.now()
-                        });
-                        renderTelegramMessages();
-                    }
-                } catch(e) {}
-            };
-            sysWs.onclose = () => {
-                console.log('[SYS] ⚠️ Servidor desconectado (posible reinicio). Reintentando conexión en 3s...');
-                syncWs = null;
-                amIMaster = false;
-                setTimeout(connectGlobalWS, 3000);
-                setTimeout(() => refreshConsoleUI(), 3000);
-            };
-            sysWs.onerror = () => {
-                syncWs = null;
-                amIMaster = false;
-            };
-        } catch(e) {
-            setTimeout(connectGlobalWS, 3000);
+
+    // ─── WS callbacks (called from events.js) ───
+    window.__onWsConnected = async () => {
+        if (isTabBusy()) {
+            console.log('[SYNC] ⏭️ sync:connected — omitiendo loadData porque hay agente activo');
+        } else {
+            await loadData(false);
+            syncUI();
+            checkSystemHealth();
+            fetchModels();
+            if (window.refreshHermesInstances) window.refreshHermesInstances();
         }
-    }
-    connectGlobalWS();
+    };
+    window.__onSyncStateUpdated = async () => {
+        await loadData(false);
+        syncUI();
+    };
+    window.__isTabBusy = isTabBusy;
+    window.__updateTelegramBadge = updateTelegramBadge;
+    window.__updateHermesUI = () => {
+        const activeChat = getActiveChat();
+        const activeProject = getActiveProject();
+        if (activeChat && activeProject) updateHermesUI(activeProject.id, activeChat.id);
+    };
     
-    // ─── Auto-sync al recuperar foco de pestaña ───
-    // Cuando el usuario vuelve a esta pestaña, recarga estado completo
-    // para sincronizar cambios hechos en otras pestañas/dispositivos
+    setupWebSocket();
+    
+    // Auto-sync al recuperar foco de pestaña
     document.addEventListener('visibilitychange', async () => {
         if (document.hidden) {
             // 🐛 BUGFIX: Guardar draft cuando el usuario se va a otra ventana/pestaña.
@@ -1617,19 +1451,6 @@ async function clearClientLogs() {
 }
 
 
-function claimMaster() {
-    console.log('[SYNC-FLOW] 👑 claimMaster() called. amIMaster =', amIMaster, 'readyState =', syncWs ? syncWs.readyState : 'null');
-    if (!amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
-        console.log('[WS-SYNC] Reclamando rol de MASTER para esta pestaña.');
-        syncWs.send(JSON.stringify({ event: 'sync:claimMaster' }));
-        amIMaster = true; // Asignación proactiva local
-    }
-}
-
-// Registrar interacciones físicas para reclamar MASTER
-window.addEventListener('mousedown', claimMaster);
-window.addEventListener('keydown', claimMaster);
-window.addEventListener('touchstart', claimMaster);
 
 function syncUI() {
     const project = getActiveProject();
@@ -2095,72 +1916,6 @@ async function getClientErrors() {
     }
 }
 
-
-async function refreshConsoleUI() {
-    const consoleOutput = document.getElementById('frontend-console-output');
-    if (!consoleOutput) return;
-
-    try {
-        const res = await fetch(`${API_BASE}/utils/client-logs`);
-        const logs = await res.json();
-
-        // Also fetch restart history
-        let restartHistory = [];
-        try {
-            const rhRes = await fetch(`${API_BASE}/system/restart-history`);
-            const rhData = await rhRes.json();
-            restartHistory = rhData.history || [];
-        } catch (e) {}
-
-        if ((!logs || logs.length === 0) && restartHistory.length === 0) {
-            consoleOutput.innerHTML = '<div class="log-empty">No hay logs registrados.</div>';
-            return;
-        }
-
-        let html = '';
-        
-        // Show restart events first (most recent = visual priority)
-        const recentStarts = restartHistory.filter(r => r.reason === 'server-start').slice(-1);
-        const recentRestarts = restartHistory.filter(r => r.reason !== 'server-start').slice(-5).reverse();
-        
-        // Server is live badge
-        if (recentStarts.length > 0) {
-            const startTime = new Date(recentStarts[0].time).toLocaleTimeString();
-            html += `<div class="log-entry system">
-                <span class="log-time">[${startTime}]</span>
-                <span class="log-type">SISTEMA:</span>
-                <span class="log-msg">🟢 Servidor activo</span>
-            </div>`;
-        }
-        
-        // Restart events
-        for (const r of recentRestarts) {
-            const time = new Date(r.time).toLocaleTimeString();
-            const reasonLabel = r.reason === 'auto-restart' ? 'auto-transformación' : (r.reason === 'manual' ? 'manual' : r.reason);
-            html += `<div class="log-entry system">
-                <span class="log-time">[${time}]</span>
-                <span class="log-type">SISTEMA:</span>
-                <span class="log-msg">🔄 Reinicio (${reasonLabel})</span>
-            </div>`;
-        }
-        
-        // Client logs
-        html += logs.reverse().map(l => {
-            const time = new Date(l.timestamp).toLocaleTimeString();
-            return `
-                <div class="log-entry ${l.type}">
-                    <span class="log-time">[${time}]</span>
-                    <span class="log-type">${l.type.toUpperCase()}:</span>
-                    <span class="log-msg">${(l.messages || []).join(' ')}</span>
-                </div>
-            `;
-        }).join('');
-
-        consoleOutput.innerHTML = html;
-    } catch (e) {
-        consoleOutput.innerHTML = 'Error al cargar logs.';
-    }
-}
 
 window.clearConsoleUI = async () => {
     await clearClientLogs();
@@ -5725,29 +5480,6 @@ window.rejectChange = () => {
 };
 
 
-
-
-async function handleFileClick(path, originalPath, p, options = {}) {
-    const { setActive = true } = options;
-    const san = path.replace(/\\/g, '/');
-    const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
-    if (existing) { if (setActive) { p.activeTabId = san; renderTabs(); } return; }
-    try {
-        const res = await fetchWithLog(`${API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
-        if (!res.ok) {
-            console.error("Error opening file:", res.statusText);
-            return;
-        }
-        const data = await res.json();
-        p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
-        if (setActive) p.activeTabId = san;
-        renderTabs();
-        saveData();
-    } catch (e) {
-        console.error("Exception opening file:", e);
-    }
-};
-
 function setupEventListeners() {
     adminMonitorBtn.onclick = () => {
         const p = getActiveProject();
@@ -6875,54 +6607,6 @@ function setupEventListeners() {
     editorCode.addEventListener('keyup', updateCursorInfo);
     editorCode.addEventListener('click', updateCursorInfo);
     editorCode.addEventListener('input', updateCursorInfo);
-}
-
-async function handleImageSelection(e) {
-    const files = Array.from(e.target.files);
-    await addImages(files);
-    imageInput.value = '';
-}
-
-async function addImages(files) {
-    for (const file of files) {
-        try {
-            const base64 = await toBase64(file);
-            const cleanBase64 = base64.split(',')[1];
-            state.currentAttachedImages.push(cleanBase64);
-        } catch (err) {
-            console.error("Error processing image:", err);
-        }
-    }
-    renderImagePreviews();
-}
-
-function toBase64(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = error => reject(error);
-    });
-}
-
-function renderImagePreviews() {
-    imagePreviewContainer.classList.toggle('hidden', state.currentAttachedImages.length === 0);
-    imagePreviewContainer.innerHTML = state.currentAttachedImages.map((img, index) => `
-        <div class="preview-item">
-            <img src="data:image/jpeg;base64,${img}" />
-            <button class="remove-img" onclick="window.removeImage(${index})">&times;</button>
-        </div>
-    `).join('');
-}
-
-window.removeImage = (index) => {
-    state.currentAttachedImages.splice(index, 1);
-    renderImagePreviews();
-};
-
-function clearImages() {
-    state.currentAttachedImages.length = 0;
-    renderImagePreviews();
 }
 
 function syncModeUI(mode) {

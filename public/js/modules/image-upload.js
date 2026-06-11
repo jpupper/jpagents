@@ -3,34 +3,55 @@
  */
 import { state } from './state.js';
 import { escapeHtml } from './utils.js';
+import { imagePreviewContainer, imageInput } from './dom-refs.js';
 
-export function addImages(files) {
-    for (const f of files) {
-        if (!f.type.startsWith('image/')) continue;
-        if (f.size > 10*1024*1024) continue;
-        const reader = new FileReader();
-        reader.onload = (e) => {
+export function handleImageSelection(e) {
+    const files = Array.from(e.target.files);
+    addImages(files);
+    if (imageInput) imageInput.value = '';
+}
+
+export async function addImages(files) {
+    for (const file of files) {
+        try {
+            const base64 = await toBase64(file);
+            const cleanBase64 = base64.split(',')[1];
             state.currentAttachedImages = state.currentAttachedImages || [];
-            state.currentAttachedImages.push({ name: f.name, data: e.target.result, type: f.type });
-            renderImagePreviews();
-        };
-        reader.readAsDataURL(f);
+            state.currentAttachedImages.push(cleanBase64);
+        } catch (err) {
+            console.error("Error processing image:", err);
+        }
     }
+    renderImagePreviews();
+}
+
+export function toBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+    });
 }
 
 export function renderImagePreviews() {
-    const container = document.getElementById('image-preview-container');
+    const container = imagePreviewContainer;
     if (!container) return;
-    const imgs = state.currentAttachedImages || [];
-    if (!imgs.length) { container.innerHTML = ''; container.style.display = 'none'; return; }
-    container.style.display = 'flex';
-    container.innerHTML = imgs.map((img, i) => `
-        <div class="image-preview-item">
-            <img src="${img.data}" alt="${escapeHtml(img.name)}" />
-            <button onclick="window.removeImage(${i})" class="image-preview-remove">✕</button>
-            <span class="image-preview-name">${escapeHtml(img.name)}</span>
+    container.classList.toggle('hidden', state.currentAttachedImages.length === 0);
+    container.innerHTML = state.currentAttachedImages.map((img, index) => `
+        <div class="preview-item">
+            <img src="data:image/jpeg;base64,${img}" />
+            <button class="remove-img" onclick="window.removeImage(${index})">&times;</button>
         </div>
     `).join('');
 }
 
-export function clearImages() { state.currentAttachedImages = []; renderImagePreviews(); }
+export function clearImages() {
+    state.currentAttachedImages = [];
+    renderImagePreviews();
+}
+
+window.removeImage = (index) => {
+    state.currentAttachedImages.splice(index, 1);
+    renderImagePreviews();
+};

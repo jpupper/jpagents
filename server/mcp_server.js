@@ -11,6 +11,52 @@ import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import screenshot from "screenshot-desktop";
 import fetch from "node-fetch";
+import { appendFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
+// ─── CRASH HANDLERS ──────────────────────────────────────────
+// BUGFIX: MCP server NO tenía handlers para unhandledRejection/uncaughtException.
+// En Node 24+, cualquier promesa rechazada sin capturar MATA el proceso con code 1
+// SIN dejar ningún registro del error.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const MCP_CRASH_LOG = path.join(__dirname, "mcp-crash.log");
+
+function writeCrashLog(source, error) {
+  try {
+    const entry = JSON.stringify({
+      time: new Date().toISOString(),
+      source,
+      message: error?.message || String(error || "Unknown"),
+      stack: error?.stack || "",
+      pid: process.pid,
+      memory: process.memoryUsage(),
+    });
+    appendFileSync(MCP_CRASH_LOG, entry + "\n");
+    process.stderr.write(`[MCP-CRASH] ${source}: ${error?.message || error}\n`);
+    process.stderr.write(`[MCP-CRASH] Stack: ${error?.stack || "(no stack)"}\n`);
+  } catch (_) {
+    try { process.stderr.write("[MCP-CRASH-FATAL] No se pudo escribir crash log\n"); } catch {}
+  }
+}
+
+process.on("uncaughtException", (err) => {
+  writeCrashLog("uncaughtException", err);
+  // NO process.exit() — intentamos mantener el proceso vivo
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  writeCrashLog("unhandledRejection", reason);
+  // NO process.exit() — evitamos que Node 24+ mate el proceso
+});
+
+process.on("warning", (warning) => {
+  if (warning.name === "UnhandledPromiseRejectionWarning") {
+    process.stderr.write(`[MCP-WARN] UnhandledPromiseRejectionWarning: ${warning.message}\n`);
+  }
+});
+// ─────────────────────────────────────────────────────────────
 
 import {
   ListToolsRequestSchema,

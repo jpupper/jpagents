@@ -12,21 +12,21 @@ import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { Bot } from 'grammy';
-import { connectDB, getCollection } from './db.js';
-import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, safeTelegramCall, sendTelegramResponse, isAuthorized, sendAgentCompleteTelegram } from './telegram-shared.js';
+import { connectDB, getCollection } from '../db/db.js';
+import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, safeTelegramCall, sendTelegramResponse, isAuthorized, sendAgentCompleteTelegram } from '../shared/telegram-shared.js';
 
 // LangGraph Integration
-import { agentApp } from './agent_graph.js';
+import { agentApp } from '../agents/agent_graph.js';
 import { HumanMessage } from "@langchain/core/messages";
-import { getAgentTraces, clearTraces, logAgentTrace } from './agent_trace_logger.js';
-import { createChat } from './agent-utils.js';
-import { spawnHermes, findHermesPath } from './hermes-executor.js';
-import hermesBridge from './hermes-bridge.js';
-import { createHermesClient } from './lib/hermes-gateway-client.js';
-import { createSseParser } from './lib/sse-parser.js';
-import { ToolProgressManager } from './lib/tool-progress-formatter.js';
-import { formatMessage, escapeMarkdownV2, stripMarkdownV2 } from './lib/markdown-v2.js';
-import { stripAnsi } from './ansi-utils.js';
+import { getAgentTraces, clearTraces, logAgentTrace } from '../agents/agent_trace_logger.js';
+import { createChat } from '../agents/agent-utils.js';
+import { spawnHermes, findHermesPath } from '../hermes/hermes-executor.js';
+import hermesBridge from '../hermes/hermes-bridge.js';
+import { createHermesClient } from '../lib/hermes-gateway-client.js';
+import { createSseParser } from '../lib/sse-parser.js';
+import { ToolProgressManager } from '../lib/tool-progress-formatter.js';
+import { formatMessage, escapeMarkdownV2, stripMarkdownV2 } from '../lib/markdown-v2.js';
+import { stripAnsi } from '../shared/ansi-utils.js';
 
 // ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
 // Previene crashes cuando stdout/stderr pipe se rompe (ej: concurrently cierra stream)
@@ -38,7 +38,7 @@ console.warn = (...args) => { try { __origConsole.warn.apply(console, args); } c
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.resolve(path.dirname(__filename), '..');
 const app = express();
 const port = parseInt(process.env.JPAGENTS_PORT, 10) || 4699;
 let serverInstance = null; // Store server instance for graceful close
@@ -75,7 +75,7 @@ app.use((err, req, res, next) => {
 });
 
 // Servir archivos estáticos (Agents Room, etc.)
-const __dirname_route = path.dirname(fileURLToPath(import.meta.url));
+const __dirname_route = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 app.use('/static', express.static(path.join(__dirname_route, '.')));
 
 // Servir frontend desde public/
@@ -4367,7 +4367,7 @@ app.get('/api/system/hermes-processes', async (req, res) => {
 // GET /api/social/platforms — Listar plataformas disponibles
 app.get('/api/social/platforms', async (req, res) => {
     try {
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const platforms = sp.getPlatforms();
         const creds = await sp.loadCredentials();
         const platformsWithStatus = platforms.map(p => ({
@@ -4388,7 +4388,7 @@ app.post('/api/social/publicar', async (req, res) => {
         if (!plataforma || !contenido) {
             return res.status(400).json({ error: 'Faltan campos: plataforma y contenido son requeridos' });
         }
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const result = await sp.publish({ plataforma, contenido, credenciales });
         console.log(`[SOCIAL] Publicado en ${plataforma}:`, result.id || result.status);
         res.json({ success: true, result });
@@ -4406,7 +4406,7 @@ app.post('/api/social/credenciales', async (req, res) => {
         if (!plataforma || !credenciales) {
             return res.status(400).json({ error: 'Faltan campos: plataforma y credenciales' });
         }
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const allCreds = await sp.loadCredentials();
         allCreds[plataforma] = { ...(allCreds[plataforma] || {}), ...credenciales };
         await sp.saveCredentials(allCreds);
@@ -4420,7 +4420,7 @@ app.post('/api/social/credenciales', async (req, res) => {
 // GET /api/social/credenciales — Ver qué plataformas están configuradas (sin exponer secrets)
 app.get('/api/social/credenciales', async (req, res) => {
     try {
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const creds = await sp.loadCredentials();
         const status = {};
         for (const [platform, values] of Object.entries(creds)) {
@@ -4439,7 +4439,7 @@ app.get('/api/social/credenciales', async (req, res) => {
 // GET /api/social/ayuda/:plataforma — Guía de configuración
 app.get('/api/social/ayuda/:plataforma', async (req, res) => {
     try {
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const info = sp.getPlatformInfo(req.params.plataforma);
         if (!info) {
             return res.status(404).json({ error: 'Plataforma no encontrada' });
@@ -4455,7 +4455,7 @@ app.get('/api/social/ayuda/:plataforma', async (req, res) => {
 app.post('/api/social/publicar-multiple', async (req, res) => {
     try {
         const { plataformas, contenido, contenidoPorPlataforma, credenciales } = req.body;
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const result = await sp.publishMultiple({ plataformas, contenido, contenidoPorPlataforma, credenciales });
         console.log(`[SOCIAL-MULTI] Resultado: ${result.resumen}`);
         res.json({ success: result.success, partial: result.partial, ...result });
@@ -4467,7 +4467,7 @@ app.post('/api/social/publicar-multiple', async (req, res) => {
 // GET /api/social/resumen — Resumen completo del estado social
 app.get('/api/social/resumen', async (req, res) => {
     try {
-        const { default: sp } = await import('./social-publisher.js');
+        const { default: sp } = await import('../_legacy/social-publisher.js');
         const platforms = sp.getPlatforms();
         const creds = await sp.loadCredentials();
         const resumen = platforms.map(p => ({
@@ -5250,6 +5250,48 @@ process.on('warning', (warning) => {
     }
 });
 
+// ─── EXIT CODE CAPTURE ──────────────────────────────────────
+// BUGFIX: El server crashea con exit code 1 pero sin escribir crash.log.
+// Esto significa que el error NO es un uncaughtException/unhandledRejection,
+// sino algo que Node trata como fatal (stack overflow, native addon crash,
+// OOM, error en async_hooks, etc.). Este handler captura CUALQUIER exit.
+process.on('exit', (code) => {
+    try {
+        const exitLog = path.join(process.cwd(), 'exit.log');
+        appendFileSync(exitLog, JSON.stringify({
+            time: new Date().toISOString(),
+            exitCode: code,
+            pid: process.pid,
+            signal: process._exiting ? 'clean' : 'dirty',
+            memory: process.memoryUsage(),
+            uptime: process.uptime()
+        }) + '\n');
+    } catch (_) {
+        try {
+            // Fallback: escribir a temp directory
+            const tmpPath = path.join(os.tmpdir(), 'jpagents-exit.log');
+            require('fs').appendFileSync(tmpPath, JSON.stringify({
+                time: new Date().toISOString(),
+                exitCode: code,
+                pid: process.pid
+            }) + '\n');
+        } catch {}
+    }
+});
+
+// Catch SIGTERM/SIGINT that bypass our graceful handlers
+process.on('SIGTERM', () => {
+    try {
+        const sigLog = path.join(process.cwd(), 'signal.log');
+        appendFileSync(sigLog, JSON.stringify({
+            time: new Date().toISOString(),
+            signal: 'SIGTERM',
+            pid: process.pid
+        }) + '\n');
+    } catch {}
+    gracefulShutdown('SIGTERM');
+});
+
 // ─── Graceful Shutdown ───
 // Cierra el server HTTP limpiamente en SIGTERM/SIGINT para evitar conexiones colgadas
 async function gracefulShutdown(signal) {
@@ -5298,12 +5340,34 @@ async function gracefulShutdown(signal) {
     process.exit(0);
 }
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// Catch SIGTERM/SIGINT that bypass our graceful handlers
+process.on('SIGTERM', () => {
+    try {
+        const sigLog = path.join(process.cwd(), 'signal.log');
+        appendFileSync(sigLog, JSON.stringify({
+            time: new Date().toISOString(),
+            signal: 'SIGTERM',
+            pid: process.pid
+        }) + '\n');
+    } catch {}
+    gracefulShutdown('SIGTERM');
+});
+
+process.on('SIGINT', () => {
+    try {
+        const sigLog = path.join(process.cwd(), 'signal.log');
+        appendFileSync(sigLog, JSON.stringify({
+            time: new Date().toISOString(),
+            signal: 'SIGINT',
+            pid: process.pid
+        }) + '\n');
+    } catch {}
+    gracefulShutdown('SIGINT');
+});
 
 // Handle common signals that should not crash the process
 process.on('SIGPIPE', () => {
-    // SIGPIPE es normal cuando un pipe se rompe \u2014 no es fatal
+    // SIGPIPE es normal cuando un pipe se rompe — no es fatal
 });
 
 const trackedHermesProcesses = new Map(); // pid -> { projectId, chatId, sessionId, workdir }

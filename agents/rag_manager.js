@@ -8,7 +8,7 @@ import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { OllamaEmbeddings } from '@langchain/ollama';
 import { HNSWLib } from '@langchain/community/vectorstores/hnswlib';
 import { Document } from '@langchain/core/documents';
-import { getCollection } from './db.js';
+import { getCollection } from '../db/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

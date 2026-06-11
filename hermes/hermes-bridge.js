@@ -151,7 +151,7 @@ class HermesBridge extends EventEmitter {
         } catch {}
 
         // ─── Usar HTTP API del Gateway en vez de spawn ───
-        const { createHermesClient } = await import('./lib/hermes-gateway-client.js');
+        const { createHermesClient } = await import('../lib/hermes-gateway-client.js');
         const client = createHermesClient();
         
         let accumulatedStdout = '';
