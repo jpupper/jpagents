@@ -11,9 +11,9 @@ import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
-import { Bot } from 'grammy';
 import { connectDB, getCollection } from '../db/db.js';
-import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, safeTelegramCall, sendTelegramResponse, isAuthorized, sendAgentCompleteTelegram } from '../shared/telegram-shared.js';
+import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, sendAgentCompleteTelegram } from '../shared/telegram-shared.js';
+import { initTelegramBot, telegramBot, telegramBotOwner, botStartTime, pendingClarifies } from '../telegram/telegram-bot.js';
 
 // LangGraph Integration
 import { agentApp } from '../agents/agent_graph.js';
@@ -24,8 +24,6 @@ import { spawnHermes, findHermesPath } from '../hermes/hermes-executor.js';
 import hermesBridge from '../hermes/hermes-bridge.js';
 import { createHermesClient } from '../lib/hermes-gateway-client.js';
 import { createSseParser } from '../lib/sse-parser.js';
-import { ToolProgressManager } from '../lib/tool-progress-formatter.js';
-import { formatMessage, escapeMarkdownV2, stripMarkdownV2 } from '../lib/markdown-v2.js';
 import { stripAnsi } from '../shared/ansi-utils.js';
 
 // ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
@@ -252,10 +250,10 @@ function startDelegation(agentName, projectName, task, projectId, agentId, model
                 status: 'completed'
             });
             // ─── Si es de Telegram, enviar mensaje ───
-            if (source === 'telegram' && chatId && typeof TELEGRAM_BOT_TOKEN === 'string' && TELEGRAM_BOT_TOKEN.length > 40) {
+            if (source === 'telegram' && chatId && typeof process.env.TELEGRAM_BOT_TOKEN === 'string' && process.env.TELEGRAM_BOT_TOKEN.length > 40) {
                 try {
                     const { Bot: TelegramBot } = await import('grammy');
-                    const notifBot = new TelegramBot(TELEGRAM_BOT_TOKEN);
+                    const notifBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
                     const summary = responseText.length > 500
                         ? responseText.slice(0, 500) + '...'
                         : responseText;
@@ -286,21 +284,7 @@ function startDelegation(agentName, projectName, task, projectId, agentId, model
     return { id, status: 'delegated', message: `✅ Delegado a ${agentName} — ID: ${id}` };
 }
 
-// ─── TELEGRAM BOT INLINE (HERMES GOD integrado) ───
 let wss = null; // WebSocket server for frontend clients (initialized in startServer)
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-let telegramBot = null;
-let telegramBotOwner = null;
-const TELEGRAM_AUTHORIZED = (process.env.TELEGRAM_AUTHORIZED_USERS || '')
-    .split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
-
-function telegramBroadcast(event, data = {}) {
-    const msg = JSON.stringify({ event, ...data, timestamp: Date.now() });
-    for (const client of wss ? wss.clients : []) {
-        try { if (client.readyState === 1) client.send(msg); } catch {}
-    }
-}
-
 /**
  * callHermesAdmin — Llama a Hermes ADMIN vía API HTTP REST del gateway.
  * Reemplaza spawnHermes() CLI con HTTP POST /v1/chat/completions.
@@ -611,317 +595,6 @@ function ensureResumen(response, originalMessage = '') {
 📌 NOTAS: ${data.notas}`);
 }
 
-/**
- * Inicializa el bot de Telegram inline dentro del servidor.
- */
-function initTelegramBot() {
-    if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN.length < 40) {
-        console.log('[TELEGRAM] ⚠️ TELEGRAM_BOT_TOKEN no configurado — bot desactivado');
-        return;
-    }
-    const savedOwner = loadOwnerChatId();
-
-    const bot = new Bot(TELEGRAM_BOT_TOKEN);
-
-    // Autorización
-    bot.use(async (ctx, next) => {
-        const userId = ctx.from?.id;
-        if (!userId) { await ctx.reply('⛔ No se pudo identificar tu usuario.'); return; }
-        if (TELEGRAM_AUTHORIZED.length > 0) {
-            if (!TELEGRAM_AUTHORIZED.includes(userId)) { await ctx.reply('⛔ No estás autorizado.'); return; }
-        } else if (telegramBotOwner) {
-            if (userId !== telegramBotOwner) { await ctx.reply('⛔ No estás autorizado.'); return; }
-        } else {
-            telegramBotOwner = userId;
-            saveOwnerChatId(userId, ctx.from?.first_name || 'Owner');
-            slog.log(`[TELEGRAM] 👑 Dueño: ${ctx.from?.first_name} (${userId})`);
-            const bi = await bot.api.getMe().catch(() => null);
-            if (bi) {
-                const hname = os.hostname();
-                const totalMB = Math.round(os.totalmem() / 1024 / 1024);
-                const freeMB = Math.round(os.freemem() / 1024 / 1024);
-                const welcomeMsg = [
-                    `🟢 *JP Agents — Servidor Conectado*`,
-                    ``,
-                    `🤖 Bot: @${bi.username}`,
-                    `💻 Host: ${hname}`,
-                    `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
-                    `🖥️ CPU: ${os.cpus().length} cores`,
-                    `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
-                    ``,
-                    `✅ Todo listo — HERMES GOD escuchando.`,
-                ].join('\n');
-                await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' }).catch(() => {});
-            }
-        }
-        await next();
-    });
-
-    // ─── Mensajes de texto → HERMES GOD BOTADMIN ───
-    bot.on('message:text', async (ctx) => {
-        let userMsg = ctx.message.text;
-        const chatId = ctx.chat.id;
-        const userName = ctx.from?.first_name || 'User';
-
-        // Inyectar respuesta de clarify pendiente
-        if (global.clarifyAnswers && global.clarifyAnswers.has(chatId)) {
-            const prev = global.clarifyAnswers.get(chatId);
-            global.clarifyAnswers.delete(chatId);
-            userMsg = `[Respuesta a tu pregunta anterior: "${prev.question}" → Elegí: "${prev.answer}"]\n\n${userMsg}`;
-            slog.log(`[TELEGRAM] 📎 Inyectada respuesta de clarify: "${prev.answer}"`);
-        }
-
-        slog.log(`[TELEGRAM] 📩 ${userName}: "${userMsg.slice(0, 80)}..."`);
-        telegramBroadcast('telegram:incoming', { chatId, from: userName, text: userMsg, messageId: ctx.message.message_id });
-
-        // ─── Tool Progress Manager para este mensaje ───
-        const progressMgr = new ToolProgressManager(
-            // sendFn: enviar mensaje de progreso
-            async (text) => {
-                const msg = await ctx.reply(text, { parse_mode: '' });
-                return { message_id: msg.message_id };
-            },
-            // editFn: editar mensaje de progreso
-            async (messageId, text) => {
-                await bot.api.editMessageText(chatId, messageId, text, { parse_mode: '' });
-            },
-            // deleteFn: eliminar mensaje de progreso
-            async (messageId) => {
-                await bot.api.deleteMessage(chatId, messageId).catch(() => {});
-            },
-            { previewMaxLen: 40 }
-        );
-
-        let thinkingMsg = null;
-        try { thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...'); } catch {}
-        telegramBroadcast('telegram:thinking', { chatId, messageId: thinkingMsg?.message_id });
-
-        try {
-            const { response, stderr: hermesStderr } = await callHermesAdminStreaming(userMsg, (thinkingText) => {
-                // Tool progress: editar el mensaje de thinking con la tool actual
-                if (thinkingMsg && thinkingText) {
-                    const statusText = `👑 HERMES GOD\n\n${thinkingText}`;
-                    safeTelegramCall(() =>
-                        bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
-                    );
-                }
-            });
-
-            // ─── Clarify detection (desde el stderr acumulado) ───
-            if (hermesStderr && hermesStderr.includes('Tool call: clarify')) {
-                const clarifyMatch = hermesStderr.match(/Tool call: clarify with args:\s*(\{[^}]+\})/);
-                if (clarifyMatch) {
-                    try {
-                        const clarifyArgs = JSON.parse(clarifyMatch[1]);
-                        const question = clarifyArgs.question || '';
-                        const choices = clarifyArgs.choices || [];
-                        if (choices.length > 0) {
-                            const buttons = choices.map((choice, i) => [{
-                                text: choice.slice(0, 40),
-                                callback_data: `clarify:${chatId}:${i}:${Date.now()}`
-                            }]);
-                            pendingClarifies.set(`clarify:${chatId}`, { question, choices, timestamp: Date.now() });
-                            safeTelegramCall(() =>
-                                ctx.reply(
-                                    `❓ ${question}\n\n(Elegí una opción — tu respuesta se usará en el próximo mensaje)`,
-                                    { reply_markup: { inline_keyboard: buttons } }
-                                )
-                            );
-                            slog.log(`[TELEGRAM] 📋 Clarify detectado — botones enviados: "${question.slice(0, 60)}..."`);
-                        } else if (question) {
-                            safeTelegramCall(() =>
-                                ctx.reply(`❓ ${question}\n\n(Respondé a este mensaje y tu respuesta se usará como contexto adicional)`)
-                            );
-                        }
-                    } catch (parseErr) {
-                        slog.error('[TELEGRAM] Error parseando clarify args:', parseErr.message);
-                    }
-                }
-            }
-
-            // ─── Extraer resumen estructurado y ejecutar comandos ───
-            const cleanResponse = ensureResumen(response, userMsg) || '(sin respuesta)';
-            let executions = [];
-            try {
-                const execPromise = executeAdminCommands(response, 'telegram', chatId);
-                const execTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Timeout (60s)')), 60000));
-                executions = await Promise.race([execPromise, execTimeout]);
-            } catch (execErr) {
-                slog.error(`[TELEGRAM] ⚠️ Error/Timeout en executeAdminCommands:`, execErr.message);
-            }
-
-            // ─── Armar respuesta final ───
-            let finalResponse = cleanResponse;
-            if (executions.length > 0) {
-                const execLines = executions.map(ex => {
-                    if (ex.status === 'ok') {
-                        if (ex.response) return `  ✅ ${ex.command}: ${ex.target}\n     📝 ${ex.response.slice(0, 500)}`;
-                        return `  ✅ ${ex.command}: ${ex.target}`;
-                    }
-                    if (ex.status === 'delegated') return `  🤖 ${ex.command}: ${ex.target} — ✅ DELEGADO`;
-                    if (ex.status === 'error') return `  ❌ ${ex.command}: ${ex.target} — ${ex.error}`;
-                    if (ex.status === 'skipped') return `  ⏭️ ${ex.command}: ${ex.target} — ${ex.reason}`;
-                    if (ex.message) return `  ℹ️ ${ex.command}: ${ex.target} — ${ex.message}`;
-                    return `  ℹ️ ${ex.command}: ${ex.target}`;
-                });
-                finalResponse += '\n\n⚙️ Comandos ejecutados:\n' + execLines.join('\n');
-            }
-
-            // ─── Limpiar mensaje de thinking ───
-            await progressMgr.cleanup();
-
-            // ─── Enviar respuesta a Telegram con MarkdownV2 ───
-            const MAX_LEN = 3500;
-            const formattedResponse = formatMessage(finalResponse);
-            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, formattedResponse, MAX_LEN, 'MarkdownV2');
-            
-            slog.log(`[TELEGRAM] ✅ Respondido (${finalResponse.length} chars), ${executions.length} comandos ejecutados`);
-            telegramBroadcast('telegram:outgoing', {
-                chatId, text: finalResponse.slice(0, 500) + (finalResponse.length > 500 ? '...' : ''),
-                responseLength: finalResponse.length
-            });
-        } catch (err) {
-            slog.error(`[TELEGRAM] ❌ Error:`, err.message);
-            await progressMgr.cleanup();
-            await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, `❌ Error: ${err.message.slice(0, 500)}`, 3500);
-            telegramBroadcast('telegram:error', { chatId, error: err.message });
-        }
-    });
-
-    // ─── Callback Query: Botones inline (clarify, etc.) ───
-    bot.on('callback_query', async (ctx) => {
-        const data = ctx.callbackQuery.data;
-        const chatId = ctx.callbackQuery.message?.chat?.id;
-        
-        if (data && data.startsWith('clarify:')) {
-            // Formato: clarify:<chatId>:<choiceIndex>:<timestamp>
-            const parts = data.split(':');
-            const choiceIndex = parseInt(parts[2]);
-            const key = `clarify:${chatId}`;
-            const pending = pendingClarifies.get(key);
-            
-            if (pending && pending.choices && choiceIndex >= 0 && choiceIndex < pending.choices.length) {
-                const chosen = pending.choices[choiceIndex];
-                pendingClarifies.delete(key);
-                
-                // Confirmar la elección y eliminar los botones
-                await ctx.answerCallbackQuery({ text: `Elegiste: ${chosen}` }).catch(() => {});
-                await ctx.editMessageText(
-                    `✅ *Elegiste:* ${chosen}\n\n_Esta respuesta se usará como contexto en tu próximo mensaje._`,
-                    { parse_mode: 'Markdown' }
-                ).catch(() => {});
-                
-                // Guardar la respuesta para el próximo mensaje
-                if (!global.clarifyAnswers) global.clarifyAnswers = new Map();
-                global.clarifyAnswers.set(chatId, {
-                    question: pending.question,
-                    answer: chosen,
-                    timestamp: Date.now()
-                });
-                
-                console.log(`[TELEGRAM] 👆 Clarify respondido: chat=${chatId}, choice="${chosen}"`);
-            } else {
-                await ctx.answerCallbackQuery({ text: 'Esta pregunta ya expiró.' }).catch(() => {});
-            }
-        }
-    });
-
-    // Comandos
-    bot.command('start', async (ctx) => {
-        const uptime = Math.floor((Date.now() - botStartTime) / 1000);
-        const h = Math.floor(uptime / 3600), m = Math.floor((uptime % 3600) / 60);
-        await ctx.reply(
-            `👑 *HERMES GOD* — Integrado en JP Agents\n\nSoy HERMES GOD. Escribime cualquier cosa.\n\n📊 ${h}h ${m}m uptime, ${hermesBridge.listInstances().length} agentes\n\nComandos: /status`,
-            { parse_mode: 'Markdown' }
-        );
-    });
-    bot.command('status', async (ctx) => {
-        const uptime = Math.floor((Date.now() - botStartTime) / 1000);
-        const instances = hermesBridge.listInstances();
-        const running = instances.filter(i => i.status === 'running').length;
-        await ctx.reply(
-            `📊 *Estado*\n🖥️ Uptime: ${formatUptime(uptime)}\n🤖 Agentes: ${instances.length} (${running} activos)`,
-            { parse_mode: 'Markdown' }
-        );
-    });
-    bot.command('help', async (ctx) => {
-        await ctx.reply('👑 *HERMES GOD*\nCualquier texto → Hermes BOTADMIN\n/status — Estado\n/help — Ayuda', { parse_mode: 'Markdown' });
-    });
-
-    // ─── Error handler con reconexión automática ───
-    bot.catch((err) => {
-        try { console.error(`[TELEGRAM] ❌ Error del bot: ${err.message}`); } catch {}
-        // Si es 409 (conflict), forzar reconexión después de un delay
-        if (err.message && err.message.includes('409')) {
-            try { console.log('[TELEGRAM] 🔄 409 detectado, reconectando en 5s...'); } catch {}
-            setTimeout(() => {
-                try { bot.stop().catch(() => {}); } catch {}
-                setTimeout(() => {
-                    initTelegramBot();
-                }, 2000);
-            }, 5000);
-        }
-    });
-
-    // ─── Intentar conectar con retry en 409 ───
-    async function startBotWithRetry(retries = 3) {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-            try {
-                await bot.start({
-                    drop_pending_updates: true,
-                    onStart: async (bi) => {
-                        telegramBot = bot;
-                        const hname = os.hostname();
-                        const totalMB = Math.round(os.totalmem() / 1024 / 1024);
-                        const freeMB = Math.round(os.freemem() / 1024 / 1024);
-                        try { console.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (inline)`); } catch {}
-                        telegramBroadcast('telegram:status', { connected: true, username: bi.username });
-
-                        const ownerId = savedOwner?.ownerChatId || TELEGRAM_AUTHORIZED[0];
-                        if (ownerId) {
-                            const startupMsg = [
-                                `🟢 *JP Agents — Servidor Conectado*`,
-                                ``,
-                                `🤖 Bot: @${bi.username}`,
-                                `💻 Host: ${hname}`,
-                                `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
-                                `🖥️ CPU: ${os.cpus().length} cores`,
-                                `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
-                                ``,
-                                `✅ Todo listo — HERMES GOD escuchando.`,
-                            ].join('\n');
-                            try {
-                                await bot.api.sendMessage(ownerId, startupMsg, { parse_mode: 'Markdown' });
-                                try { console.log(`[TELEGRAM] 📤 Startup confirmado a chat ${ownerId}`); } catch {}
-                            } catch (e) {
-                                try { console.warn(`[TELEGRAM] ⚠️ No se pudo enviar mensaje de startup: ${e.message}`); } catch {}
-                            }
-                        }
-                    }
-                }); // end bot.start
-                return true; // éxito
-            } catch (startErr) {
-                try { console.error(`[TELEGRAM] ⚠️ Intento ${attempt}/${retries} falló: ${startErr.message}`); } catch {}
-                if (attempt < retries) {
-                    const delay = 3000 * Math.pow(2, attempt - 1);
-                    try { console.log(`[TELEGRAM] ⏳ Reintentando en ${delay/1000}s...`); } catch {}
-                    await new Promise(r => setTimeout(r, delay));
-                } else {
-                    try { console.error(`[TELEGRAM] ❌ No se pudo iniciar bot después de ${retries} intentos`); } catch {}
-                }
-            }
-        }
-        return false;
-    }
-
-    startBotWithRetry(5);
-
-    try { console.log(`[TELEGRAM] 🚀 Inicializando bot...`); } catch {}
-}
-
-// Ahora importado desde telegram-shared.js
-let botStartTime = Date.now();
-
 // ─── Safe console (EPIPE protection) ───
 const slog = {
     log: (...args) => { try { console.log(...args); } catch { /* EPIPE safe */ } },
@@ -929,24 +602,7 @@ const slog = {
     warn: (...args) => { try { console.warn(...args); } catch { /* EPIPE safe */ } }
 };
 
-// ─── Envío de respuestas Telegram — ahora importado desde telegram-shared.js ───
 
-// Almacena preguntas de clarify pendientes por chatId para responder vía botones inline
-// { chatId: { question, choices, resolve, timestamp, messageId } }
-const pendingClarifies = new Map();
-
-// Limpiar clarifies viejos cada 5 minutos
-setInterval(() => {
-    const now = Date.now();
-    for (const [chatId, pending] of pendingClarifies) {
-        if (now - pending.timestamp > 300000) { // 5 min timeout
-            if (typeof pending.resolve === 'function') {
-                pending.resolve('(timeout - sin respuesta)');
-            }
-            pendingClarifies.delete(chatId);
-        }
-    }
-}, 60000);
 
 app.get('/api/admin/traces', async (req, res) => {
     try {
@@ -1085,75 +741,7 @@ app.post('/api/utils/client-logs/clear', async (req, res) => {
     }
 });
 
-// Persistence Helpers (MongoDB)
-async function loadSessions() {
-    try {
-        const collection = getCollection('sessions');
-        // Filter out soft-deleted items if needed, but here we return all active ones
-        const data = await collection.findOne({ _id: 'global_state' });
-        return data ? data.state : { projects: [] };
-    } catch (e) {
-        console.error('[DB] Error loading sessions:', e);
-        return { projects: [] };
-    }
-}
-
-async function saveSessions(state) {
-    try {
-        const collection = getCollection('sessions');
-        
-        // ─── MERGE projects: preserva proyectos existentes en DB que este save no incluya ───
-        // Previene el race condition donde un load-save concurrente
-        // sobreescribe con datos stale y pierde proyectos nuevos (ej: Fuego Violeta)
-        // BUGFIX: Si el save incluye deletedProjectIds, esos proyectos NO se preservan del merge
-        // (resuelve el bug donde proyectos eliminados volvían a aparecer tras save concurrente)
-        const deletedIds = new Set(state.deletedProjectIds || []);
-        delete state.deletedProjectIds; // limpiar para no guardarlo en DB
-        
-        const existing = await collection.findOne({ _id: 'global_state' });
-        if (existing?.state?.projects && state?.projects) {
-            const merged = new Map();
-            // Proyectos del save actual son la fuente de verdad
-            for (const p of state.projects) {
-                merged.set(p.id || p.name, p);
-            }
-            // Agregar proyectos existentes de DB que NO estén en el save ni en deletedIds
-            for (const p of existing.state.projects) {
-                const key = p.id || p.name;
-                if (!merged.has(key) && !deletedIds.has(key) && !deletedIds.has(p.id)) {
-                    merged.set(key, p);
-                }
-            }
-            state.projects = Array.from(merged.values());
-        }
-        
-        await collection.updateOne(
-            { _id: 'global_state' },
-            { $set: { state, updatedAt: new Date() } },
-            { upsert: true }
-        );
-    } catch (e) {
-        console.error('[DB] Error saving sessions:', e);
-    }
-}
-
-/**
- * updateSessions — Helper que reemplaza el patrón load-modify-save-broadcast.
- * 
- * Uso:
- *   await updateSessions(data => {
- *       data.projects.push(newProject);
- *   }, 'CREATE_PROJECT');
- * 
- * Hace loadSessions(), pasa data al modifier, saveSessions() y broadcast.
- */
-async function updateSessions(modifier, source = 'unknown') {
-    const data = await loadSessions();
-    await modifier(data);
-    await saveSessions(data);
-    hermesBridge.broadcastToAll('sync:stateUpdated', { source });
-    return data;
-}
+import { loadSessions, saveSessions, updateSessions } from './utils/session.js';
 
 // Routes
 app.get('/api/sessions', async (req, res) => {
@@ -6233,7 +5821,16 @@ async function startServer() {
         startHermesProcessSyncMonitor();
 
         // Iniciar Telegram bot inline (HERMES GOD)
-        initTelegramBot();
+        // Iniciar Telegram bot inline (módulo unificado)
+        initTelegramBot({
+            wss,
+            hermesBridge,
+            loadSessions,
+            execAdminCommands: executeAdminCommands,
+            callHermesAdminStreaming,
+            ensureResumen,
+            authorizedUsers: process.env.TELEGRAM_AUTHORIZED_USERS ? process.env.TELEGRAM_AUTHORIZED_USERS.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)) : []
+        });
 
         // Log server start for restart history
         restartHistory.push({

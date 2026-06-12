@@ -187,7 +187,7 @@ window.renderFileList = function (container, files, parentPath) {
         const isDir = f.isDirectory;
         const icon = isDir ? '📁' : getFileIcon(f.name);
         const path = f.path.replace(/\\/g, '/');
-        const id = `file-${btoa(path).replace(/=/g, '')}`;
+        const id = `file-${btoa(unescape(encodeURIComponent(path))).replace(/=/g, '')}`;
 
         if (isDir) {
             return `

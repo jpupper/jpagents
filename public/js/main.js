@@ -5636,12 +5636,27 @@ function setupEventListeners() {
                     showToast('Panel de skills no disponible', 'warning');
                 }
                 break;
-            case 'hermes_prefix':
+            case "hermes_prefix":
                 // Inyectar el prefijo + resto del texto como mensaje normal
-                const cmd = SLASH_COMMANDS.find(c => c.action === 'hermes_prefix' && chatInput.value.startsWith(c.cmd));
+            const cmd = SLASH_COMMANDS.find(c => c.action === "hermes_prefix" && chatInput.value.startsWith(c.cmd));
                 if (cmd) {
+                    // /steer: Validar que Hermes toggle esté ON
+                    const hermesToggle = document.getElementById(`hermes-toggle-btn`);
+                    const isHermesOn = hermesToggle && hermesToggle.classList.contains(`on`);
+                    if (!isHermesOn) {
+                        showToast(`⚠️ El comando ${cmd.cmd} requiere Hermes activo. Activá el toggle Hermes en el chat.`, `error`, 4000);
+                        hideSlashDropdown();
+                        chatInput.value = ``;
+                        return;
+                    }
                     const rest = chatInput.value.slice(cmd.cmd.length).trim();
-                    chatInput.value = `${cmd.prefix}\n\n${rest}`;
+                    chatInput.value = `${cmd.prefix}
+
+${rest}`;
+                    // Feedback específico para /steer
+                    if (cmd.cmd === `/steer`) {
+                        showToast(`🧭 Instrucción de fondo enviada a Hermes`, `success`, 3000);
+                    }
                     setTimeout(() => sendMessage(), 50);
                     hideSlashDropdown();
                     return;
@@ -5744,6 +5759,13 @@ function setupEventListeners() {
         // ── Normal Enter to send ──
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
+            // BUGFIX /steer: Si el dropdown de slash commands NO está visible
+            // pero el input empieza con un comando conocido, procesarlo igual.
+            const matchedSlash = SLASH_COMMANDS.find(c => chatInput.value.startsWith(c.cmd));
+            if (matchedSlash) {
+                executeSlashCommand(matchedSlash.action);
+                return;
+            }
             sendMessage();
         }
     };
