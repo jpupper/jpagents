@@ -14,9 +14,10 @@ window.renderProjectList = renderProjectList;
 import { renderMessages, showToast, playAgentCompleteSound, playAgentErrorSound, updateThinking } from './modules/chat-ui.js';
 import { refreshConsoleUI } from './modules/console-view.js';
 import { addImages, renderImagePreviews, clearImages, handleImageSelection, toBase64 } from './modules/image-upload.js';
+import { appendToTerminal, refreshTerminalUI, updateTerminalStatusUI, connectTerminalStream, runTerminalCommand, detectRunCommand , terminalEventSource } from './modules/terminal-ui.js';
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
-let terminalEventSource = null;
+
 let isSaving = false;
 let savePending = false;
 let draggedProjectId = null;
@@ -1097,164 +1098,6 @@ async function loadData(shouldScan = true) {
     }
 }
 
-// --- TERMINAL LOGIC ---
-
-function appendToTerminal(text, type = 'stdout', projectId = null) {
-    const project = projectId ? state.projects.find(p => p.id === projectId) : getActiveProject();
-    if (project) {
-        if (!project.terminalLogs) project.terminalLogs = [];
-        project.terminalLogs.push({ text, type });
-        if (project.terminalLogs.length > 1000) project.terminalLogs.shift();
-    }
-
-    // Only append to DOM if the project is active
-    const activeProject = getActiveProject();
-    if (activeProject && activeProject.id === (projectId || activeProject.id)) {
-        const line = document.createElement('div');
-        line.className = `terminal-line ${type}`;
-        line.innerHTML = ansiToHtml(text);
-        terminalOutput.appendChild(line);
-        terminalOutput.scrollTop = terminalOutput.scrollHeight;
-    }
-}
-
-function refreshTerminalUI() {
-    const project = getActiveProject();
-    terminalOutput.innerHTML = '';
-
-    // Sincronizar el input de comando en el panel de settings
-    const cmdInput = document.getElementById('terminal-command-input');
-    if (cmdInput && project) cmdInput.value = project.runCommand || '';
-
-    if (project && project.terminalLogs && project.terminalLogs.length > 0) {
-        project.terminalLogs.forEach(log => {
-            const line = document.createElement('div');
-            line.className = `terminal-line ${log.type}`;
-            line.innerHTML = ansiToHtml(log.text);
-            terminalOutput.appendChild(line);
-        });
-    } else {
-        terminalOutput.innerHTML = '<div class="terminal-line system">Terminal lista. Escribe un comando para empezar...</div>';
-    }
-    terminalOutput.scrollTop = terminalOutput.scrollHeight;
-    updateTerminalStatusUI();
-}
-
-async function updateTerminalStatusUI() {
-    const project = getActiveProject();
-    const statusContainer = document.getElementById('terminal-status');
-    if (!statusContainer) return;
-    const statusText = statusContainer.querySelector('.status-text');
-
-    if (!project || !project.id) {
-        statusContainer.classList.remove('running');
-        statusText.textContent = 'OFFLINE';
-        return;
-    }
-
-    try {
-        const res = await fetch(`${API_BASE}/execute/status/${project.id}`);
-        const data = await res.json();
-        console.log(`[TERMINAL] Status for ${project.id}:`, data);
-        if (data.running) {
-            statusContainer.classList.add('running');
-            statusText.textContent = 'RUNNING';
-            connectTerminalStream(project.id);
-        } else {
-            statusContainer.classList.remove('running');
-            statusText.textContent = 'OFFLINE';
-        }
-    } catch (e) {
-        console.error("Error checking terminal status:", e);
-        statusText.textContent = 'ERROR';
-    }
-}
-
-function connectTerminalStream(projectId) {
-    if (terminalEventSource) {
-        if (terminalEventSource.url.includes(`/stream/${projectId}`)) return;
-        terminalEventSource.close();
-    }
-
-    // ⚠️ IMPORTANTE: No limpiar terminalLogs al conectar stream.
-    // El clear se maneja en runTerminalCommand al presionar Play.
-    // Si se limpia aquí, se pierden los logs al switchear proyectos
-    // porque connectTerminalStream se llama desde updateTerminalStatusUI.
-    terminalEventSource = new EventSource(`${API_BASE}/execute/stream/${projectId}`);
-
-    terminalEventSource.addEventListener('stdout', (e) => {
-        const data = JSON.parse(e.data);
-        appendToTerminal(data, 'stdout', projectId);
-    });
-
-    terminalEventSource.addEventListener('stderr', (e) => {
-        const data = JSON.parse(e.data);
-        appendToTerminal(data, 'stderr', projectId);
-    });
-
-    terminalEventSource.addEventListener('exit', (e) => {
-        const data = JSON.parse(e.data);
-        appendToTerminal(`\n[PROCESO TERMINADO - Código ${data.code}]`, 'system', projectId);
-        updateTerminalStatusUI();
-        terminalEventSource.close();
-        terminalEventSource = null;
-    });
-
-    terminalEventSource.onerror = () => {
-        terminalEventSource.close();
-        terminalEventSource = null;
-        updateTerminalStatusUI();
-    };
-}
-
-async function runTerminalCommand(command) {
-    const project = getActiveProject();
-    if (!project) return;
-    const cwd = project.folder || '';
-
-    appendToTerminal(`$ ${command}`, 'command', project.id);
-
-    try {
-        const res = await fetch(`${API_BASE}/execute/command`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command, cwd, projectId: project.id })
-        });
-        const data = await res.json();
-        if (data.success) {
-            updateTerminalStatusUI();
-            connectTerminalStream(project.id);
-        } else {
-            appendToTerminal(`Error: ${data.error}`, 'stderr', project.id);
-        }
-    } catch (e) {
-        appendToTerminal(`Error de conexión: ${e.message}`, 'stderr', project.id);
-    }
-}
-
-async function detectRunCommand(project) {
-    if (!project || !project.folder || !project.currentFiles) return 'node server.js';
-
-    const files = project.currentFiles;
-    if (files.some(f => f.name.toLowerCase() === 'run.bat')) return 'run.bat';
-
-    const pkg = files.find(f => f.name === 'package.json');
-    if (pkg) {
-        try {
-            const res = await fetch(`${API_BASE}/files/read?path=${encodeURIComponent(pkg.path)}`);
-            const content = await res.json();
-            const data = JSON.parse(content.content);
-            if (data.scripts) {
-                if (data.scripts.dev) return 'npm run dev';
-                if (data.scripts.start) return 'npm start';
-            }
-        } catch (e) { console.error("Error detectando comando en package.json:", e); }
-    }
-
-    if (files.some(f => f.name === 'server.js')) return 'node server.js';
-    if (files.some(f => f.name === 'index.html')) return 'python -m http.server 53637';
-    return 'node server.js';
-}
 
 function setupTerminalEvents() {
     const settingsBtn = document.getElementById('terminal-settings-btn');
@@ -3275,13 +3118,16 @@ Analiza si la aplicación está funcionando como se esperaba según los requisit
 }
 
 async function triggerAgentLogic(project, chat, origin = 'user') {
-    if (chat.isThinking) return;
-
     // Verificar si el toggle Hermes está activo para este chat
     const hermesBtn = document.getElementById('hermes-toggle-btn');
     const useHermes = hermesBtn && hermesBtn.classList.contains('on');
 
     if (useHermes) {
+        // 🐛 BUGFIX /steer: Mover isThinking guard después del check Hermes.
+        // triggerHermesLogic() ya maneja isThinking internamente (log + proceed),
+        // pero si el guard está ANTES, el mensaje nunca llega a triggerHermesLogic.
+        // Esto rompía /steer (instrucción de fondo) cuando Hermes ya estaba procesando.
+
         // Auto-start Hermes si no hay instancia activa
         if (project && project.folder) {
             try {
@@ -3310,6 +3156,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
         }
         return await triggerHermesLogic(project, chat, origin);
     }
+
+    // ⚠️ Legacy agent: bloquear si ya está pensando (Hermes tiene su propio manejo)
+    if (chat.isThinking) return;
 
     await setAgentActive(true);
     await clearClientLogs();
