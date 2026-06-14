@@ -231,6 +231,11 @@ export function updateThinking(chat, isThinking, status = '', subtext = '') {
     _debounceThinkingLayout();
 
     if (prevThinking !== isThinking) {
+        // 🐛 BUGFIX: Guardar el draft del textarea antes de saveData()
+        // saveData() envía el estado al server, que luego broadcast sync:stateUpdated
+        // y loadData() reemplaza los objetos de proyecto, perdiendo el draftInput.
+        // Si el usuario estaba escribiendo mientras el agente terminaba, se borra el texto.
+        saveChatDraft();
         window.saveData();
         try {
             const bc = new BroadcastChannel('jp-agents-sync');

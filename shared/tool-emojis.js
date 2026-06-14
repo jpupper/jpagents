@@ -67,6 +67,9 @@ const TOOL_EMOJIS = {
 
     // Task management
     todo: '📋',
+
+    // Image generation
+    image_generate: '🎨',
 };
 
 /**
@@ -74,8 +77,8 @@ const TOOL_EMOJIS = {
  * @param {string} name - Nombre de la herramienta (ej: 'web_search', 'read_file')
  * @returns {string} Emoji + espacio, o '🔧 ' si no está mapeada.
  */
-function getToolEmoji(name) {
-    return TOOL_EMOJIS[name] || '🔧';
+function getToolEmoji(name, defaultEmoji = '⚡') {
+    return TOOL_EMOJIS[name] || defaultEmoji;
 }
 
 export { TOOL_EMOJIS, getToolEmoji };

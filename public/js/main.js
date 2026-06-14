@@ -14,6 +14,7 @@ window.renderProjectList = renderProjectList;
 import { renderMessages, showToast, playAgentCompleteSound, playAgentErrorSound, updateThinking } from './modules/chat-ui.js';
 import { refreshConsoleUI } from './modules/console-view.js';
 import { addImages, renderImagePreviews, clearImages, handleImageSelection, toBase64 } from './modules/image-upload.js';
+import { initPdfReader, clearPdfAttachment, getPdfText, getPdfName } from './modules/pdf-reader.js';
 import { appendToTerminal, refreshTerminalUI, updateTerminalStatusUI, connectTerminalStream, runTerminalCommand, detectRunCommand , terminalEventSource } from './modules/terminal-ui.js';
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
@@ -885,6 +886,7 @@ async function init() {
     setupEventListeners();
     setupSkillsEventListeners();
     setupTerminalEvents();
+    initPdfReader();
     initPanelResize();
     
     // ─── Auto-transformación
@@ -2030,6 +2032,13 @@ async function checkSecondAgentHealth() {
 
 window.updateViewVisibility = updateViewVisibility;
 
+window.viewActiveProjectPrompt = () => {
+    const project = getActiveProject();
+    if (project) {
+        window.viewProjectPrompt(project.id);
+    }
+};
+
 window.viewProjectPrompt = (projectId) => {
     const project = state.projects.find(p => p.id === projectId);
     if (!project) return;
@@ -2932,6 +2941,12 @@ async function sendMessage() {
     if (state.currentAttachedImages.length > 0) {
         userMsg.images = [...state.currentAttachedImages];
     }
+    // 🐛 BUGFIX: Incluir texto de PDF adjunto como contexto en el mensaje
+    if (state.currentPdfText && state.currentPdfText.length > 0) {
+        const pdfName = state.currentPdfName || 'documento.pdf';
+        const pdfContext = `\n\n[📄 CONTENIDO DEL PDF ADJUNTO: ${pdfName}]\n${state.currentPdfText}\n[/FIN DEL PDF]`;
+        userMsg.content += pdfContext;
+    }
     chat.messages.push(userMsg);
 
     // Clear session summary and accumulated changes when user sends new message
@@ -2954,6 +2969,7 @@ async function sendMessage() {
     chatInput.value = '';
     delete chat.draftInput;  // Limpiar draft al enviar
     clearImages();
+    clearPdfAttachment();
     renderMessages();
 
     await triggerAgentLogic(project, chat);
@@ -3769,7 +3785,7 @@ function renderGodMessages() {
     if (!godChatMessages) return;
 
     if (state.godMessages.length === 0) {
-        godChatMessages.innerHTML = `<div class="message system">👑 Bienvenido a HERMES GOD — el centro de control supremo de JP Agents.</div>`;
+        godChatMessages.innerHTML = `<div class="message system">👑 Bienvenido a Carlos Kernel — el centro de control supremo de JP Agents.</div>`;
         return;
     }
 
@@ -3783,7 +3799,7 @@ function renderGodMessages() {
                 <div class="thinking-bubble-content">
                     <div class="spinner"></div>
                     <div class="thinking-text-wrapper">
-                        <div class="thinking-status">💭 HERMES GOD pensando...</div>
+                        <div class="thinking-status">💭 Carlos Kernel pensando...</div>
                         ${thinkingText ? `<div class="thinking-subtext thinking-stream">${thinkingText}</div>` : ''}
                     </div>
                 </div>
@@ -3932,7 +3948,7 @@ async function triggerGodLogic(retryCount = 0) {
         state.godIsThinking = false;
         if (stopGodBtn) stopGodBtn.classList.add('hidden');
         if (godStatusText) godStatusText.textContent = 'Error';
-        state.godMessages.push({ role: 'system', content: '⚠️ Error de HERMES GOD: ' + e.message });
+        state.godMessages.push({ role: 'system', content: '⚠️ Error de Carlos Kernel: ' + e.message });
         renderGodMessages();
     }
 }
@@ -3945,13 +3961,13 @@ window.stopGodAgent = () => {
     state.godIsStopped = true;
     if (stopGodBtn) stopGodBtn.classList.add('hidden');
     if (godStatusText) godStatusText.textContent = 'Detenido';
-    state.godMessages.push({ role: 'system', content: '⏹️ HERMES GOD detenido por el usuario.' });
+    state.godMessages.push({ role: 'system', content: '⏹️ Carlos Kernel detenido por el usuario.' });
     renderGodMessages();
     saveData();
 };
 
 window.clearGodChat = () => {
-    if (!confirm("¿Borrar todo el historial de HERMES GOD?")) return;
+    if (!confirm("¿Borrar todo el historial de Carlos Kernel?")) return;
     state.godMessages = [];
     renderGodMessages();
     saveData();

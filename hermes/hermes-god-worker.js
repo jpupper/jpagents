@@ -24,6 +24,7 @@ import os from 'os';
 import fs from 'fs';
 import WebSocket from 'ws';
 import { spawnHermes } from './hermes-executor.js';
+import { hasResumenFormat, extractResumenData, ensureResumen } from '../server/utils/response-utils.js';
 
 // ─── Config ───
 const HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
@@ -228,115 +229,8 @@ async function syncPendingHistory() {
 
 // ─── Funciones auxiliares para formato RESUMEN (usadas por processMessage) ───
 
-/**
- * Valida que la respuesta contenga el formato RESUMEN obligatorio (📋⚙️📝📊).
- */
-function hasRequiredFormat(text) {
-    if (!text || text.length < 20) return false;
-    if (text.includes('📋 OBJETIVO') && text.includes('📊 ESTADO')) return true;
-    if (text.includes('━━━ 📋 RESUMEN')) return true;
-    return false;
-}
-
-/**
- * Extrae información útil de la respuesta de Hermes para sintetizar
- * un RESUMEN con contenido real.
- */
-function extractResumenData(response, originalMessage) {
-    const data = {
-        objetivo: originalMessage || 'Consulta',
-        realizacion: [],
-        modificaciones: [],
-        estado: 'Procesado',
-        notas: 'N/A'
-    };
-
-    const filePaths = response.match(/[DC]:\\[^\s,;)\]]{10,}/g);
-    if (filePaths) {
-        const unique = [...new Set(filePaths)];
-        data.modificaciones = unique.slice(0, 5);
-    }
-
-    const urls = response.match(/https?:\/\/[^\s,;)\]]{10,}/g);
-    if (urls && data.modificaciones.length < 5) {
-        data.modificaciones.push(...urls.slice(0, 3));
-    }
-
-    const toolPatterns = [
-        /write_file|crea(?:r|ste)|escribí|modifiq/i,
-        /terminal|ejecut|comando|npm|git/i,
-        /web_search|buscador|google/i,
-        /vision_analyze|imagen|imág|screenshot/i,
-        /ftp|deploy|subir|upload/i,
-        /skill_view|habilidad|skill/i,
-        /patch|edit/i,
-        /browser|navegador|web/i,
-        /read_file|leer|lei/i,
-        /search_files|busqu|archiv/i,
-        /CREATE_PROJECT|CREATE_AGENT|DELETE_|STOP_AGENT|delegad/i,
-        /curl|fetch|api|endpoint/i
-    ];
-    for (const pattern of toolPatterns) {
-        if (pattern.test(response)) {
-            const match = response.match(pattern);
-            if (match) data.realizacion.push(match[0].toLowerCase());
-        }
-    }
-
-    if (/error|fall[óo]|no pudo|exception/i.test(response)) {
-        data.estado = '❌ Error';
-    } else if (/completad|terminad|listo|✅|hecho|cread|subid/i.test(response)) {
-        data.estado = '✅ Completado';
-    } else if (/en proceso|trabajando|ejecutando|procesando/i.test(response)) {
-        data.estado = '🔄 En progreso';
-    }
-
-    const seguirMatch = response.match(/pr[oó]ximos? paso|seguir|pendiente|falta|faltar[íi]a/i);
-    if (seguirMatch) data.notas = 'Ver detalle en respuesta arriba';
-
-    return data;
-}
-
-/**
- * Fuerza que la respuesta SIEMPRE termine con el bloque RESUMEN formateado.
- */
-function ensureResumen(response, originalMessage = '') {
-    if (!response || response.length < 5) {
-        return `━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${originalMessage || 'Consulta al asistente'}\n⚙️ REALIZACIÓN: N/A — Sin respuesta\n📝 MODIFICACIONES: Ninguna\n📊 ESTADO: Sin respuesta disponible\n📌 NOTAS: N/A`;
-    }
-
-    if (response.includes('━━━ 📋 RESUMEN ━━━')) return response;
-
-    if (hasRequiredFormat(response)) {
-        const objetivoIdx = response.indexOf('📋');
-        const preContent = response.slice(0, objetivoIdx).trim();
-        const resumenBlock = response.slice(objetivoIdx).trim();
-        const cleanPre = preContent
-            .replace(/^.*\[thinking\].*$/gm, '')
-            .replace(/^.*Conversation completed.*$/gm, '')
-            .replace(/^.*Session:.*$/gm, '')
-            .replace(/^.*Tool call:.*$/gm, '')
-            .replace(/^.*Turn ended:.*$/gm, '')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-        return cleanPre.length > 10
-            ? `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`
-            : `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
-    }
-
-    console.log('[WORKER] ⚠️ Sintetizando RESUMEN con datos extraídos...');
-    const data = extractResumenData(response, originalMessage);
-    const shortBody = response.length > 2000
-        ? response.slice(0, 2000) + '\n\n[...]'
-        : response;
-    const realizacionStr = data.realizacion.length > 0
-        ? [...new Set(data.realizacion)].join(', ')
-        : 'Procesó la consulta';
-    const modificacionesStr = data.modificaciones.length > 0
-        ? data.modificaciones.join('\n    ')
-        : 'N/A';
-    return `${shortBody}\n\n━━━ 📋 RESUMEN ━━━\n\n📋 OBJETIVO: ${data.objetivo.slice(0, 300)}\n⚙️ REALIZACIÓN: ${realizacionStr}\n📝 MODIFICACIONES:\n    ${modificacionesStr}\n📊 ESTADO: ${data.estado}\n📌 NOTAS: ${data.notas}`;
-}
+// NOTA: Funciones hasResumenFormat, extractResumenData y ensureResumen
+// importadas desde server/utils/response-utils.js
 
 // ─── Hermes con streaming de pensamiento (IPC version) via hermes-executor.js ───
 async function askHermesWithThinking(message, statusMsgChatId, statusMsgId, chatId) {
@@ -468,7 +362,7 @@ async function handleStatusCommand(chatId, messageId) {
         ? `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`
         : `${Math.floor(uptime / 60)}m ${uptime % 60}s`;
 
-    let msg = `👑 *HERMES GOD Worker — Estado*\\n\\n`;
+    let msg = `👑 *Carlos Kernel Worker — Estado*\\n\\n`;
     msg += `🕐 *Worker uptime:* ${uptimeStr}\\n`;
 
     try {

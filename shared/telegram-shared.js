@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { formatMessage } from '../lib/markdown-v2.js';
 
 // ─── Uptime formateado ───
 export function formatUptime(seconds) {
@@ -62,8 +63,12 @@ export async function safeTelegramCall(fn, fallbackMsg = null) {
     try {
         return await fn();
     } catch (e) {
-        try { console.error(`[TELEGRAM] ⚠️ API call failed: ${e.message?.slice(0, 100)}`); } catch {}
-        if (fallbackMsg && e.message?.includes('message to edit')) {
+        const msg = e.message || '';
+        // "message is not modified" es inofensivo — no loguear ruido
+        if (!msg.includes('message is not modified') && !msg.includes('message to edit')) {
+            try { console.error(`[TELEGRAM] ⚠️ API call failed: ${msg.slice(0, 100)}`); } catch {}
+        }
+        if (fallbackMsg && msg.includes('message to edit')) {
             return null;
         }
         return null;
@@ -74,14 +79,33 @@ export async function safeTelegramCall(fn, fallbackMsg = null) {
 export async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, MAX_LEN = 3500, parseMode = '') {
     if (!text) text = '✅ Listo.';
 
+    // Helper: intenta con parse_mode, y si falla ("can't parse entities") reintenta con HTML, luego texto plano
+    async function _trySend(fn) {
+        const r1 = await safeTelegramCall(() => fn(parseMode));
+        if (r1 !== null || !parseMode) return r1;
+        try { console.warn('[TELEGRAM] ⚠️ MarkdownV2 falló, reintentando con HTML'); } catch {}
+        // Fallback 1: HTML parse_mode (más tolerante que MarkdownV2)
+        const rHtml = await safeTelegramCall(() => fn('HTML'));
+        if (rHtml !== null) {
+            try { console.warn('[TELEGRAM] ⚠️ Fallback a HTML por error de parse_mode'); } catch {}
+            return rHtml;
+        }
+        // Fallback 2: texto plano (último recurso)
+        const r2 = await safeTelegramCall(() => fn(''));
+        if (r2 !== null) {
+            try { console.warn('[TELEGRAM] ⚠️ Fallback a texto plano por error de parse_mode'); } catch {}
+        }
+        return r2;
+    }
+
     if (text.length <= MAX_LEN) {
         if (thinkingMsg) {
-            const edited = await safeTelegramCall(() =>
-                bot.api.editMessageText(chatId, thinkingMsg.message_id, text, { parse_mode: parseMode })
+            const edited = await _trySend((pm) =>
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, text, { parse_mode: pm })
             );
             if (edited !== null) return;
         }
-        await safeTelegramCall(() => ctx.reply(text, { parse_mode: parseMode }));
+        await _trySend((pm) => ctx.reply(text, { parse_mode: pm }));
     } else {
         const parts = [];
         let remaining = text;
@@ -95,18 +119,18 @@ export async function sendTelegramResponse(bot, chatId, thinkingMsg, ctx, text, 
             remaining = remaining.slice(cut).trim();
         }
         if (thinkingMsg) {
-            const edited = await safeTelegramCall(() =>
-                bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: parseMode })
+            const edited = await _trySend((pm) =>
+                bot.api.editMessageText(chatId, thinkingMsg.message_id, parts[0], { parse_mode: pm })
             );
             if (edited === null) {
-                await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: parseMode }));
+                await _trySend((pm) => ctx.reply(parts[0], { parse_mode: pm }));
             }
         } else {
-            await safeTelegramCall(() => ctx.reply(parts[0], { parse_mode: parseMode }));
+            await _trySend((pm) => ctx.reply(parts[0], { parse_mode: pm }));
         }
         for (let i = 1; i < parts.length; i++) {
-            await safeTelegramCall(() =>
-                bot.api.sendMessage(chatId, parts[i], { parse_mode: parseMode })
+            await _trySend((pm) =>
+                bot.api.sendMessage(chatId, parts[i], { parse_mode: pm })
             );
         }
     }
@@ -178,13 +202,16 @@ export async function sendAgentCompleteTelegram(bot, ownerChatId, info, source =
         lines.push(``);
         lines.push(`━━━`);
 
-        const message = lines.join('\n');
+        const rawMessage = lines.join('\n');
 
-        // Split si es muy largo (>3500 chars, límite de Telegram para Markdown)
+        // Aplicar formatMessage() para convertir markdown estándar a MarkdownV2 de Telegram
+        const message = formatMessage(rawMessage);
+
+        // Split si es muy largo (>3500 chars, límite de Telegram para MarkdownV2)
         const MAX_TG_LEN = 3500;
         if (message.length <= MAX_TG_LEN) {
             await safeTelegramCall(() =>
-                bot.api.sendMessage(ownerChatId, message, { parse_mode: 'Markdown' })
+                bot.api.sendMessage(ownerChatId, message, { parse_mode: 'MarkdownV2' })
             );
         } else {
             // Split en partes
@@ -203,7 +230,7 @@ export async function sendAgentCompleteTelegram(bot, ownerChatId, info, source =
             }
             for (const part of parts) {
                 await safeTelegramCall(() =>
-                    bot.api.sendMessage(ownerChatId, part, { parse_mode: 'Markdown' })
+                    bot.api.sendMessage(ownerChatId, part, { parse_mode: 'MarkdownV2' })
                 );
             }
         }

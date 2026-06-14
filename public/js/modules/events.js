@@ -84,7 +84,7 @@ function connectGlobalWS() {
                     });
                     if (typeof renderAdminMessages === 'function') {
                         state.adminMessages.push({
-                            role: 'system', content: `📱 HERMES GOD → Telegram: ${data.text}`, timestamp: Date.now()
+                            role: 'system', content: `📱 Carlos Kernel → Telegram: ${data.text}`, timestamp: Date.now()
                         });
                         renderAdminMessages();
                     }
@@ -93,7 +93,7 @@ function connectGlobalWS() {
                 if (data.event === 'telegram:thinking') {
                     state.telegramMessages.push({
                         type: 'thinking', chatId: data.chatId,
-                        text: 'HERMES GOD está pensando...', timestamp: Date.now()
+                        text: 'Carlos Kernel está pensando...', timestamp: Date.now()
                     });
                     renderTelegramMessages();
                 }

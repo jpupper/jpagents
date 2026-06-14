@@ -13,7 +13,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { connectDB, getCollection } from '../db/db.js';
 import { formatUptime, RESUMEN_MANDATE, loadOwnerChatId, saveOwnerChatId, sendAgentCompleteTelegram } from '../shared/telegram-shared.js';
-import { initTelegramBot, telegramBot, telegramBotOwner, botStartTime, pendingClarifies } from '../telegram/telegram-bot.js';
+import { initTelegramBot, telegramBot, telegramBotOwner, botStartTime, pendingClarifies, stopTelegramBot } from '../telegram/telegram-bot.js';
 
 // LangGraph Integration
 import { agentApp } from '../agents/agent_graph.js';
@@ -369,233 +369,8 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
     });
 }
 
-function getToolEmoji(toolName) {
-    const emojis = {
-        terminal: '💻', web_search: '🔍', read_file: '📄',
-        write_file: '✏️', patch: '🔧', search_files: '🔎',
-        browser_navigate: '🌐', execute_code: '🐍',
-        delegate_task: '📋', clarify: '❓', memory: '🧠',
-        cronjob: '⏰', vision_analyze: '👁️', image_generate: '🎨',
-        text_to_speech: '🔊',
-    };
-    return emojis[toolName] || '⚡';
-}
-/**
- * Limpia la respuesta de Hermes: quita [thinking], metadatos de sesión,
- * líneas de resumen (Conversation completed, Session:, Duration:, etc.)
- */
-function cleanHermesResponse(text) {
-    if (!text) return '';
-    return text
-        // Quitar [thinking] lines
-        .replace(/^.*\[thinking\].*$/gm, '')
-        // Quitar líneas de resumen de sesión
-        .replace(/^.*¡+ Conversation completed after.*$/gm, '')
-        .replace(/^.*Resume this session with:.*$/gm, '')
-        .replace(/^.*hermes --resume.*$/gm, '')
-        .replace(/^Session:\s+\S+.*$/gm, '')
-        .replace(/^Duration:\s+.*$/gm, '')
-        .replace(/^Messages:\s+.*$/gm, '')
-        // Quitar tool call residual
-        .replace(/^.*Tool call:.*$/gm, '')
-        .replace(/^.*Turn ended:.*$/gm, '')
-        // Multiple newlines → single
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-}
-
-/**
- * Extrae SOLO el bloque de resumen estructurado (📋⚙️📝📊) de la respuesta de Hermes.
- * Busca desde 📋 OBJETIVO hasta el final del contenido de 📊 ESTADO ACTUAL.
- * Si no encuentra el bloque estructurado, usa cleanHermesResponse() como fallback.
- */
-function extractTelegramSummary(text) {
-    if (!text || typeof text !== 'string') return '';
-
-    // Buscar inicio del bloque: 📋 OBJETIVO
-    const objetivoIdx = text.indexOf('📋');
-    if (objetivoIdx === -1) return cleanHermesResponse(text);
-
-    // Buscar 📊 ESTADO ACTUAL (cierre del bloque)
-    const estadoMatch = text.slice(objetivoIdx).match(/(📊\s*ESTADO\s*ACTUAL:[^\n]*)/);
-    if (!estadoMatch) return cleanHermesResponse(text);
-
-    const estadoEnd = objetivoIdx + estadoMatch.index + estadoMatch[1].length;
-
-    // El contenido después de ESTADO ACTUAL continúa hasta:
-    // - doble salto de línea (\n\n)
-    // - otro emoji de sección (📋⚙️📝📊 etc.)
-    // - fin del string
-    const rest = text.slice(estadoEnd);
-    const contentEnd = rest.search(/\n\n|\n(?=\s*[📋⚙️📝📊✅❌ℹ️⏭️]|[A-ZÁÉÍÓÚÑ]{3,}:)/);
-    const blockEnd = contentEnd > 0 ? estadoEnd + contentEnd : text.length;
-
-    let summary = text.slice(objetivoIdx, blockEnd).trim();
-
-    // Si el bloque está vacío después de limpiar, fallback
-    if (!summary || summary.length < 15) return cleanHermesResponse(text);
-
-    return summary;
-}
-
-/**
- * Plantilla de instrucción obligatoria que se PREPENDE a cada mensaje
- * enviado a Hermes ADMIN para forzar el formato RESUMEN.
- * Se interpola con el mensaje del usuario.
- * Ahora importado desde telegram-shared.js
- */
-
-/**
- * Valida que la respuesta contenga el formato RESUMEN obligatorio (📋⚙️📝📊).
- * Si no lo tiene, lo SINTETIZA usando el mensaje original y la respuesta.
- */
-function hasResumenFormat(text) {
-    if (!text || text.length < 20) return false;
-    // Check for proper RESUMEN format with labels — NOT just the emojis alone
-    if (text.includes('📋 OBJETIVO') && text.includes('📊 ESTADO')) return true;
-    // Also check old format for backward compat during transition
-    if (text.includes('━━━ 📋 RESUMEN')) return true;
-    return false;
-}
-
-/**
- * Extrae información útil de la respuesta de Hermes para sintetizar
- * un RESUMEN con contenido real.
- */
-function extractResumenData(response, originalMessage) {
-    const data = {
-        objetivo: originalMessage || 'Consulta',
-        realizacion: [],
-        modificaciones: [],
-        estado: 'Procesado',
-        notas: 'N/A'
-    };
-
-    // Extraer paths de archivos creados/modificados
-    const filePaths = response.match(/[DC]:\\[^\s,;)\]]{10,}/g);
-    if (filePaths) {
-        const unique = [...new Set(filePaths)];
-        // Limitar a 5 paths para no saturar
-        data.modificaciones = unique.slice(0, 5);
-    }
-
-    // Extraer URLs (subidas a web, etc)
-    const urls = response.match(/https?:\/\/[^\s,;)\]]{10,}/g);
-    if (urls && data.modificaciones.length < 5) {
-        data.modificaciones.push(...urls.slice(0, 3));
-    }
-
-    // Detectar herramientas usadas
-    const toolPatterns = [
-        /write_file|crea(?:r|ste)|escribí|modifiq/i,
-        /terminal|ejecut|comando|npm|git/i,
-        /web_search|buscador|google/i,
-        /vision_analyze|imagen|imág|screenshot/i,
-        /ftp|deploy|subir|upload/i,
-        /skill_view|habilidad|skill/i,
-        /patch|edit/i,
-        /browser|navegador|web/i,
-        /read_file|leer|lei/i,
-        /search_files|busqu|archiv/i,
-        /CREATE_PROJECT|CREATE_AGENT|DELETE_|STOP_AGENT|delegad/i,
-        /curl|fetch|api|endpoint/i
-    ];
-    for (const pattern of toolPatterns) {
-        if (pattern.test(response)) {
-            const match = response.match(pattern);
-            if (match) data.realizacion.push(match[0].toLowerCase());
-        }
-    }
-
-    // Detectar estado
-    if (/error|fall[óo]|no pudo|exception/i.test(response)) {
-        data.estado = '❌ Error';
-    } else if (/completad|terminad|listo|✅|hecho|cread|subid/i.test(response)) {
-        data.estado = '✅ Completado';
-    } else if (/en proceso|trabajando|ejecutando|procesando/i.test(response)) {
-        data.estado = '🔄 En progreso';
-    }
-
-    // Detectar notas/pendientes
-    const seguirMatch = response.match(/pr[oó]ximos? paso|seguir|pendiente|falta|faltar[íi]a/i);
-    if (seguirMatch) {
-        data.notas = 'Ver detalle en respuesta arriba';
-    }
-
-    return data;
-}
-
-/**
- * Fuerza que la respuesta SIEMPRE termine con el bloque RESUMEN formateado.
- * Si el modelo no lo generó, lo sintetiza automáticamente con datos reales.
- *
- * @param {string} response - Respuesta cruda de Hermes
- * @param {string} originalMessage - Mensaje original del usuario
- * @returns {string} - Respuesta con RESUMEN garantizado
- */
-function ensureResumen(response, originalMessage = '') {
-    if (!response || response.length < 5) {
-        return (
-`━━━ 📋 RESUMEN ━━━
-
-📋 OBJETIVO: ${originalMessage || 'Consulta al asistente'}
-⚙️ REALIZACIÓN: N/A — El asistente no produjo respuesta
-📝 MODIFICACIONES: Ninguna
-📊 ESTADO: Sin respuesta disponible
-📌 NOTAS: N/A`);
-    }
-
-    // Si ya tiene nuestro nuevo formato (━━━ 📋 RESUMEN ━━━), devolver tal cual
-    if (response.includes('━━━ 📋 RESUMEN ━━━')) {
-        return response;
-    }
-
-    // Si tiene formato emoji (📋...📊) pero sin nuestro separador
-    if (hasResumenFormat(response)) {
-        const objetivoIdx = response.indexOf('📋');
-        const preContent = response.slice(0, objetivoIdx).trim();
-        const resumenBlock = response.slice(objetivoIdx).trim();
-
-        // Limpiar basura técnica del preContent (reusa cleanHermesResponse)
-        const cleanPre = cleanHermesResponse(preContent);
-
-        if (cleanPre.length > 10) {
-            // Formatear el bloque resumen con nuestro formato estándar
-            return `${cleanPre}\n\n━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
-        }
-        return `━━━ 📋 RESUMEN ━━━\n\n${resumenBlock}`;
-    }
-
-    // No tiene formato — sintetizar con datos extraídos
-    const data = extractResumenData(response, originalMessage);
-
-    // Truncar respuesta larga (máximo 2000 chars en el cuerpo)
-    const shortBody = response.length > 2000
-        ? response.slice(0, 2000) + '\n\n[...]'
-        : response;
-
-    const realizacionStr = data.realizacion.length > 0
-        ? [...new Set(data.realizacion)].join(', ')
-        : 'Procesó la consulta';
-
-    const modificacionesStr = data.modificaciones.length > 0
-        ? data.modificaciones.join('\n    ')
-        : 'N/A';
-
-    return (
-`${shortBody}
-
-━━━ 📋 RESUMEN ━━━
-
-📋 OBJETIVO: ${data.objetivo.slice(0, 300)}
-⚙️ REALIZACIÓN: ${realizacionStr}
-📝 MODIFICACIONES:
-    ${modificacionesStr}
-📊 ESTADO: ${data.estado}
-📌 NOTAS: ${data.notas}`);
-}
-
-// ─── Safe console (EPIPE protection) ───
+import { getToolEmoji } from '../shared/tool-emojis.js';
+import { cleanHermesResponse, extractTelegramSummary, hasResumenFormat, extractResumenData, ensureResumen } from './utils/response-utils.js';// ─── Safe console (EPIPE protection) ───
 const slog = {
     log: (...args) => { try { console.log(...args); } catch { /* EPIPE safe */ } },
     error: (...args) => { try { console.error(...args); } catch { /* EPIPE safe */ } },
@@ -2992,6 +2767,16 @@ function triggerRestart(delay = 2000) {
             } catch (e) {}
             godSocket = null;
         }
+
+        // ─── Telegram Bot: detener antes de spawnear nuevo proceso ───
+        // Esto evita el conflicto 409 (dos bots con el mismo token en getUpdates)
+        try {
+            console.log('[SYSTEM] Deteniendo Telegram bot...');
+            await stopTelegramBot();
+            console.log('[SYSTEM] Telegram bot detenido correctamente.');
+        } catch (tbErr) {
+            console.warn('[SYSTEM] Error deteniendo Telegram bot:', tbErr.message);
+        }
         
         // Attempt graceful close before exit
         if (serverInstance) {
@@ -3036,25 +2821,36 @@ app.post('/api/utils/open-folder', async (req, res) => {
 
 function spawnNewProcess() {
     try {
-        // spawn maneja espacios en path sin necesidad de comillas (a diferencia de shell)
-        const child = spawn(process.argv[0], process.argv.slice(1), {
+        const runBatPath = path.join(__dirname, 'run.bat');
+        console.log(`[SYSTEM] ▶️ Ejecutando run.bat para reinicio completo: ${runBatPath}`);
+
+        // Ejecutar run.bat en una nueva ventana cmd
+        // El proceso nuevo abrirá su propia ventana, matará procesos viejos
+        // (incluyéndonos), y arrancará npm run dev
+        const child = spawn('cmd.exe', ['/c', 'start', '"JP Agents — Restart"', '/wait', 'run.bat'], {
             detached: true,
-            stdio: 'inherit',
-            shell: true
+            stdio: 'ignore',
+            shell: true,
+            windowsHide: false,
+            cwd: __dirname
         });
         child.unref();
-        
-        // Give the new process time to bind before we exit
+
+        // run.bat se encarga de:
+        // 1. Verificar/levantar Gateway Hermes (puerto 8642)
+        // 2. Matar procesos viejos en puertos 4699 y 2998 (incluyéndonos)
+        // 3. Esperar puertos libres
+        // 4. Iniciar npm run dev (server + mcp-server)
+        // Nosotros solo debemos salir para que run.bat pueda matarnos limpiamente
+
         setTimeout(() => {
-            console.log('[SYSTEM] Old process exiting after spawning replacement.');
+            console.log('[SYSTEM] Old process exiting - run.bat tomará el control.');
             process.exit(0);
-        }, 2000);
+        }, 3000);
     } catch (e) {
-        console.error('[SYSTEM] Failed to spawn new process:', e);
+        console.error('[SYSTEM] Failed to spawn run.bat:', e);
         console.error('[SYSTEM] The server will CONTINUE running despite restart failure.');
         writeCrashLog('[SYSTEM] spawnNewProcess failed', e);
-        // CRITICAL BUGFIX: Do NOT process.exit(1) here — that kills the whole server!
-        // Instead, stay alive and log the error.
     }
 }
 
@@ -4883,7 +4679,14 @@ process.on('SIGTERM', () => {
 // ─── Graceful Shutdown ───
 // Cierra el server HTTP limpiamente en SIGTERM/SIGINT para evitar conexiones colgadas
 async function gracefulShutdown(signal) {
-    console.log('[SHUTDOWN] Recibido ' + signal + ' \u2014 cerrando servidor graceful...');
+    console.log('[SHUTDOWN] Recibido ' + signal + ' — cerrando servidor graceful...');
+
+    // ─── Telegram Bot: detener para evitar 409 conflict ───
+    try {
+        await stopTelegramBot();
+    } catch (tbErr) {
+        try { console.warn('[SHUTDOWN] Error deteniendo Telegram bot:', tbErr.message); } catch {}
+    }
 
     // Cerrar WebSocket server primero
     if (wss) {
@@ -5795,7 +5598,7 @@ async function startServer() {
         });
     });
 
-    serverInstance = httpServer.listen(port, '0.0.0.0', () => {
+    serverInstance = httpServer.listen(port, '0.0.0.0', async () => {
         const ifaces = os.networkInterfaces();
         let localIP = 'localhost';
         for (const name of Object.keys(ifaces)) {
@@ -5808,6 +5611,7 @@ async function startServer() {
             if (localIP !== 'localhost') break;
         }
         console.log(`\n═══════════════════════════════════════════════`);
+        console.log(`  👤 Carlos Kernel presente`);
         console.log(`  🚀 JP AGENTS — LINK PARA ABRIR`);
         console.log(`  ➜  http://localhost:${port}`);
         console.log(`═══════════════════════════════════════════════\n`);
@@ -5820,7 +5624,6 @@ async function startServer() {
         // Start process sync monitor on server startup
         startHermesProcessSyncMonitor();
 
-        // Iniciar Telegram bot inline (HERMES GOD)
         // Iniciar Telegram bot inline (módulo unificado)
         initTelegramBot({
             wss,
@@ -5829,7 +5632,31 @@ async function startServer() {
             execAdminCommands: executeAdminCommands,
             callHermesAdminStreaming,
             ensureResumen,
+            triggerRestart,
             authorizedUsers: process.env.TELEGRAM_AUTHORIZED_USERS ? process.env.TELEGRAM_AUTHORIZED_USERS.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)) : []
+        }).then(bot => {
+            if (bot) {
+                console.log(`[TELEGRAM] ✅ Bot Telegram iniciado correctamente.`);
+            } else {
+                console.error(`[TELEGRAM] ❌❌❌ No se pudo iniciar el bot Telegram después de ${5} intentos. ❌❌❌`);
+                console.error(`[TELEGRAM]    Causa probable: otro proceso retiene la sesión getUpdates de Telegram.`);
+                console.error(`[TELEGRAM]    Verificá que ningún _legacy/ o proceso Node externo esté usando el mismo token.`);
+                console.error(`[TELEGRAM]    Para forzar liberación: ejecutá el bot manual con un close() forzado o reiniciá Telegram.`);
+                // Broadcast fallback via WebSocket
+                try {
+                    const failMsg = JSON.stringify({
+                        event: 'telegram:error',
+                        message: '❌ Bot Telegram no pudo iniciar después de 5 intentos. Posible 409 Conflict.',
+                        timestamp: Date.now()
+                    });
+                    for (const client of wss ? wss.clients : []) {
+                        try { if (client.readyState === 1) client.send(failMsg); } catch {}
+                    }
+                } catch {}
+            }
+        }).catch(err => {
+            console.error(`[TELEGRAM] ❌❌❌ Error fatal iniciando bot:`, err.message);
+            console.error(`[TELEGRAM]    Stack:`, err.stack?.split('\n').slice(0, 3).join('\n') || 'N/A');
         });
 
         // Log server start for restart history

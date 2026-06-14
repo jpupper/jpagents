@@ -122,6 +122,9 @@ export let state = {
     activeSkillName: null,
     activeSkillSource: 'local',
     currentAttachedImages: [],
+    currentPdfText: '',
+    currentPdfName: '',
+    currentPdfPages: 0,
     lastRenderedChatId: null,
     lastRenderedProjectId: null
 };

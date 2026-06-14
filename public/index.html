@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="lib/github-dark.min.css">
   <script src="lib/highlight.min.js"></script>
   <script src="lib/highlight-dos.min.js"></script>
+  <script src="lib/pdf.min.js"></script>
   <!-- D3.js for Data Visualization -->
   <script src="lib/d3.min.js"></script>
   <!-- jsdiff for Diffing -->
@@ -526,11 +527,21 @@
             <div class="input-wrapper">
               <div class="input-actions-left">
                 <button id="attach-img" class="btn-icon-subtle" title="Adjuntar imagen">📷</button>
+                <button id="attach-pdf" class="btn-icon-subtle" title="Adjuntar PDF para leer su contenido">📄</button>
                 <button id="improve-chat-prompt-btn" class="btn-icon-subtle" title="Mejorar Prompt con IA">✨</button>
                 <button id="mic-btn" class="btn-icon-subtle" title="Grabar mensaje de voz (Web Speech)">🎤</button>
                 <input type="file" id="image-input" accept="image/*" class="hidden" />
+                <input type="file" id="pdf-input" accept=".pdf" class="hidden" />
               </div>
               <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="2"></textarea>
+              <div id="pdf-preview-container" class="pdf-preview-container hidden">
+                <div class="pdf-preview-header">
+                  <span class="pdf-preview-icon">📄</span>
+                  <span class="pdf-preview-name"></span>
+                  <button id="clear-pdf-btn" class="btn-icon-subtle pdf-clear-btn" title="Quitar PDF">✕</button>
+                </div>
+                <div class="pdf-preview-pages"></div>
+              </div>
               <div class="mode-switch-container">
                 <div id="mode-switch-toggle" class="mode-switch auto" title="Alternar Modo: Auto / Supervisado">
                   <div class="mode-switch-handle">

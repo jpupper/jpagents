@@ -5,8 +5,24 @@
  *   1. Solo UNA instancia de bot por token. Punto.
  *   2. PID lock file para matar sesiones getUpdates stale.
  *   3. NUNCA usar `onStart` para declarar éxito — esperar que bot.start() resuelva.
- *   4. Máximo 3 intentos. Sin loops infinitos. Si falla, que lo reinicie el supervisor.
- *   5. NO hay bot.catch() con retry. Error se loggea y ya.
+ *   4. ESTRATEGIA DE 3 CAPAS para evitar 409 en restart:
+ *      Capa 1 (Proactivo): bot.api.close() ANTES de bot.start() para cerrar
+ *        cualquier sesión stale del proceso anterior en Telegram server.
+ *      Capa 2 (Reactivo): Si aún hay 409, close() forzado con bot fresh.
+ *      Capa 3 (Emergencia): bot.api.logOut() si todos los reintentos fallan.
+ *      Ver stopTelegramBot() para el shutdown simétrico con close() + stop().
+ *   5. bot.catch() solo loggea — no reintenta. El supervisor reinicia.
+ *   6. stopTelegramBot() ahora SIEMPRE llama bot.api.close() PRIMERO (cierra
+ *      la sesión en el servidor de Telegram), y bot.stop() DESPUÉS (detiene
+ *      el polling local). El orden es importante: primero server, luego local.
+ *
+ * Cambio arquitectónico clave respecto a la versión anterior:
+ *   Antes: stopTelegramBot() solo llamaba bot.stop() (solo local).
+ *          initTelegramBot() esperaba 2s pasivamente a que Telegram expire la sesión sola.
+ *          Los reintentos eran el ÚNICO mecanismo contra 409.
+ *   Ahora: stopTelegramBot() llama close() (server) + stop() (local).
+ *          initTelegramBot() llama close() proactivo antes de cada bot.start().
+ *          Los reintentos son la RED DE SEGURIDAD, no el mecanismo principal.
  *
  * Arquitectura:
  *   server.js → importa initTelegramBot() y usa telegramBot exportado para notificaciones.
@@ -26,8 +42,8 @@ import { formatMessage } from '../lib/markdown-v2.js';
 const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 const LOCK_FILE = path.join(HERMES_HOME, 'telegram-bot.lock');
 const OWNER_FILE = path.join(HERMES_HOME, 'god-bot-owner.json');
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 3000;
+const MAX_RETRIES = 5;                // 5 intentos con close() proactivo cada uno
+const RETRY_DELAY_MS = 5000;          // 5s entre reintentos (red de seguridad)
 
 // ─── ESTADO EXPORTADO ───
 export let telegramBot = null;       // Instancia de Grammy Bot (para notificaciones)
@@ -43,6 +59,7 @@ let _execAdminCommands = null;
 let _callHermesAdminStreaming = null;
 let _ensureResumen = null;
 let _telegramAuthorized = [];
+let _triggerRestart = null;
 
 // ─── SAFE LOG ───
 const slog = {
@@ -51,17 +68,26 @@ const slog = {
     warn: (...args) => { try { console.warn(...args); } catch {} }
 };
 
-// ─── TOOL EMOJIS ───
-function getToolEmoji(toolName) {
-    const emojis = {
-        terminal: '💻', web_search: '🔍', read_file: '📄',
-        write_file: '✏️', patch: '🔧', search_files: '🔎',
-        browser_navigate: '🌐', execute_code: '🐍',
-        delegate_task: '📋', clarify: '❓', memory: '🧠',
-        cronjob: '⏰', vision_analyze: '👁️', image_generate: '🎨',
-        text_to_speech: '🔊',
-    };
-    return emojis[toolName] || '⚡';
+// ─── Resolver Owner ID (separado del resto para poder enviar notificación temprana) ───
+function resolveStartupOwner() {
+    const savedOwner = loadOwnerChatId();
+    let ownerId = null;
+
+    if (savedOwner?.ownerChatId) {
+        ownerId = savedOwner.ownerChatId;
+        slog.log(`[TELEGRAM] 👤 Owner ID cargado de god-bot-owner.json: ${ownerId}`);
+    } else if (_telegramAuthorized.length > 0) {
+        ownerId = _telegramAuthorized[0];
+        slog.log(`[TELEGRAM] 👤 Owner ID desde TELEGRAM_AUTHORIZED_USERS: ${ownerId}`);
+        // Guardarlo para futuros reinicios
+        try {
+            saveOwnerChatId(ownerId, 'Carlos Kernel');
+        } catch {}
+    } else {
+        slog.warn(`[TELEGRAM] ⚠️ No hay owner ID disponible - no se enviará notificación de startup`);
+    }
+
+    return ownerId;
 }
 
 // ─── WS BROADCAST ───
@@ -161,6 +187,7 @@ export async function initTelegramBot(opts = {}) {
     _callHermesAdminStreaming = opts.callHermesAdminStreaming || (async () => ({ response: '', stderr: '' }));
     _ensureResumen = opts.ensureResumen || ((r) => r || '');
     _telegramAuthorized = opts.authorizedUsers || [];
+    _triggerRestart = opts.triggerRestart || null;
 
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token || token.length < 40) {
@@ -175,7 +202,29 @@ export async function initTelegramBot(opts = {}) {
         return null;
     }
 
+    // ─── Resolver ownerId temprano (antes del loop de retry) ───
+    // Esto se usa tanto para la notificación early como para la confirmación.
+    // Si no podemos resolver ownerId, no habrá notificación — es información
+    // de diagnóstico importante que queremos ver a penas arrancamos.
+    const startupOwnerId = resolveStartupOwner();
+    if (startupOwnerId) {
+        slog.log(`[TELEGRAM] 👤 Owner ID resuelto: ${startupOwnerId}`);
+    } else {
+        slog.warn(`[TELEGRAM] ⚠️ No se pudo resolver Owner ID — la notificación de startup NO se enviará.`);
+        slog.warn(`[TELEGRAM]    Causa: falta god-bot-owner.json y TELEGRAM_AUTHORIZED_USERS vacío.`);
+        slog.warn(`[TELEGRAM]    Solución: enviá /start al bot desde Telegram para registrar tu chat como owner.`);
+    }
+
     // ─── Intentar conectar con retry acotado ───
+    // ESTRATEGIA (3 capas):
+    //   Capa 1: Proactivo — antes de cada intento, llamar close() en Telegram
+    //            server para liberar cualquier sesión stale del proceso anterior.
+    //   Capa 2: Reactivo mínimo — si aún así obtenemos 409, delay breve y close()
+    //            forzado adicional antes de reintentar.
+    //   Capa 3: LogOut de emergencia — si todos los reintentos fallan con 409,
+    //            llamar logOut() que es más agresivo que close().
+    //   Esto es cualitativamente distinto a "esperar más" porque ESTÁ CERRANDO
+    //   la sesión activamente en vez de esperar que Telegram la expire sola.
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             const bot = new Bot(token);
@@ -190,6 +239,54 @@ export async function initTelegramBot(opts = {}) {
                 // No es crítico si falla
             }
 
+            // ─── Cerrar cualquier sesión STALE en Telegram server ───
+            // Esto es CLAVE: antes siquiera de intentar bot.start(), cerramos
+            // proactivamente cualquier sesión getUpdates que haya quedado del
+            // proceso anterior. Esto evita el 409 en el origen, no lo parchea.
+            // close() es idempotente — si no hay sesión activa, es no-op.
+            try {
+                await bot.api.close();
+            } catch (closeErr) {
+                // Si close() falla (ej: timeout de red), no es fatal.
+                // El reintento loop es la red de seguridad.
+                slog.warn(`[TELEGRAM] close() proactivo no crítico: ${closeErr.message}`);
+            }
+
+            // Pequeña pausa para que Telegram procese el close()
+            // MUCHO más corta que los 2000ms anteriores porque ahora NO estamos
+            // esperando a que Telegram expire la sesión sola — estamos esperando
+            // que procese nuestra orden de cerrarla.
+            await new Promise(r => setTimeout(r, 500));
+
+            // ─── EARLY STARTUP NOTIFICATION (antes de bot.start()) ───
+            // Enviar NOTIFICACIÓN DE STARTUP ANTES de iniciar el polling.
+            // bot.api.sendMessage funciona independientemente de bot.start() —
+            // solo necesita el token, que ya está configurado en new Bot(token).
+            // Esto asegura que la notificación llegue AUNQUE bot.start() falle
+            // o se demore (ej: 409 conflict, timeout de red).
+            //
+            // DECISIÓN ARQUITECTÓNICA: La notificación de startup SOLO depende
+            // de que el bot API esté configurado (new Bot(token)), NO de que el
+            // polling esté activo. Esto elimina el acoplamiento entre la
+            // notificación y el lifecycle del polling.
+            try {
+                if (startupOwnerId) {
+                    const earlyMsg = [
+                        `🟢 *JP Agents — Servidor iniciado*`,
+                        ``,
+                        `🧑‍💻 *Carlos Kernel presente*`,
+                        `📡 Iniciando conexión con Telegram...`,
+                    ].join('\n');
+                    await bot.api.sendMessage(startupOwnerId, earlyMsg, { parse_mode: 'Markdown' });
+                    slog.log(`[TELEGRAM] 📤 Startup notification (early) enviada a chat ${startupOwnerId}`);
+                } else {
+                    slog.warn(`[TELEGRAM] ⚠️ No se envió startup notification (early): startupOwnerId es null`);
+                }
+            } catch (earlyErr) {
+                // No es crítico si falla — la notificación early es best-effort
+                slog.warn(`[TELEGRAM] ⚠️ Startup notification (early) no crítica: ${earlyErr.message.slice(0, 120)}`);
+            }
+
             // ─── SOLO AHORA considerar éxito: esperar que bot.start() resuelva ───
             // NO usamos onStart — queremos que bot.start() resuelva ANTES de loguear éxito
             await bot.start({
@@ -202,41 +299,50 @@ export async function initTelegramBot(opts = {}) {
             telegramBot = bot;
             botStartTime = Date.now();
 
-            // Obtener info del bot y enviar startup
-            try {
-                const bi = await bot.api.getMe();
-                const hname = os.hostname();
-                const totalMB = Math.round(os.totalmem() / 1024 / 1024);
-                const freeMB = Math.round(os.freemem() / 1024 / 1024);
+            // ─── Notificar al owner — confirmación tras bot.start() ───
+            if (startupOwnerId) {
+                try {
+                    const bi = await bot.api.getMe();
+                    const hname = os.hostname();
+                    const totalMB = Math.round(os.totalmem() / 1024 / 1024);
+                    const freeMB = Math.round(os.freemem() / 1024 / 1024);
 
-                slog.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (PID ${process.pid})`);
-                telegramBroadcast('telegram:status', { connected: true, username: bi.username });
+                    slog.log(`[TELEGRAM] ✅ Bot @${bi.username} iniciado (PID ${process.pid})`);
+                    telegramBroadcast('telegram:status', { connected: true, username: bi.username });
 
-                // Notificar al owner (si lo conocemos)
-                const savedOwner = loadOwnerChatId();
-                const ownerId = savedOwner?.ownerChatId || _telegramAuthorized[0];
-                if (ownerId) {
-                    const startupMsg = [
+                    const confirmMsg = [
                         `🟢 *JP Agents — Servidor Conectado*`,
                         ``,
+                        `🧑‍💻 *Carlos Kernel presente*`,
                         `🤖 Bot: @${bi.username}`,
                         `💻 Host: ${hname}`,
                         `🧠 RAM: ${freeMB} MB libre / ${totalMB} MB total`,
                         `🖥️ CPU: ${os.cpus().length} cores`,
                         `📁 ${(new Date()).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`,
                         ``,
-                        `✅ Todo listo — HERMES GOD escuchando.`,
+                        `✅ Todo listo — Carlos Kernel escuchando.`,
                     ].join('\n');
                     try {
-                        await bot.api.sendMessage(ownerId, startupMsg, { parse_mode: 'Markdown' });
-                        slog.log(`[TELEGRAM] 📤 Startup confirmado a chat ${ownerId}`);
+                        await bot.api.sendMessage(startupOwnerId, confirmMsg, { parse_mode: 'Markdown' });
+                        slog.log(`[TELEGRAM] 📤 Startup confirmado a chat ${startupOwnerId}`);
                     } catch (e) {
-                        slog.warn(`[TELEGRAM] ⚠️ No se pudo enviar mensaje de startup: ${e.message}`);
+                        // Markdown fallback
+                        if (e.message && (e.message.includes("can't parse entities") || e.message.includes("Bad Request"))) {
+                            try {
+                                await bot.api.sendMessage(startupOwnerId, confirmMsg, { parse_mode: '' });
+                                slog.warn(`[TELEGRAM] ⚠️ Startup confirmado sin Markdown (falló parseo): ${e.message.slice(0, 100)}`);
+                            } catch (e2) {
+                                slog.warn(`[TELEGRAM] ⚠️ Startup confirmación falló (ni con ni sin Markdown): ${e2.message.slice(0, 100)}`);
+                            }
+                        } else {
+                            slog.warn(`[TELEGRAM] ⚠️ Startup confirmación falló: ${e.message.slice(0, 100)}`);
+                        }
                     }
+                } catch (infoErr) {
+                    slog.warn(`[TELEGRAM] ⚠️ No se pudo obtener info del bot para confirmación: ${infoErr.message.slice(0, 100)}`);
                 }
-            } catch (infoErr) {
-                // No crítico — el bot funciona aunque no podamos obtener getMe
-                slog.warn(`[TELEGRAM] ⚠️ No se pudo obtener info del bot: ${infoErr.message}`);
+            } else {
+                slog.warn(`[TELEGRAM] ⚠️ No se envió confirmación de startup: no hay owner ID configurado`);
             }
 
             // ─── Error handler: solo log, SIN retry infinito ───
@@ -249,13 +355,48 @@ export async function initTelegramBot(opts = {}) {
 
         } catch (startErr) {
             const msg = startErr.message || String(startErr);
-            slog.error(`[TELEGRAM] ⚠️ Intento ${attempt}/${MAX_RETRIES}: ${msg}`);
+            const is409 = msg.includes('409') || msg.includes('Conflict') || (startErr.error_code === 409);
+
+            if (is409) {
+                slog.error(`[TELEGRAM] ⚠️ Intento ${attempt}/${MAX_RETRIES}: 409 CONFLICT — sesión previa aún activa.`);
+
+                // ─── Capa 2: Reactivo — close() forzado adicional ───
+                // Si el close() proactivo del inicio del loop no fue suficiente
+                // (porque Telegram tardó en procesarlo o porque había múltiples sesiones),
+                // intentamos cerrar de nuevo. Usamos un bot fresh para esto.
+                try {
+                    slog.log('[TELEGRAM] 🔒 close() forzado por 409...');
+                    const cleanupBot = new Bot(token);
+                    await cleanupBot.api.close();
+                    slog.log('[TELEGRAM] ✅ close() forzado completado.');
+                } catch (closeErr2) {
+                    slog.warn(`[TELEGRAM] close() forzado no crítico: ${closeErr2.message}`);
+                }
+            } else {
+                slog.error(`[TELEGRAM] ⚠️ Intento ${attempt}/${MAX_RETRIES}: ${msg}`);
+            }
 
             if (attempt < MAX_RETRIES) {
                 slog.log(`[TELEGRAM] Reintentando en ${RETRY_DELAY_MS/1000}s...`);
                 await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
             } else {
+                // ─── Capa 3: LogOut de emergencia ───
+                // Si después de MAX_RETRIES intentos con close() proactivo y reactivo
+                // seguimos sin poder iniciar, llamamos logOut() que es más agresivo
+                // que close() — desloguea el bot completamente. Pero esto significa que
+                // el bot actual perderá el token y habrá que volver a loguearlo.
+                // Solo como último recurso antes de rendirnos.
                 slog.error(`[TELEGRAM] ❌ No se pudo iniciar bot después de ${MAX_RETRIES} intentos.`);
+                slog.error(`[TELEGRAM]    Intentando logOut() de emergencia como último recurso...`);
+                try {
+                    const emergencyBot = new Bot(token);
+                    await emergencyBot.api.logOut();
+                    slog.log(`[TELEGRAM] ✅ logOut() de emergencia completado.`);
+                    slog.log(`[TELEGRAM]    El bot se reconectará en el próximo ciclo de vida.`);
+                } catch (logoutErr) {
+                    slog.error(`[TELEGRAM] ❌ logOut() de emergencia también falló: ${logoutErr.message}`);
+                }
+
                 slog.error(`[TELEGRAM]    Causa más probable: otro proceso (legacy bot, bridge, god-bot) tiene una sesión getUpdates activa.`);
                 slog.error(`[TELEGRAM]    Verificá que ningún _legacy/ o proceso Node externo esté usando el mismo token.`);
                 releaseLock();
@@ -272,6 +413,24 @@ export async function initTelegramBot(opts = {}) {
 export async function stopTelegramBot() {
     if (telegramBot) {
         try {
+            // ─── PASO 1: Cerrar sesión en Telegram SERVER ───
+            // bot.api.close() llama al método close() de Telegram Bot API
+            // que cierra la instancia del bot en el servidor y LIBERA la sesión
+            // getUpdates. Sin esto, Telegram mantiene la sesión activa y el
+            // próximo bot.start() recibe 409 Conflict.
+            // Esto es independiente de Grammy — es llamada directa a la API.
+            slog.log('[TELEGRAM] 🔒 Cerrando sesión en Telegram server...');
+            await telegramBot.api.close();
+            slog.log('[TELEGRAM] ✅ Sesión Telegram server cerrada.');
+        } catch (err) {
+            // close() puede fallar si el bot ya no está conectado, no es crítico
+            slog.warn(`[TELEGRAM] ⚠️ close() no crítico: ${err.message}`);
+        }
+
+        try {
+            // ─── PASO 2: Detener polling local ───
+            // bot.stop() detiene el loop de long-polling en este proceso.
+            // Ya no necesitamos que reciba más updates.
             await telegramBot.stop();
             slog.log('[TELEGRAM] ✅ Bot detenido correctamente.');
         } catch (err) {
@@ -350,7 +509,7 @@ function setupHandlers(bot) {
         const uptime = Math.floor((Date.now() - botStartTime) / 1000);
         const h = Math.floor(uptime / 3600), m = Math.floor((uptime % 3600) / 60);
         await ctx.reply(
-            `👑 *HERMES GOD* — Integrado en JP Agents\n\nSoy HERMES GOD. Escribime cualquier cosa.\n\n📊 ${h}h ${m}m uptime, ${_hermesBridge?.listInstances().length || 0} agentes\n\nComandos: /status`,
+            `👑 *Carlos Kernel* — Integrado en JP Agents\n\nSoy Carlos Kernel. Escribime cualquier cosa.\n\n📊 ${h}h ${m}m uptime, ${_hermesBridge?.listInstances().length || 0} agentes\n\nComandos:\n/status — Estado del sistema\n/restart — Reiniciar servidor JP Agents\n/help — Ayuda`,
             { parse_mode: 'Markdown' }
         );
     });
@@ -367,9 +526,18 @@ function setupHandlers(bot) {
 
     bot.command('help', async (ctx) => {
         await ctx.reply(
-            '👑 *HERMES GOD*\nCualquier texto → Hermes BOTADMIN\n/status — Estado\n/help — Ayuda',
+            '👑 *Carlos Kernel*\nCualquier texto → Hermes BOTADMIN\n/status — Estado del sistema\n/restart — Reiniciar servidor JP Agents\n/help — Ayuda',
             { parse_mode: 'Markdown' }
         );
+    });
+
+    bot.command('restart', async (ctx) => {
+        if (!_triggerRestart) {
+            await ctx.reply('❌ El comando /restart no est\u00e1 disponible en este momento (triggerRestart no inicializado).');
+            return;
+        }
+        await ctx.reply('🔄 *Reiniciando servidor JP Agents...*\n\nEl bot se reconectar\u00e1 autom\u00e1ticamente en unos segundos.', { parse_mode: 'Markdown' });
+        _triggerRestart(500);
     });
 
     // ─── Mensajes de texto → Hermes ADMIN ───
@@ -405,13 +573,16 @@ function setupHandlers(bot) {
         );
 
         let thinkingMsg = null;
-        try { thinkingMsg = await ctx.reply('👑 HERMES GOD está pensando...'); } catch {}
+        try { thinkingMsg = await ctx.reply('👑 Carlos Kernel está pensando...'); } catch {}
         telegramBroadcast('telegram:thinking', { chatId, messageId: thinkingMsg?.message_id });
 
+        // ─── Evitar flood de edits con mismo texto (Telegram: "message is not modified") ───
+        let _lastThinkingText = '';
         try {
             const { response, stderr: hermesStderr } = await _callHermesAdminStreaming(userMsg, (thinkingText) => {
-                if (thinkingMsg && thinkingText) {
-                    const statusText = `👑 HERMES GOD\n\n${thinkingText}`;
+                if (thinkingMsg && thinkingText && thinkingText !== _lastThinkingText) {
+                    _lastThinkingText = thinkingText;
+                    const statusText = `👑 Carlos Kernel\n\n${thinkingText}`;
                     safeTelegramCall(() =>
                         bot.api.editMessageText(chatId, thinkingMsg.message_id, statusText, { parse_mode: '' })
                     );
@@ -480,6 +651,7 @@ function setupHandlers(bot) {
 
             const MAX_LEN = 3500;
             const formattedResponse = formatMessage(finalResponse);
+            // sendTelegramResponse ya tiene fallback automático a texto plano si MarkdownV2 falla
             await sendTelegramResponse(bot, chatId, thinkingMsg, ctx, formattedResponse, MAX_LEN, 'MarkdownV2');
 
             slog.log(`[TELEGRAM] ✅ Respondido (${finalResponse.length} chars), ${executions.length} comandos ejecutados`);
