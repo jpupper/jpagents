@@ -899,16 +899,32 @@ async function init() {
         if (isTabBusy()) {
             console.log('[SYNC] ⏭️ sync:connected — omitiendo loadData porque hay agente activo');
         } else {
+            // 🐛 BUGFIX: Preservar el texto actual del textarea antes de loadData()+syncUI()
+            // para que restoreChatDraft() no lo sobrescriba con un draft viejo del servidor.
+            const preservedDraft = chatInput.value;
             await loadData(false);
             syncUI();
+            if (preservedDraft && chatInput.value !== preservedDraft) {
+                chatInput.value = preservedDraft;
+                chatInput.dispatchEvent(new Event('input'));
+                saveChatDraft();
+            }
             checkSystemHealth();
             fetchModels();
             if (window.refreshHermesInstances) window.refreshHermesInstances();
         }
     };
     window.__onSyncStateUpdated = async () => {
+        // 🐛 BUGFIX: Preservar el texto actual del textarea antes de loadData()+syncUI()
+        // para que restoreChatDraft() no lo sobrescriba con un draft viejo del servidor.
+        const preservedDraft = chatInput.value;
         await loadData(false);
         syncUI();
+        if (preservedDraft && chatInput.value !== preservedDraft) {
+            chatInput.value = preservedDraft;
+            chatInput.dispatchEvent(new Event('input'));
+            saveChatDraft();
+        }
     };
     window.__isTabBusy = isTabBusy;
     window.__updateTelegramBadge = updateTelegramBadge;
@@ -923,10 +939,10 @@ async function init() {
     // Auto-sync al recuperar foco de pestaña
     document.addEventListener('visibilitychange', async () => {
         if (document.hidden) {
-            // 🐛 BUGFIX: Guardar draft cuando el usuario se va a otra ventana/pestaña.
-            // Sin esto, al volver loadData() reemplaza state.projects con objetos nuevos
-            // del servidor, y restoreChatDraft() no encuentra draftInput → borra el texto.
+            // 🐛 BUGFIX: Guardar draft cuando el usuario se va a otra ventana/pestaña
+            // y persistirlo YA al servidor para que no se pierda al volver.
             saveChatDraft();
+            saveData(); // fire-and-forget: si no llega, el preservedDraft fix abajo lo cubre
         } else {
             console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
             // 🐛 BUGFIX: Preservar el texto actual del textarea antes de que loadData()
@@ -947,9 +963,10 @@ async function init() {
                     window.refreshHermesInstances();
                 }
             }
-            // 🐛 BUGFIX: Si loadData/syncUI borró el texto pero el usuario tenía algo
-            // escrito, restaurarlo y guardarlo en el nuevo objeto chat.
-            if (preservedDraft && !chatInput.value) {
+            // 🐛 BUGFIX: Si loadData/syncUI cambió el texto a algo distinto
+            // de lo que el usuario tenía (draft viejo del servidor, o vacío),
+            // restaurar el preservedDraft y guardarlo en el nuevo objeto chat.
+            if (preservedDraft && chatInput.value !== preservedDraft) {
                 chatInput.value = preservedDraft;
                 chatInput.dispatchEvent(new Event('input'));
                 saveChatDraft(); // persistir el draft en el nuevo objeto chat
@@ -972,8 +989,17 @@ async function init() {
                     console.log('[SYNC] 📡 BroadcastChannel: thinking-changed ignorado — agente activo');
                 } else {
                     console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
+                    // 🐛 BUGFIX: Preservar el texto actual del textarea antes de loadData()+syncUI()
+                    // para que restoreChatDraft() no lo sobrescriba con un draft viejo del servidor.
+                    // Esto ocurre cuando el agente termina y saveData() aún no completó.
+                    const preservedDraft = chatInput.value;
                     await loadData(false);
                     syncUI();
+                    if (preservedDraft && chatInput.value !== preservedDraft) {
+                        chatInput.value = preservedDraft;
+                        chatInput.dispatchEvent(new Event('input'));
+                        saveChatDraft();
+                    }
                     updateAgentBadge();
                     refreshConsoleUI();
                     if (window.refreshHermesInstances) {
