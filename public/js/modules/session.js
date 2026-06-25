@@ -19,6 +19,7 @@ export function sanitizeProject(p) {
             mode: c.mode || 'auto',
             lastProgress: c.lastProgress || Date.now(),
             isStopped: false,
+            isClosed: c.isClosed || false,
             validationRetries: 0,
             model: c.model || p.model || '',
             skills: Array.isArray(c.skills) ? c.skills : []

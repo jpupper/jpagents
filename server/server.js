@@ -427,7 +427,8 @@ const OLLAMA_URL = 'http://localhost:11434';
 
 async function ensureOllamaRunning() {
     try {
-        const check = await fetch(`${OLLAMA_URL}/api/tags`).catch(() => null);
+        // Timeout de 3s: no bloquear el startup por Ollama offline
+        const check = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
         if (check && check.ok) {
             console.log('\x1b[32m[OLLAMA]\x1b[0m Sistema detectado y activo.');
         } else {
@@ -1086,11 +1087,14 @@ exit`;
 
 app.get('/api/models', async (req, res) => {
     try {
-        const response = await fetch(`${OLLAMA_URL}/api/tags`);
+        // Timeout de 3 segundos: si Ollama no responde rápido, devolvemos lista vacía
+        // en lugar de colgar la UI. Ollama es solo para agentes secundarios.
+        const response = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
         const data = await response.json();
         res.json(data);
     } catch (error) {
-        res.status(500).json({ error: 'Ollama not reachable' });
+        // Si Ollama no está corriendo, devolvemos lista vacía — la UI debe seguir funcionando
+        res.json({ models: [] });
     }
 });
 
@@ -1621,7 +1625,8 @@ app.post('/api/utils/improve-prompt', async (req, res) => {
             const response = await fetch(`${OLLAMA_URL}/api/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(30000)
             });
             if (!response.ok) throw new Error(`Ollama error: ${response.statusText}`);
             const data = await response.json();

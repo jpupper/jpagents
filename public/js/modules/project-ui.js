@@ -87,8 +87,8 @@ export function renderTabs() {
     // 1. New Chat Button first
     tabsHtml += `<div class="tab add-tab" title="Nuevo Agente" onclick="window.addChat()">+</div>`;
 
-    // 2. Chats Tabs
-    const chats = project.chats || [];
+    // 2. Chats Tabs (solo agentes no cerrados)
+    const chats = (project.chats || []).filter(c => !c.isClosed);
     chats.forEach((chat, idx) => {
         const summonedClass = chat.isNew ? 'summoned-anim' : '';
         if (chat.isNew) setTimeout(() => { chat.isNew = false; }, 3000);
@@ -162,6 +162,13 @@ export function renderTabs() {
     tabsHtml += `
         <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
             <span>🔀 GIT</span>
+        </div>
+    `;
+
+    // 8. Agents Tab
+    tabsHtml += `
+        <div class="tab agents-tab ${project.activeTabId === 'agents' ? 'active' : ''}" onclick="window.switchTab('agents')">
+            <span>🤖 Agentes</span>
         </div>
     `;
 

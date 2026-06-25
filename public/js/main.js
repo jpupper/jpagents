@@ -2225,6 +2225,8 @@ function updateViewVisibility() {
     if (hermesTabContent) hermesTabContent.classList.add('hidden');
     const gitTabContent = document.getElementById('git-tab-content');
     if (gitTabContent) gitTabContent.classList.add('hidden');
+    const agentsTabContent = document.getElementById('agents-tab-content');
+    if (agentsTabContent) agentsTabContent.classList.add('hidden');
 
     // ... (logic)
 
@@ -2282,6 +2284,16 @@ function updateViewVisibility() {
         }
         if (typeof window.refreshGitTab === 'function') {
             window.refreshGitTab();
+        }
+        return;
+    }
+
+    if (project && project.activeTabId === 'agents') {
+        saveFileBtn.classList.add('hidden');
+        const agentsTabContent = document.getElementById('agents-tab-content');
+        if (agentsTabContent) {
+            agentsTabContent.classList.remove('hidden');
+            renderAgentsTab();
         }
         return;
     }
@@ -2532,6 +2544,9 @@ window.switchTab = (id) => {
         renderTabs();
         renderMessages(); // To refresh chat if switching to a chat tab
 
+        // ─── Renderizar tab de agentes si es el seleccionado ───
+        if (id === 'agents') renderAgentsTab();
+
         // ─── Restaurar draft (si no es chat, se limpia automáticamente) ───
         restoreChatDraft();
 
@@ -2571,22 +2586,92 @@ window.addChat = async () => {
 window.deleteChat = (id) => {
     const p = getActiveProject();
     if (!p) return;
-    p.chats = p.chats.filter(c => c.id !== id);
+    // Marcar como cerrado en vez de eliminar — el tab de Agentes lo muestra
+    const chat = p.chats.find(c => c.id === id);
+    if (chat) {
+        chat.isClosed = true;
+        chat.closedAt = Date.now();
+    }
     if (p.activeTabId === id) {
-        // If we deleted the active chat, try to switch to another chat
-        if (p.chats.length > 0) {
-            p.activeTabId = p.chats[0].id;
+        // If we closed the active chat, try to switch to another chat
+        const openChats = p.chats.filter(c => !c.isClosed);
+        if (openChats.length > 0) {
+            p.activeTabId = openChats[0].id;
         } else if (p.openFiles.length > 0) {
-            // If no chats, try to switch to the first open file
             p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
         } else {
-            // Otherwise, show dashboard
             p.activeTabId = null;
         }
     }
     renderTabs();
+    if (p.activeTabId === 'agents') renderAgentsTab();
     saveData();
 };
+
+window.restoreAgent = (id) => {
+    const p = getActiveProject();
+    if (!p) return;
+    const chat = p.chats.find(c => c.id === id);
+    if (chat) {
+        chat.isClosed = false;
+        delete chat.closedAt;
+        p.activeTabId = id;
+        renderTabs();
+        renderAgentsTab();
+        renderMessages();
+        restoreChatDraft();
+        saveData();
+    }
+};
+
+function renderAgentsTab() {
+    const p = getActiveProject();
+    const listEl = document.getElementById('agents-list');
+    const countEl = document.getElementById('agents-count');
+    if (!listEl || !p) return;
+
+    const allAgents = p.chats || [];
+    const openCount = allAgents.filter(c => !c.isClosed).length;
+    if (countEl) countEl.textContent = allAgents.length + ' agentes';
+
+    if (!allAgents.length) {
+        listEl.innerHTML = '<div class="agents-empty">No hay agentes en este proyecto. Creá uno con el botón + en la barra de tabs.</div>';
+        return;
+    }
+
+    listEl.innerHTML = allAgents.map(c => {
+        const status = c.isClosed
+            ? '<span class="agent-status closed">🔒 Cerrado</span>'
+            : (c.isThinking
+                ? '<span class="agent-status thinking">🟡 Pensando</span>'
+                : (c.isRunning
+                    ? '<span class="agent-status running">🔵 Corriendo</span>'
+                    : '<span class="agent-status idle">⚪ Inactivo</span>'));
+        const modelStr = c.model ? escapeHtml(c.model) : '—';
+        const msgCount = (c.messages || []).length;
+        const closedDate = c.closedAt ? new Date(c.closedAt).toLocaleString() : '';
+
+        return `
+            <div class="agent-card ${c.isClosed ? 'closed' : ''}">
+                <div class="agent-card-info">
+                    <div class="agent-card-name">🤖 ${escapeHtml(c.name)}</div>
+                    <div class="agent-card-meta">
+                        ${status}
+                        <span>Modelo: ${modelStr}</span>
+                        <span>Mensajes: ${msgCount}</span>
+                        ${closedDate ? '<span>Cerrado: ' + closedDate + '</span>' : ''}
+                    </div>
+                </div>
+                <div class="agent-card-actions">
+                    ${c.isClosed
+                        ? `<button class="btn-agent-restore" onclick="window.restoreAgent('${c.id}')">🔄 Restaurar</button>`
+                        : `<button class="btn-agent-delete" onclick="window.deleteChat('${c.id}')">✕ Cerrar</button>`
+                    }
+                </div>
+            </div>
+        `;
+    }).join('');
+}
 
 ;
 

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agents Room — Three.js</title>
+  <link rel="stylesheet" href="room.css">
+</head>
+<body>
+  <div id="loading">✦ INVOCANDO ✦</div>
+  <div id="room-title">✦ AGENTS ROOM ✦</div>
+
+  <div id="toolbar">
+    <button id="calib-btn" title="Calibrar escena">◈ Calibrar</button>
+  </div>
+
+  <div id="calib-panel">
+    <h3>◈ Calibrar Escena</h3>
+
+    <div class="calib-group">
+      <div class="calib-label">
+        <span>Separación de nodos</span>
+        <span class="calib-val" id="polar-radius-val">180</span>
+      </div>
+      <input type="range" class="calib-slider" id="polar-radius-slider"
+             min="60" max="350" value="180" step="5">
+      <div class="calib-desc">Distancia de los pedestales desde el centro</div>
+    </div>
+
+    <div class="calib-group">
+      <div class="calib-label">
+        <span>Órbita de magos</span>
+        <span class="calib-val" id="orbit-radius-val">42</span>
+      </div>
+      <input type="range" class="calib-slider" id="orbit-radius-slider"
+             min="20" max="120" value="42" step="2">
+      <div class="calib-desc">Separación de cada mago a su pedestal</div>
+    </div>
+
+    <div class="calib-toggle-group">
+      <div class="calib-toggle-label">
+        <span>Fantasma</span>
+        <span class="calib-toggle-desc">Mostrar Hermes externos</span>
+      </div>
+      <label class="calib-toggle-switch">
+        <input type="checkbox" id="ghost-toggle" checked>
+        <span class="calib-toggle-slider"></span>
+      </label>
+    </div>
+
+    <button class="calib-reset" id="calib-reset">⟲ Restaurar defecto</button>
+  </div>
+
+  <div id="data-panel">Cargando...</div>
+  <div id="focus-backdrop"></div>
+  <div id="focus-info-panel">
+    <div class="fi-header">
+      <div>
+        <div class="fi-name" id="fi-name">—</div>
+        <div class="fi-label" id="fi-label">✦ AGENT</div>
+      </div>
+      <button class="fi-close" id="fi-close-btn">✕ Volver</button>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Estado</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Status</span>
+        <span class="fi-status-indicator" id="fi-status"><span class="s-dot idle"></span><span id="fi-status-text">idle</span></span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Modelo</span>
+        <span class="fi-row-value" id="fi-model">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Mensajes</span>
+        <span class="fi-row-value" id="fi-messages">0</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">💰 Tokens</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Total</span>
+        <span class="fi-row-value" id="fi-tokens">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Input / Output</span>
+        <span class="fi-row-value" id="fi-tokens-io">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Costo estimado</span>
+        <span class="fi-row-value" id="fi-cost">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">Llamadas API</span>
+        <span class="fi-row-value" id="fi-api-calls">—</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Proyecto</div>
+      <div class="fi-row">
+        <span class="fi-row-label">Nombre</span>
+        <span class="fi-row-value" id="fi-project">—</span>
+      </div>
+      <div class="fi-row">
+        <span class="fi-row-label">ID</span>
+        <span class="fi-row-value" id="fi-id">—</span>
+      </div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Último Mensaje</div>
+      <div class="fi-last-msg" id="fi-last-msg">Sin mensajes</div>
+    </div>
+    <div class="fi-section">
+      <div class="fi-section-title">Tags</div>
+      <div class="fi-properties" id="fi-tags">
+        <span class="fi-tag">✦ AI</span>
+      </div>
+    </div>
+    <!-- Customization section -->
+    <div class="fi-section">
+      <div class="fi-section-title">✧ Personalizar</div>
+      <div id="fi-customize">
+        <div class="customize-placeholder">Seleccioná un agente para personalizarlo</div>
+      </div>
+    </div>
+  </div>
+  <div id="unfocus-hint">✦ Click fuera o ESC para volver ✦</div>
+  <div id="pedestal-view-hint">✦ Rotando alrededor del pedestal — Click o ESC para salir ✦</div>
+
+  <div id="project-info-panel">
+    <div class="pi-header">
+      <div>
+        <div class="pi-name" id="pi-name">—</div>
+        <div class="pi-subtitle" id="pi-subtitle">◈ PROYECTO</div>
+      </div>
+      <button class="pi-close" id="pi-close-btn">✕ Cerrar</button>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">⚡ Actividad</div>
+      <div class="pi-row">
+        <span class="pi-row-label">Estado</span>
+        <span class="pi-flame-indicator" id="pi-flame-status">
+          <span class="pi-flame-dot off" id="pi-flame-dot"></span>
+          <span id="pi-flame-text">sin agentes activos</span>
+        </span>
+      </div>
+      <div class="pi-row">
+        <span class="pi-row-label">Agentes activos</span>
+        <span class="pi-row-value" id="pi-active-agents">0</span>
+      </div>
+      <div class="pi-row">
+        <span class="pi-row-label">Total agentes</span>
+        <span class="pi-row-value" id="pi-total-agents">0</span>
+      </div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">📂 Directorio</div>
+      <div class="pi-row">
+        <span class="pi-row-label">Ruta</span>
+        <span class="pi-row-value" id="pi-folder">—</span>
+      </div>
+      <button class="pi-btn" id="pi-open-folder-btn">📂 Abrir carpeta</button>
+    </div>
+    <div class="pi-section" id="pi-github-section">
+      <div class="pi-section-title">🔗 Repositorio</div>
+      <div class="pi-row">
+        <span class="pi-row-label">GitHub</span>
+        <span class="pi-row-value"><a href="#" id="pi-github-link" target="_blank">—</a></span>
+      </div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">📝 Descripción</div>
+      <div class="pi-last-msg" id="pi-description">Sin descripción</div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">🕐 Últimos Cambios</div>
+      <div id="pi-changes"><span class="pi-empty">Sin cambios recientes</span></div>
+    </div>
+    <div class="pi-section">
+      <div class="pi-section-title">Tags</div>
+      <div class="fi-properties" id="pi-tags">
+        <span class="fi-tag">◈ Proyecto</span>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+
+
+  <script type="module" src="room.js"></script>
+</body>
+</html>
