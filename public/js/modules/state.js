@@ -104,6 +104,7 @@ export let state = {
     godNeedsRecheck: false,
     maxValidationRetries: 15,
     autoValidation: true,
+    autoOpenModifiedFiles: true,
     taskState: {
         objective: '',
         steps: [],

@@ -23,17 +23,26 @@ export function spawnArcaneBubble(mage, agentData) {
     + ARCANE_RUNES[Math.floor(Math.random() * ARCANE_RUNES.length)]
     + ARCANE_RUNES[Math.floor(Math.random() * ARCANE_RUNES.length)];
 
-  if (toolName && ARCANE_TOOL_WORDS[toolName]) {
+  // Show thinking/reasoning content as PRIMARY when available
+  const thoughtContent = agentData.lastMessage?.content || '';
+  const hasThought = isThinking && thoughtContent && thoughtContent.length > 3;
+
+  if (hasThought) {
+    // PRIORITY 1: Show agent's actual thinking/reasoning
+    const msg = thoughtContent.replace(/\s+/g, ' ').trim().slice(0, 60);
+    const prefix = randRunes();
+    const suffix = randRunes();
+    if (toolName && ARCANE_TOOL_WORDS[toolName]) {
+      // Show both thought + tool
+      const sym = ARCANE_SYMBOLS[Math.floor(Math.random() * ARCANE_SYMBOLS.length)];
+      text = prefix + ' ' + msg + ' ' + sym + ' ' + ARCANE_TOOL_WORDS[toolName] + ' ' + suffix;
+    } else {
+      text = prefix + ' ⧡ ' + msg + ' ⧡ ' + suffix;
+    }
+  } else if (toolName && ARCANE_TOOL_WORDS[toolName]) {
+    // PRIORITY 2: Show tool name when no thinking content
     const sym = ARCANE_SYMBOLS[Math.floor(Math.random() * ARCANE_SYMBOLS.length)];
     text = sym + ' ' + ARCANE_TOOL_WORDS[toolName] + ' ' + sym;
-  } else if (isThinking && agentData.lastMessage?.content) {
-    const msg = agentData.lastMessage.content.slice(0, 30).replace(/[^a-zA-Z0-9\s]/g, '').trim();
-    if (msg.length > 3) {
-      const words = msg.split(/\s+/).slice(0, 4);
-      text = randRunes() + ' ' + words.join(' ').toUpperCase() + ' ' + randRunes();
-    } else {
-      text = randRunes() + ' ⧡ ' + (isRunning ? 'CASTING' : 'MEDITATING') + ' ⧡ ' + randRunes();
-    }
   } else {
     const sym = ARCANE_SYMBOLS[Math.floor(Math.random() * ARCANE_SYMBOLS.length)];
     if (isRunning) {

@@ -191,6 +191,7 @@
               <button class="admin-sub-tab active" data-sub-tab="table">🤖 Lista de Agentes</button>
               <button class="admin-sub-tab" data-sub-tab="chat">💬 Chat Administrativo</button>
               <button class="admin-sub-tab" data-sub-tab="telegram">📱 Telegram</button>
+              <button class="admin-sub-tab" data-sub-tab="taskboard">📋 Tablero</button>
               <button class="admin-sub-tab" data-sub-tab="console">🖥️ Consola</button>
             </div>
           </div>
@@ -258,6 +259,30 @@
               </div>
               <div id="telegram-messages" class="telegram-messages-container">
                 <div class="telegram-placeholder">Esperando mensajes de Telegram...</div>
+              </div>
+            </div>
+
+            <!-- TASKBOARD VIEW (sub-tab) -->
+            <div id="admin-taskboard-view" class="monitor-table-container hidden">
+              <div class="monitor-toolbar">
+                <h2>📋 Tablero de Tareas</h2>
+                <div class="monitor-toolbar-actions">
+                  <button id="refresh-taskboard-btn" class="btn-icon" title="Actualizar">🔄</button>
+                  <span class="magic-count" id="taskboard-count">0 tareas</span>
+                </div>
+              </div>
+              <div style="padding: 16px; overflow-y: auto; flex:1; min-height:0;">
+                <!-- Filtro -->
+                <div class="taskboard-filter-row">
+                  <button class="taskboard-filter active" data-filter="all">Todas</button>
+                  <button class="taskboard-filter" data-filter="pending">Pendientes</button>
+                  <button class="taskboard-filter" data-filter="done">Resueltas</button>
+                  <button class="taskboard-filter" data-filter="archived">Archivadas</button>
+                </div>
+                <!-- Lista de proyectos expandibles con sus tareas -->
+                <div id="taskboard-list" class="taskboard-list">
+                  <div class="taskboard-empty">Cargando proyectos...</div>
+                </div>
               </div>
             </div>
 
@@ -849,6 +874,14 @@
                     <div class="toggle-container">
                       <input type="checkbox" id="auto-validation-toggle" checked />
                       <span>Activar validación automática</span>
+                    </div>
+                  </div>
+                  <div class="config-field">
+                    <label>Abrir Archivos Modificados</label>
+                    <p class="field-help">Cuando un agente termina de modificar archivos, ¿abrir automáticamente pestañas con cada archivo modificado?</p>
+                    <div class="toggle-container">
+                      <input type="checkbox" id="auto-open-files-toggle" checked />
+                      <span>Abrir archivos modificados en pestañas</span>
                     </div>
                   </div>
                 </div>

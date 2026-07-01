@@ -112,7 +112,52 @@ export function renderTabs() {
         `;
     });
 
-    // 3. File Tabs
+    // 3. Terminal Tab — solo si NO estamos en admin/monitor
+    const isAdmin = project.activeTabId === 'admin';
+    if (!isAdmin) {
+        tabsHtml += `
+            <div class="tab terminal-tab ${project.activeTabId === 'terminal' ? 'active' : ''}" onclick="window.switchTab('terminal')">
+                <span>🖥️ Terminal</span>
+            </div>
+        `;
+    }
+
+    // 4. Hermes Tab
+    const hermesTabNav = document.getElementById('hermes-tab-nav');
+    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
+        tabsHtml += `
+            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
+                <span>⚡ Hermes</span>
+            </div>
+        `;
+    }
+
+    // 5. Matrix Tab — solo si NO estamos en admin/monitor
+    if (!isAdmin) {
+        tabsHtml += `
+            <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
+                <span>🕸️ Matrix</span>
+            </div>
+        `;
+    }
+
+    // 6. GIT Tab — solo si NO estamos en admin/monitor
+    if (!isAdmin) {
+        tabsHtml += `
+            <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
+                <span>🔀 GIT</span>
+            </div>
+        `;
+    }
+
+    // 7. Agents Tab
+    tabsHtml += `
+        <div class="tab agents-tab ${project.activeTabId === 'agents' ? 'active' : ''}" onclick="window.switchTab('agents')">
+            <span>🤖 Agentes</span>
+        </div>
+    `;
+
+    // 8. File Tabs
     const openFiles = project.openFiles || [];
     openFiles.forEach((file, idx) => {
         const sanitizedPath = file.path.replace(/\\/g, '/');
@@ -133,44 +178,6 @@ export function renderTabs() {
             </div>
         `;
     });
-
-    // 4. Terminal Tab
-    tabsHtml += `
-        <div class="tab terminal-tab ${project.activeTabId === 'terminal' ? 'active' : ''}" onclick="window.switchTab('terminal')">
-            <span>🖥️ Terminal</span>
-        </div>
-    `;
-
-    // 5. Hermes Tab
-    const hermesTabNav = document.getElementById('hermes-tab-nav');
-    if (hermesTabNav && hermesTabNav.style.display !== 'none') {
-        tabsHtml += `
-            <div class="tab hermes-tab ${project.activeTabId === 'hermes' ? 'active' : ''}" onclick="window.switchTab('hermes')">
-                <span>⚡ Hermes</span>
-            </div>
-        `;
-    }
-
-    // 6. Matrix Tab
-    tabsHtml += `
-        <div class="tab matrix-tab ${project.activeTabId === 'matrix' ? 'active' : ''}" onclick="window.switchTab('matrix')">
-            <span>🕸️ Matrix</span>
-        </div>
-    `;
-
-    // 7. GIT Tab
-    tabsHtml += `
-        <div class="tab git-tab ${project.activeTabId === 'git' ? 'active' : ''}" onclick="window.switchTab('git')">
-            <span>🔀 GIT</span>
-        </div>
-    `;
-
-    // 8. Agents Tab
-    tabsHtml += `
-        <div class="tab agents-tab ${project.activeTabId === 'agents' ? 'active' : ''}" onclick="window.switchTab('agents')">
-            <span>🤖 Agentes</span>
-        </div>
-    `;
 
     tabsNav.innerHTML = tabsHtml;
     window.updateViewVisibility?.();

@@ -16,6 +16,7 @@ import { refreshConsoleUI } from './modules/console-view.js';
 import { addImages, renderImagePreviews, clearImages, handleImageSelection, toBase64 } from './modules/image-upload.js';
 import { initPdfReader, clearPdfAttachment, getPdfText, getPdfName } from './modules/pdf-reader.js';
 import { appendToTerminal, refreshTerminalUI, updateTerminalStatusUI, connectTerminalStream, runTerminalCommand, detectRunCommand , terminalEventSource } from './modules/terminal-ui.js';
+import './modules/task-board.js';   // Tablero de tareas — registra window.renderTaskBoard y handlers
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
 
@@ -987,6 +988,16 @@ async function init() {
                 // objeto viejo, y saveData() guarda el nuevo state sin el mensaje.
                 if (isTabBusy()) {
                     console.log('[SYNC] 📡 BroadcastChannel: thinking-changed ignorado — agente activo');
+                } else if (
+                    // 🐛 BUGFIX: Si este tab es el que originó el cambio de thinking,
+                    // ya tiene los datos más recientes (el mensaje del agente se acaba de
+                    // pushear a chat.messages). loadData() fetchea del servidor que puede
+                    // tener datos stale (saveData async aún no completó). Skipear.
+                    window._lastThinkingChangedChatId === event.data.chatId &&
+                    window._lastThinkingChangedAt &&
+                    (Date.now() - window._lastThinkingChangedAt) < 5000
+                ) {
+                    console.log('[SYNC] 📡 BroadcastChannel: thinking-changed ignorado — este tab originó el cambio');
                 } else {
                     console.log('[SYNC] 📡 BroadcastChannel: thinking-changed recibido. Refrescando estado...');
                     // 🐛 BUGFIX: Preservar el texto actual del textarea antes de loadData()+syncUI()
@@ -1051,13 +1062,23 @@ async function loadData(shouldScan = true) {
             return true;
         };
 
-        // ─── 🐛 BUGFIX: Preservar terminalLogs runtime ───
+        // ─── 🐛 BUGFIX: Preservar terminalLogs y chat messages runtime ───
         // loadData() reemplaza state.projects con objetos nuevos del servidor.
-        // terminalLogs es runtime (se llena via SSE) y se pierde al reemplazar.
+        // terminalLogs y messages recién agregados son runtime y se pierden al reemplazar.
+        // Esto causa que el mensaje final del agente desaparezca cuando loadData()
+        // se ejecuta antes de que saveData() complete su POST (race condition).
         const _oldTerminalLogs = new Map();
+        const _oldChatMessages = new Map();
         for (const old of state.projects) {
             if (Array.isArray(old.terminalLogs) && old.terminalLogs.length > 0) {
                 _oldTerminalLogs.set(old.id, old.terminalLogs);
+            }
+            if (Array.isArray(old.chats)) {
+                for (const oldChat of old.chats) {
+                    if (Array.isArray(oldChat.messages) && oldChat.messages.length > 0) {
+                        _oldChatMessages.set(oldChat.id, oldChat.messages);
+                    }
+                }
             }
         }
 
@@ -1080,6 +1101,7 @@ async function loadData(shouldScan = true) {
             state.godMessages = data.godMessages || [];
             state.maxValidationRetries = data.maxValidationRetries !== undefined ? data.maxValidationRetries : 15;
             state.autoValidation = data.autoValidation !== undefined ? data.autoValidation : true;
+            state.autoOpenModifiedFiles = data.autoOpenModifiedFiles !== undefined ? data.autoOpenModifiedFiles : true;
             state.skillsMetadata = data.skillsMetadata || {};
             state.sidebarWidth = data.sidebarWidth || 260;
             state.sidebarVisible = data.sidebarVisible !== undefined ? data.sidebarVisible : true;
@@ -1094,12 +1116,23 @@ async function loadData(shouldScan = true) {
             state.selectedAdminModel = data.selectedAdminModel || 'deepseek-v4-flash';
         }
 
-        // ─── 🐛 BUGFIX: Restaurar terminalLogs runtime perdidos por loadData() ───
-        // Los proyectos nuevos del servidor no tienen terminalLogs (es runtime-only).
+        // ─── 🐛 BUGFIX: Restaurar terminalLogs y chat messages perdidos por loadData() ───
+        // Los proyectos nuevos del servidor no tienen terminalLogs (es runtime-only)
+        // y pueden tener mensajes stale (de una saveData anterior a que el agente terminara).
         // Los preservamos antes de reemplazar y los restauramos ahora.
         for (const p of state.projects) {
             if (_oldTerminalLogs.has(p.id)) {
                 p.terminalLogs = _oldTerminalLogs.get(p.id);
+            }
+        }
+        for (const p of state.projects) {
+            if (Array.isArray(p.chats)) {
+                for (const chat of p.chats) {
+                    const oldMsgs = _oldChatMessages.get(chat.id);
+                    if (oldMsgs && oldMsgs.length > chat.messages.length) {
+                        chat.messages = oldMsgs;
+                    }
+                }
             }
         }
 
@@ -1263,18 +1296,66 @@ async function saveData() {
     savePending = false;
 
     try {
+        // ─── 🚨 TRIM: Prevenir "request entity too large" (413) ───
+        const MAX_MSGS = 50;
+        const MAX_MSG_LEN = 8000;
+        const MAX_ADMIN = 50;
+        const MAX_GOD = 50;
+
+        const trimmedProjects = (state.projects || []).map(p => {
+            const tp = { ...p };
+            delete tp.currentFiles;
+            if (Array.isArray(tp.chats)) {
+                tp.chats = tp.chats.map(c => {
+                    const tc = { ...c };
+                    if (Array.isArray(tc.messages) && tc.messages.length > MAX_MSGS) {
+                        const first = tc.messages[0];
+                        const keep = tc.messages.slice(-MAX_MSGS);
+                        if (first && first.role === 'system' && keep[0] !== first) {
+                            keep.unshift(first);
+                        }
+                        tc.messages = keep;
+                    }
+                    if (Array.isArray(tc.messages)) {
+                        tc.messages = tc.messages.map(m => ({
+                            ...m,
+                            content: typeof m.content === 'string' && m.content.length > MAX_MSG_LEN
+                                ? m.content.slice(0, MAX_MSG_LEN) +
+                                  `\n\n[... mensaje truncado: original ${m.content.length} chars]`
+                                : m.content
+                        }));
+                    }
+                    return tc;
+                });
+            }
+            return tp;
+        });
+
+        const trimMessages = (msgs, maxCount) => {
+            if (!Array.isArray(msgs)) return msgs;
+            const sliced = msgs.length > maxCount ? msgs.slice(-maxCount) : msgs;
+            return sliced.map(m => ({
+                ...m,
+                content: typeof m.content === 'string' && m.content.length > MAX_MSG_LEN
+                    ? m.content.slice(0, MAX_MSG_LEN) +
+                      `\n\n[... mensaje truncado: original ${m.content.length} chars]`
+                    : m.content
+            }));
+        };
+
         const payload = {
-            projects: state.projects,
+            projects: trimmedProjects,
             userSystemPrompt: state.userSystemPrompt,
             namingPrompt: state.namingPrompt,
             secondAgentConfig: state.secondAgentConfig,
             orchestratorPrompt: state.orchestratorPrompt,
             improverPrompt: state.improverPrompt,
             activeProjectId: state.activeProjectId,
-            adminMessages: state.adminMessages,
-            godMessages: state.godMessages,
+            adminMessages: trimMessages(state.adminMessages, MAX_ADMIN),
+            godMessages: trimMessages(state.godMessages, MAX_GOD),
             maxValidationRetries: state.maxValidationRetries,
             autoValidation: state.autoValidation,
+            autoOpenModifiedFiles: state.autoOpenModifiedFiles,
             deepseekApiKey: state.deepseekApiKey,
             openaiApiKey: state.openaiApiKey,
             openrouterApiKey: state.openrouterApiKey,
@@ -1290,7 +1371,8 @@ async function saveData() {
             deletedProjectIds: state.deletedProjectIds
         };
         
-        console.log(`[STATE] Guardando estado... (${state.projects.length} proyectos)`);
+        const payloadSize = new Blob([JSON.stringify(payload)]).size;
+        console.log(`[STATE] Guardando estado... (${state.projects.length} proyectos) — payload ~${(payloadSize / 1024 / 1024).toFixed(1)}MB`);
         const res = await fetchWithLog(`${API_BASE}/sessions/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1298,7 +1380,8 @@ async function saveData() {
         });
         
         if (!res.ok) {
-            console.error("[STATE] Error al guardar el estado:", res.statusText);
+            const errText = await res.text().catch(() => res.statusText);
+            console.error("[STATE] Error al guardar el estado:", errText);
         } else {
             if (amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
                 syncWs.send(JSON.stringify({ event: 'sync:stateUpdate' }));
@@ -5331,13 +5414,15 @@ async function performWrite(fileName, content, project, chat) {
         if (openFile) {
             openFile.pendingContent = content;
             openFile.oldContent = oldContent;
-        } else {
+        } else if (state.autoOpenModifiedFiles) {
             const displayName = fileName.split(/[/\\]/).pop();
             project.openFiles.push({ path: sanPath, name: displayName, content: oldContent, oldContent: oldContent, pendingContent: content });
         }
-        project.activeTabId = sanPath;
-        renderTabs();
-        updateViewVisibility();
+        if (state.autoOpenModifiedFiles) {
+            project.activeTabId = sanPath;
+            renderTabs();
+            updateViewVisibility();
+        }
         return { success: true, pending: true };
     }
 
@@ -5403,14 +5488,16 @@ async function performWrite(fileName, content, project, chat) {
             openFile.content = content;
             openFile.diff = diff;
             openFile.pendingContent = null;
-        } else {
+        } else if (state.autoOpenModifiedFiles) {
             const displayName = fileName.split(/[/\\]/).pop();
             project.openFiles.push({ path: sanPath, name: displayName, content, oldContent, diff });
         }
 
-        project.activeTabId = sanPath;
-        renderTabs();
-        updateViewVisibility();
+        if (state.autoOpenModifiedFiles) {
+            project.activeTabId = sanPath;
+            renderTabs();
+            updateViewVisibility();
+        }
         window.scanFolder(project.folder, project.id);
         saveData();
 
@@ -5494,32 +5581,39 @@ function setupEventListeners() {
         const chatView = document.getElementById('admin-chat-view');
         const telegramView = document.getElementById('admin-telegram-view');
         const consoleView = document.getElementById('admin-console-view');
+        const taskboardView = document.getElementById('admin-taskboard-view');
 
-        if (subTab === 'table') {
-            tableView.classList.remove('hidden');
+        const hideAll = () => {
+            tableView.classList.add('hidden');
             chatView.classList.add('hidden');
             if (telegramView) telegramView.classList.add('hidden');
             if (consoleView) consoleView.classList.add('hidden');
+            if (taskboardView) taskboardView.classList.add('hidden');
+        };
+
+        if (subTab === 'table') {
+            hideAll();
+            tableView.classList.remove('hidden');
         } else if (subTab === 'telegram') {
-            tableView.classList.add('hidden');
-            chatView.classList.add('hidden');
-            if (consoleView) consoleView.classList.add('hidden');
+            hideAll();
             if (telegramView) {
                 telegramView.classList.remove('hidden');
                 renderTelegramMessages();
             }
         } else if (subTab === 'console') {
-            tableView.classList.add('hidden');
-            chatView.classList.add('hidden');
-            if (telegramView) telegramView.classList.add('hidden');
+            hideAll();
             if (consoleView) {
                 consoleView.classList.remove('hidden');
                 refreshConsoleUI();
             }
+        } else if (subTab === 'taskboard') {
+            hideAll();
+            if (taskboardView) {
+                taskboardView.classList.remove('hidden');
+                if (typeof window.renderTaskBoard === 'function') window.renderTaskBoard();
+            }
         } else {
-            tableView.classList.add('hidden');
-            if (telegramView) telegramView.classList.add('hidden');
-            if (consoleView) consoleView.classList.add('hidden');
+            hideAll();
             chatView.classList.remove('hidden');
             renderAdminMessages();
         }
@@ -5568,6 +5662,22 @@ function setupEventListeners() {
 
     saveFileBtn.onclick = () => window.saveActiveFile();
     sendBtn.onclick = sendMessage;
+    
+    // ═══════════════════════════════════════════
+    //  TABLERO DE TAREAS — Event Listeners
+    // ═══════════════════════════════════════════
+    const refreshBtn = document.getElementById('refresh-taskboard-btn');
+    if (refreshBtn) {
+        refreshBtn.onclick = () => window.renderTaskBoard();
+    }
+    // Taskboard filter buttons
+    document.querySelectorAll('.taskboard-filter').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.taskboard-filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            window.renderTaskBoard();
+        };
+    });
     
     // ══════════════════════════════════════════════
     //  SLASH COMMAND AUTOCOMPLETE SYSTEM
@@ -6483,6 +6593,9 @@ ${rest}`;
         if (maxRetriesInput) maxRetriesInput.value = state.maxValidationRetries;
         if (autoValToggle) autoValToggle.checked = state.autoValidation;
 
+        const autoOpenFilesToggle = document.getElementById('auto-open-files-toggle');
+        if (autoOpenFilesToggle) autoOpenFilesToggle.checked = state.autoOpenModifiedFiles;
+
         // ─── Second Agent fields ───
         const saToggle = document.getElementById('second-agent-toggle');
         const saModel = document.getElementById('second-agent-model');
@@ -6549,6 +6662,9 @@ ${rest}`;
         const autoValToggle = document.getElementById('auto-validation-toggle');
         if (maxRetriesInput) state.maxValidationRetries = parseInt(maxRetriesInput.value) || 0;
         if (autoValToggle) state.autoValidation = autoValToggle.checked;
+
+        const autoOpenFilesToggle = document.getElementById('auto-open-files-toggle');
+        if (autoOpenFilesToggle) state.autoOpenModifiedFiles = autoOpenFilesToggle.checked;
 
         // ─── Save Second Agent config ───
         const saToggle = document.getElementById('second-agent-toggle');

@@ -237,6 +237,15 @@ export function updateThinking(chat, isThinking, status = '', subtext = '') {
         // Si el usuario estaba escribiendo mientras el agente terminaba, se borra el texto.
         saveChatDraft();
         window.saveData();
+
+        // 🐛 BUGFIX: Trackear cual chat acaba de terminar de pensar (para BC handler)
+        // Cuando el agente termina, el BC 'thinking-changed' se recibe en el mismo tab
+        // y llama loadData() antes de que saveData() complete → race condition.
+        // Marcamos el chatId y timestamp para que el BC handler pueda skipear loadData()
+        // cuando este tab es el originador del cambio (ya tiene los datos mas recientes).
+        window._lastThinkingChangedAt = Date.now();
+        window._lastThinkingChangedChatId = chat.id;
+
         try {
             const bc = new BroadcastChannel('jp-agents-sync');
             bc.postMessage({ type: 'thinking-changed', chatId: chat.id, isThinking, timestamp: Date.now() });

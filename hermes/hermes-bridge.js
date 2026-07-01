@@ -183,11 +183,19 @@ class HermesBridge extends EventEmitter {
                         }
                     },
                     onToolEvent: (toolEvent) => {
-                        const emoji = toolEvent.emoji || '⚡';
-                        const preview = toolEvent.preview || '';
+                        // 🐛 BUGFIX: Hermes emite DOS tool events por accion:
+                        // 1. Al empezar: {name, status:"running"} — sin emoji ni preview
+                        // 2. Al terminar: {name, emoji, preview, result, status:"completed"}
+                        // Solo mostramos el segundo (tiene contenido util). El primero
+                        // es ruido — un ⚡ search_files... sin contexto que ensucia el progreso.
+                        const emoji = toolEvent.emoji;
+                        const preview = toolEvent.preview || toolEvent.result || '';
+                        if (!emoji && !preview) return; // skip bare start events
+                        
+                        const displayEmoji = emoji || '⚡';
                         const line = preview
-                            ? `${emoji} ${toolEvent.name}: "${preview.slice(0, 80)}"`
-                            : `${emoji} ${toolEvent.name}...`;
+                            ? `${displayEmoji} ${toolEvent.name}: "${preview.slice(0, 80)}"`
+                            : `${displayEmoji} ${toolEvent.name}...`;
                         this._broadcastLog(instanceKey, projectId, 'progress', line + '\n');
                         accumulatedStderr += `Tool call: ${toolEvent.name} with args: ${JSON.stringify(toolEvent)}\n`;
                     },
@@ -541,8 +549,30 @@ class HermesBridge extends EventEmitter {
 
             // ─── Si hay error, devolver objeto de error (también notificamos) ───
             if (result.exitCode !== 0) {
+                const stderr = result.stderr || '';
+                // Detectar errores conocidos y dar mensajes claros al usuario
+                let errorText = '';
+                if (stderr.includes('Insufficient Balance') || stderr.includes('insufficient') || stderr.includes('saldo suficiente') || stderr.includes('0 tokens') || stderr.includes('sin saldo')) {
+                    errorText = '❌ **Saldo insuficiente en la API de DeepSeek.**\n\n' +
+                        'Tu API key no tiene crédito para procesar esta solicitud. ' +
+                        'Recargá tu cuenta en https://platform.deepseek.com y volvé a intentar.\n\n' +
+                        'Si ya recargaste, esperá unos minutos y probá de nuevo.';
+                } else if (stderr.includes('Invalid API key') || stderr.includes('invalid_api_key')) {
+                    errorText = '❌ **API key inválida.**\n\n' +
+                        'La API key configurada en ~/.hermes/.env no es válida. ' +
+                        'Verificá que API_SERVER_KEY tenga el valor correcto.';
+                } else if (stderr.includes('timed out') || stderr.includes('timeout')) {
+                    errorText = '⏰ **La solicitud al agente tardó demasiado y expiró.**\n\n' +
+                        'Intentá de nuevo con una consulta más simple o verificá que el Gateway de Hermes esté funcionando correctamente.';
+                } else if (stderr.includes('ECONNREFUSED') || stderr.includes('ETIMEDOUT')) {
+                    errorText = '🔌 **No se pudo conectar con el Gateway de Hermes.**\n\n' +
+                        'Asegurate de que Hermes Agent esté corriendo (hermes gateway) en el puerto 8642.';
+                } else {
+                    errorText = `⚠️ Hermes terminó con error:\n${stderr.slice(0, 1000)}`;
+                }
+
                 const errorResult = {
-                    text: `⚠️ Hermes terminó con código ${result.exitCode}\n${result.stderr || result.stdout || '(sin salida)'}`,
+                    text: errorText,
                     usage: tokenUsage,
                     sessionId
                 };

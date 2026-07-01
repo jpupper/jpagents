@@ -442,11 +442,18 @@ function execHermesStream(hermesPath, args, { workdir, timeout, streaming }) {
                 let prefix = '';
                 if (clean.includes('[thinking]')) {
                     prefix = '💭 ';
-                    thinkingLines.push(prefix + clean.replace(/.*\[thinking\]\s*/, '').slice(0, 100));
+                    thinkingLines.push(prefix + clean.replace(/.*\\[thinking\\]\\s*/, '').slice(0, 200));
                 } else if (clean.includes('Tool call:')) {
                     const toolMatch = clean.match(/Tool call:\s*(\w+)/);
                     const toolName = toolMatch ? toolMatch[1] : '???';
-                    thinkingLines.push(`${getToolEmoji(toolName)} ${toolName}`);
+                    // Try to extract args/preview from the same line
+                    const argsMatch = clean.match(/with args:\s*(.*)/);
+                    const preview = argsMatch ? argsMatch[1].slice(0, 80) : '';
+                    thinkingLines.push(
+                        preview
+                            ? `${getToolEmoji(toolName)} ${toolName}: "${preview}"`
+                            : `${getToolEmoji(toolName)} ${toolName}`
+                    );
                 } else if (!clean.includes('completed in') && !clean.includes('Tool') &&
                            !clean.includes('conversation turn') && !clean.includes('session=') &&
                            clean.length > 5) {

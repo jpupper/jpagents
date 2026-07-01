@@ -156,7 +156,6 @@ export function setupWebSocket() {
 
 // ─── Claim Master on user interaction ───
 export function claimMaster() {
-    console.log('[SYNC-FLOW] 👑 claimMaster() called. amIMaster =', amIMaster, 'readyState =', syncWs ? syncWs.readyState : 'null');
     if (!amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
         console.log('[WS-SYNC] Reclamando rol de MASTER para esta pestaña.');
         syncWs.send(JSON.stringify({ event: 'sync:claimMaster' }));

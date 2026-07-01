@@ -32,6 +32,7 @@ export function sanitizeProject(p) {
         currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
         projectPrompt: p.projectPrompt || '',
         skills: Array.isArray(p.skills) ? p.skills : [],
+        tasks: Array.isArray(p.tasks) ? p.tasks : [],
         isCorrupted: p.isCorrupted || false,
         isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
     };

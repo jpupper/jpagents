@@ -45,8 +45,8 @@ const MAX_START_RETRIES = 3;
 
 // Middlewares - DEBEN ir antes de las rutas
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ limit: '200mb', extended: true }));
 
 // ─── Body-parser error handler ───
 // Atrapa SyntaxError de JSON malformado (acentos corruptos por encoding de Windows)
@@ -5390,15 +5390,18 @@ async function startServer() {
                 const data = JSON.parse(message.toString());
                 
                 if (data.event === 'sync:claimMaster') {
-                    masterSocketId = ws.id;
-                    console.log(`[WS-SYNC] Rol de MASTER reclamado por socket: ${ws.id}`);
-                    
-                    const payload = JSON.stringify({ event: 'sync:masterClaimed', socketId: ws.id });
-                    wss.clients.forEach(client => {
-                        if (client.readyState === 1) { // 1 = WebSocket.OPEN
-                            client.send(payload);
-                        }
-                    });
+                    // Solo actuar si el master realmente cambia
+                    if (masterSocketId !== ws.id) {
+                        masterSocketId = ws.id;
+                        console.log(`[WS-SYNC] Rol de MASTER reclamado por socket: ${ws.id}`);
+                        
+                        const payload = JSON.stringify({ event: 'sync:masterClaimed', socketId: ws.id });
+                        wss.clients.forEach(client => {
+                            if (client.readyState === 1) { // 1 = WebSocket.OPEN
+                                client.send(payload);
+                            }
+                        });
+                    }
                 } else if (data.event === 'sync:stateUpdate') {
                     if (ws.id === masterSocketId) {
                         console.log(`[WS-SYNC] Difundiendo actualización de estado desde MASTER: ${ws.id}`);
