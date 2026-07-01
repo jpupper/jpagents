@@ -144,7 +144,7 @@ export function formatProgressLines(rawContent) {
         if (trimmed.startsWith('+')) return `<span class="diff-add">${escaped}</span>`;
         if (trimmed.startsWith('-')) return `<span class="diff-del">${escaped}</span>`;
         if (trimmed.startsWith('🛠️') || trimmed.includes('🛠️')) return `<span class="tool-line">${escaped}</span>`;
-        if (/^[📖📝🔧🔍⚙️]/.test(trimmed)) return `<span class="tool-line">${escaped}</span>`;
+        if (/^[📖📝🔧🔍⚙️💻]/.test(trimmed)) return `<span class="tool-line">${escaped}</span>`;
         if (trimmed.startsWith('✅')) return `<span class="status-ok">${escaped}</span>`;
         if (trimmed.startsWith('❌')) return `<span class="status-err">${escaped}</span>`;
         if (trimmed.startsWith('🤔')) return `<span class="thinking-line">${escaped}</span>`;

@@ -7137,7 +7137,15 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                                 const fileMatch = clean.match(/['"]([^'"]+)['"]/);
                                                 const action = clean.match(/read_file|write_file|patch|search_files|execute_code/)[0];
                                                 const file = fileMatch ? fileMatch[1].split('/').pop().split('\\').pop() : '';
-                                                formatted = (action === 'read_file' ? '📖' : action === 'write_file' ? '📝' : action === 'patch' ? '🔧' : action === 'search_files' ? '🔍' : '⚙️') + ' ' + (file || clean.slice(0, 60));
+                                                const actionLabel = action === 'read_file' ? '📖 Leyendo' : action === 'write_file' ? '📝 Escribiendo' : action === 'patch' ? '🔧 Modificando' : action === 'search_files' ? '🔍 Buscando en' : '⚙️ Ejecutando';
+                                                formatted = actionLabel + ' ' + (file || clean.slice(0, 60));
+                                            }
+                                            // Terminal commands — shorten to readable label
+                                            else if (clean.includes('terminal') || clean.includes('execute_code')) {
+                                                const cmdMatch = clean.match(/["']([^"']{1,80})["']/);
+                                                const shortCmd = cmdMatch ? cmdMatch[1].replace(/\s+/g, ' ').trim() : '';
+                                                const preview = shortCmd ? (shortCmd.length > 70 ? shortCmd.slice(0, 67) + '...' : shortCmd) : 'comando';
+                                                formatted = '💻 ' + preview;
                                             }
                                             // Tool results / status
                                             else if (clean.match(/^Result|^Status|^Success|^Error|^Done|^Completed|^Got\s+\d+/i)) {
@@ -7159,16 +7167,18 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                             }
                                             // ANY tool emoji prefix → update thinking-subtext (💻🔍📄✏️🔧 etc.)
                                             else if (clean.match(/^[💻🔍📄✏️🔧🔎🌐👆⌨️🐍📋❓🧠⏰👁️🎨🔊⚡⚙️📖📝🤔✅❌]/u)) {
-                                                formatted = clean.slice(0, 200);
-                                                chat.thinkingSubtext = clean.replace(/^.[^\w]*/, '').trim().slice(0, 150);
+                                                const maxLen = 120;
+                                                formatted = clean.length > maxLen ? clean.slice(0, maxLen - 3) + '...' : clean;
+                                                chat.thinkingSubtext = clean.replace(/^.[^\w]*/, '').trim().slice(0, 100);
                                             }
                                             // Error-like lines
                                             else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
-                                                formatted = '❌ ' + clean.slice(0, 150);
+                                                formatted = '❌ ' + (clean.length > 120 ? clean.slice(0, 117) + '...' : clean);
                                             }
-                                            // Plain lines — show verbatim (no truncation)
+                                            // Plain lines — show verbatim with safe truncation
                                             else {
-                                                formatted = line.slice(0, 200);
+                                                const maxLen = 120;
+                                                formatted = line.length > maxLen ? line.slice(0, maxLen - 3) + '...' : line;
                                             }
                                             if (formatted) {
                                                 progressChatMsg.content += formatted + '\n';

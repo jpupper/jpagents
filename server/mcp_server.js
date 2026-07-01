@@ -11,6 +11,32 @@ import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import screenshot from "screenshot-desktop";
 import fetch from "node-fetch";
+
+// ─── DESKTOP AUTOMATION ──────────────────────────────────────
+const DESKTOP_AUTOMATION_SCRIPT = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..", "tools", "desktop_automation.py"
+);
+
+async function callDesktopAutomation(action, args = {}) {
+  const input = JSON.stringify({ action, args });
+  try {
+    const { stdout, stderr } = await execAsync(
+      `python "${DESKTOP_AUTOMATION_SCRIPT}"`,
+      { timeout: 15000, maxBuffer: 50 * 1024 * 1024, input }
+    );
+    if (stderr) console.error(`[DesktopAuto] stderr: ${stderr.slice(0, 500)}`);
+    const result = JSON.parse(stdout.trim());
+    if (!result.success) {
+      throw new Error(result.error || "Desktop automation failed");
+    }
+    return result;
+  } catch (err) {
+    if (err.killed) throw new Error("Desktop automation timed out (15s)");
+    throw err;
+  }
+}
+// ─────────────────────────────────────────────────────────────
 import { appendFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
