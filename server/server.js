@@ -25,6 +25,9 @@ import hermesBridge from '../hermes/hermes-bridge.js';
 import { createHermesClient } from '../lib/hermes-gateway-client.js';
 import { createSseParser } from '../lib/sse-parser.js';
 import { stripAnsi } from '../shared/ansi-utils.js';
+import { execAsync, execFileAsync, __filename, __dirname, port, MAX_START_RETRIES, OLLAMA_URL, SESSIONS_FILE, CLIENT_LOGS_FILE, TASK_STATE_FILE, slog } from './config.js';
+import { writeCrashLog } from './utils/crash-log.js';
+import app from './app.js';
 
 // ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
 // Previene crashes cuando stdout/stderr pipe se rompe (ej: concurrently cierra stream)
@@ -33,60 +36,9 @@ console.log = (...args) => { try { __origConsole.log.apply(console, args); } cat
 console.error = (...args) => { try { __origConsole.error.apply(console, args); } catch (_) { try { process.stderr.write('[EPIPE]\n'); } catch {} } };
 console.warn = (...args) => { try { __origConsole.warn.apply(console, args); } catch (_) { try { process.stderr.write('[EPIPE]\n'); } catch {} } };
 
-const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.resolve(path.dirname(__filename), '..');
-const app = express();
-const port = parseInt(process.env.JPAGENTS_PORT, 10) || 4699;
 let serverInstance = null; // Store server instance for graceful close
 let startRetryCount = 0;
-const MAX_START_RETRIES = 3;
-
-// Middlewares - DEBEN ir antes de las rutas
-app.use(cors());
-app.use(express.json({ limit: '200mb' }));
-app.use(express.urlencoded({ limit: '200mb', extended: true }));
-
-// ─── Body-parser error handler ───
-// Atrapa SyntaxError de JSON malformado (acentos corruptos por encoding de Windows)
-// y devuelve un error 400 claro en vez de que el worker se quede esperando.
-app.use((err, req, res, next) => {
-    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-        const preview = String(err.body || '').slice(0, 200).replace(/[^\x20-\x7E]/g, '?');
-        console.error(`[BODY-PARSER] ⚠️ JSON inválido en ${req.method} ${req.url}`);
-        console.error(`[BODY-PARSER]    Preview: ${preview}...`);
-        console.error(`[BODY-PARSER]    Error: ${err.message}`);
-        return res.status(400).json({ error: 'JSON malformado en el body de la solicitud', detail: err.message });
-    }
-    next(err);
-});
-
-// ─── Global error handler middleware ───
-// Captura errores no manejados en rutas y devuelve 500 limpio.
-// Elimina la necesidad de try-catch en cada ruta.
-app.use((err, req, res, next) => {
-    console.error(`[SERVER] ⚠️ Error en ${req.method} ${req.url}:`, err.message);
-    if (!res.headersSent) {
-        res.status(err.status || 500).json({ error: err.message || 'Error interno del servidor' });
-    }
-});
-
-// Servir archivos estáticos (Agents Room, etc.)
-const __dirname_route = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-app.use('/static', express.static(path.join(__dirname_route, '.')));
-
-// Servir frontend desde public/
-app.use(express.static(path.join(__dirname_route, 'public')));
-
-// Redirigir raíz al index.html del frontend
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname_route, 'public', 'index.html'));
-});
-
-// Servir imágenes temporales para Hermes (vision_analyze)
-const tempImagesDir = path.join(__dirname_route, 'temp_images');
-app.use('/temp-images', express.static(tempImagesDir));
+// Middlewares y archivos estáticos se configuran en app.js (importado arriba)
 
 // Agent & Restart State
 let isAgentBusy = false;
@@ -371,11 +323,11 @@ async function callHermesAdminStreaming(message, onThinking, history = [], onCla
 
 import { getToolEmoji } from '../shared/tool-emojis.js';
 import { cleanHermesResponse, extractTelegramSummary, hasResumenFormat, extractResumenData, ensureResumen } from './utils/response-utils.js';// ─── Safe console (EPIPE protection) ───
-const slog = {
-    log: (...args) => { try { console.log(...args); } catch { /* EPIPE safe */ } },
-    error: (...args) => { try { console.error(...args); } catch { /* EPIPE safe */ } },
-    warn: (...args) => { try { console.warn(...args); } catch { /* EPIPE safe */ } }
-};
+// slog ahora importado desde config.js
+
+
+
+
 
 
 
@@ -414,16 +366,9 @@ app.delete('/api/admin/traces', async (req, res) => {
     }
 });
 
-// Request Logger — solo para non-polling endpoints
-app.use((req, res, next) => {
-    if (req.headers['x-silent-check']) return next();
-    // No loggear polling interno
-    if (req.url && (req.url.startsWith('/api/hermes/logs/') || req.url.includes('/logs/'))) return next();
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    next();
-});
+// Request Logger configurado en app.js
 
-const OLLAMA_URL = 'http://localhost:11434';
+// OLLAMA_URL ahora importado desde config.js
 
 async function ensureOllamaRunning() {
     try {
@@ -441,9 +386,7 @@ async function ensureOllamaRunning() {
     }
 }
 
-const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
-const CLIENT_LOGS_FILE = path.join(process.cwd(), 'client_errors.json');
-const TASK_STATE_FILE = path.join(process.cwd(), 'state.json');
+// SESSIONS_FILE, CLIENT_LOGS_FILE, TASK_STATE_FILE ahora importados desde config.js
 
 
 // Persistence Helpers with MongoDB
@@ -4591,98 +4534,11 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Final safety net — PREVENT CRASH on uncaught errors
-process.on('uncaughtException', (err) => {
-    console.error('[CRITICAL] Uncaught Exception:', err);
-    console.error('[CRITICAL] El servidor sigue vivo — intentando continuar...');
-    writeCrashLog('uncaughtException', err);
-});
-
-// BUGFIX: En Node 15+, unhandled rejections MATAN el proceso por defecto.
-// Este handler previene el crash y loggea el error, manteniendo el servidor vivo.
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
-    console.error('[CRITICAL] El servidor sigue vivo — rechazo no capturado pero no fatal.');
-    writeCrashLog('unhandledRejection', reason);
-});
-
-// Helper: write crash info to a file so we can debug later
-function writeCrashLog(source, error) {
-    try {
-        const crashFile = path.join(process.cwd(), 'crash.log');
-        const entry = {
-            time: new Date().toISOString(),
-            source,
-            message: error?.message || String(error || 'Unknown'),
-            stack: error?.stack || '',
-            pid: process.pid,
-            memory: process.memoryUsage(),
-            uptime: process.uptime()
-        };
-        // Usar appendFileSync (sincrono) porque el event loop puede estar comprometido
-        try {
-                        appendFileSync(crashFile, JSON.stringify(entry) + '\n');
-        } catch (_) {
-            // Fallback: si crash.log no se puede escribir, intentar stderr
-            try { process.stderr.write('[CRASH] ' + JSON.stringify(entry) + '\n'); } catch {}
-        }
-    } catch (_) {
-        // best effort
-    }
-}
-
-// BUGFIX: Capturar 'warning' events que puedan preceder a crashes
-process.on('warning', (warning) => {
-    if (warning.name === 'UnhandledPromiseRejectionWarning') {
-        // Node 14 emite warning antes de crash — lo atajamos
-        console.warn('[WARN] UnhandledPromiseRejectionWarning capturado:', warning.message);
-    }
-});
-
-// ─── EXIT CODE CAPTURE ──────────────────────────────────────
-// BUGFIX: El server crashea con exit code 1 pero sin escribir crash.log.
-// Esto significa que el error NO es un uncaughtException/unhandledRejection,
-// sino algo que Node trata como fatal (stack overflow, native addon crash,
-// OOM, error en async_hooks, etc.). Este handler captura CUALQUIER exit.
-process.on('exit', (code) => {
-    try {
-        const exitLog = path.join(process.cwd(), 'exit.log');
-        appendFileSync(exitLog, JSON.stringify({
-            time: new Date().toISOString(),
-            exitCode: code,
-            pid: process.pid,
-            signal: process._exiting ? 'clean' : 'dirty',
-            memory: process.memoryUsage(),
-            uptime: process.uptime()
-        }) + '\n');
-    } catch (_) {
-        try {
-            // Fallback: escribir a temp directory
-            const tmpPath = path.join(os.tmpdir(), 'jpagents-exit.log');
-            require('fs').appendFileSync(tmpPath, JSON.stringify({
-                time: new Date().toISOString(),
-                exitCode: code,
-                pid: process.pid
-            }) + '\n');
-        } catch {}
-    }
-});
-
-// Catch SIGTERM/SIGINT that bypass our graceful handlers
-process.on('SIGTERM', () => {
-    try {
-        const sigLog = path.join(process.cwd(), 'signal.log');
-        appendFileSync(sigLog, JSON.stringify({
-            time: new Date().toISOString(),
-            signal: 'SIGTERM',
-            pid: process.pid
-        }) + '\n');
-    } catch {}
-    gracefulShutdown('SIGTERM');
-});
+// writeCrashLog + process handlers (uncaughtException, unhandledRejection, warning, exit) now in utils/crash-log.js
 
 // ─── Graceful Shutdown ───
-// Cierra el server HTTP limpiamente en SIGTERM/SIGINT para evitar conexiones colgadas
+// Depende de estado del servidor (wss, serverInstance, pickFolderChild, activeProcesses, hermesBridge)
+// por eso NO puede vivir en utils/crash-log.js
 async function gracefulShutdown(signal) {
     console.log('[SHUTDOWN] Recibido ' + signal + ' — cerrando servidor graceful...');
 
@@ -4736,7 +4592,7 @@ async function gracefulShutdown(signal) {
     process.exit(0);
 }
 
-// Catch SIGTERM/SIGINT that bypass our graceful handlers
+// ─── Signal Handlers ───
 process.on('SIGTERM', () => {
     try {
         const sigLog = path.join(process.cwd(), 'signal.log');
@@ -4761,7 +4617,6 @@ process.on('SIGINT', () => {
     gracefulShutdown('SIGINT');
 });
 
-// Handle common signals that should not crash the process
 process.on('SIGPIPE', () => {
     // SIGPIPE es normal cuando un pipe se rompe — no es fatal
 });
