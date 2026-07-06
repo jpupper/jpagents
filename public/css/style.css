@@ -4414,7 +4414,210 @@ pre code.hljs {
   color: var(--text-secondary);
 }
 
-/* Hermes play/stop buttons */
+/* ─── Mode Toggles (Autocommit, VPS, FTP) ─── */
+.mode-toggles {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.6rem;
+  font-family: inherit;
+  transition: all 0.25s ease;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+
+.btn-mode-toggle .mode-icon {
+  font-size: 0.75rem;
+}
+
+.btn-mode-toggle .mode-label {
+  font-size: 0.6rem;
+}
+
+.btn-mode-toggle:hover {
+  border-color: var(--accent-color);
+  background: rgba(124, 77, 255, 0.08);
+  opacity: 0.85;
+}
+
+.btn-mode-toggle.on {
+  border-color: rgba(0, 229, 255, 0.5);
+  background: rgba(0, 229, 255, 0.08);
+  color: #22d3ee;
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.1);
+  opacity: 1;
+}
+
+.btn-mode-toggle.on .mode-label {
+  color: #22d3ee;
+}
+
+.btn-mode-toggle.off .mode-label {
+  color: var(--text-secondary);
+}
+
+/* Per-toggle accent colors when ON */
+#toggle-autocommit.on {
+  border-color: rgba(52, 211, 153, 0.5);
+  background: rgba(52, 211, 153, 0.08);
+  color: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.1);
+}
+#toggle-autocommit.on .mode-label {
+  color: #34d399;
+}
+
+#toggle-vps.on {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.1);
+}
+#toggle-vps.on .mode-label {
+  color: #fbbf24;
+}
+
+#toggle-ftp.on {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.08);
+  color: #60a5fa;
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.1);
+}
+#toggle-ftp.on .mode-label {
+  color: #60a5fa;
+}
+
+/* ─── Action Buttons (Reload Server, etc) ─── */
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-action {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.6rem;
+  font-family: inherit;
+  transition: all 0.25s ease;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+
+.btn-action .action-icon {
+  font-size: 0.75rem;
+}
+
+.btn-action .action-label {
+  font-size: 0.6rem;
+}
+
+.btn-action:hover {
+  border-color: var(--accent-color);
+  background: rgba(124, 77, 255, 0.08);
+  opacity: 0.85;
+}
+
+#btn-reload-server:hover {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.08);
+  color: #f87171;
+}
+
+#btn-reload-server:hover .action-label {
+  color: #f87171;
+}
+
+/* ─── Action Button Config (Global Settings) ─── */
+.action-button-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.action-button-config-item {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255,255,255,0.02);
+}
+
+.action-button-config-item .config-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.action-button-config-item .config-item-header .item-icon {
+  font-size: 1rem;
+}
+
+.action-button-config-item .config-item-header .item-label {
+  color: var(--text-primary);
+}
+
+.action-button-config-item .config-item-header .item-type-badge {
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(124, 77, 255, 0.15);
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.action-button-config-item .config-item-header .item-type-badge.system {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.action-button-config-item textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: rgba(0,0,0,0.2);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.action-button-config-item textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.action-button-config-item .field-help {
+  margin-top: 6px;
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+
+/* ─── Hermes play/stop buttons ─── */
 .btn-hermes-play, .btn-hermes-stop {
   display: flex;
   align-items: center;

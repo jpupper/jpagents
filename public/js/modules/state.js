@@ -127,8 +127,12 @@ export let state = {
     currentPdfName: '',
     currentPdfPages: 0,
     lastRenderedChatId: null,
-    lastRenderedProjectId: null
-};
+    lastRenderedProjectId: null,
+    // Action Buttons config: { id: { id, label, icon, prompt, type } }
+    actionButtons: [
+      { id: 'btn-reload-server', label: 'Reload Server', icon: '🔄', type: 'system', prompt: '' }
+    ]
+  };
 
 window.__jpState = state;
 

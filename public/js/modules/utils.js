@@ -98,6 +98,7 @@ export function createChat(project, opts = {}) {
         name: chatName, messages: [], isThinking: false, isRunning: false, isStreaming: false, isStopped: false,
         mode, lastProgress: Date.now(), model: model || project?.model || 'deepseek-v4-flash', useHermes, isNew: true,
         skills: skills || (project?.skills ? [...project.skills] : []),
+        toggleStates: { autocommit: false, vps: false, ftp: false },
         totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalApiCalls: 0
     };
 }

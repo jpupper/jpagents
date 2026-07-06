@@ -189,6 +189,49 @@ async function triggerSystemRestart() {
     }
 }
 
+// ─── Action Button Config Render & Save ───
+function renderActionButtonConfigs() {
+    const container = document.getElementById('action-button-config-list');
+    if (!container) return;
+
+    const buttons = state.actionButtons || [];
+    if (buttons.length === 0) {
+        container.innerHTML = '<p class="field-help">No hay botones de acción configurados.</p>';
+        return;
+    }
+
+    container.innerHTML = buttons.map((btn, idx) => {
+        const isSystem = btn.type === 'system';
+        const typeLabel = isSystem ? '⚙️ Sistema' : '📝 Prompt';
+        const typeClass = isSystem ? 'system' : 'prompt';
+        return `<div class="action-button-config-item" data-btn-idx="${idx}">
+          <div class="config-item-header">
+            <span class="item-icon">${btn.icon || '🔘'}</span>
+            <span class="item-label">${btn.label}</span>
+            <span class="item-type-badge ${typeClass}">${typeLabel}</span>
+          </div>
+          <textarea class="action-btn-prompt-textarea" data-btn-id="${btn.id}" ${isSystem ? 'disabled' : ''}
+            placeholder="${isSystem ? 'Este botón ejecuta una acción del sistema (no requiere prompt).' : 'Escribí el prompt que se enviará al agente al hacer clic...'}">${(btn.prompt || '')}</textarea>
+          <p class="field-help">${isSystem ? 'Botón de sistema — no necesita prompt.' : 'Este texto se enviará automáticamente al chat cuando hagas clic en el botón.'}</p>
+        </div>`;
+    }).join('');
+}
+
+function saveActionButtonConfigs() {
+    const container = document.getElementById('action-button-config-list');
+    if (!container) return;
+
+    const textareas = container.querySelectorAll('.action-btn-prompt-textarea');
+    textareas.forEach(ta => {
+        const btnId = ta.dataset.btnId;
+        const btn = (state.actionButtons || []).find(b => b.id === btnId);
+        if (btn && btn.type !== 'system') {
+            btn.prompt = ta.value;
+        }
+    });
+}
+// ─── End Action Button Config ───
+
 // MCP Client Implementation
 class MCPClient {
     constructor(baseUrl) {
@@ -889,6 +932,7 @@ async function init() {
     setupTerminalEvents();
     initPdfReader();
     initPanelResize();
+    initModeToggles();
     
     // ─── Auto-transformación
     // (Eliminado: refreshConsoleUI cada 10s — ahora se actualiza vía WS events)
@@ -1114,6 +1158,26 @@ async function loadData(shouldScan = true) {
             state.deepseekThinking = data.deepseekThinking !== undefined ? data.deepseekThinking : true;
             state.selectedModel = data.selectedModel || 'deepseek-v4-flash';
             state.selectedAdminModel = data.selectedAdminModel || 'deepseek-v4-flash';
+
+            // Load action buttons config
+            if (data.actionButtons && Array.isArray(data.actionButtons)) {
+                // Merge: preserve any new buttons added in code, update prompts from saved data
+                const savedIds = new Set(data.actionButtons.map(b => b.id));
+                const existingIds = new Set((state.actionButtons || []).map(b => b.id));
+                // Update saved prompts
+                for (const savedBtn of data.actionButtons) {
+                    const existing = (state.actionButtons || []).find(b => b.id === savedBtn.id);
+                    if (existing) {
+                        existing.prompt = savedBtn.prompt || '';
+                    }
+                }
+                // Add any saved buttons that don't exist in code defaults (user-created in the future)
+                for (const savedBtn of data.actionButtons) {
+                    if (!existingIds.has(savedBtn.id)) {
+                        state.actionButtons.push({ ...savedBtn });
+                    }
+                }
+            }
         }
 
         // ─── 🐛 BUGFIX: Restaurar terminalLogs y chat messages perdidos por loadData() ───
@@ -1368,7 +1432,8 @@ async function saveData() {
             sidebarVisible: state.sidebarVisible,
             fileExplorerWidth: state.fileExplorerWidth,
             fileExplorerVisible: state.fileExplorerVisible,
-            deletedProjectIds: state.deletedProjectIds
+            deletedProjectIds: state.deletedProjectIds,
+            actionButtons: state.actionButtons
         };
         
         const payloadSize = new Blob([JSON.stringify(payload)]).size;
@@ -1421,6 +1486,8 @@ function syncUI() {
         renderProjectList();
         renderTabs();
     }
+    // Sincronizar toggles de modo al cambiar de proyecto/chat
+    setTimeout(syncModeToggleUI, 50);
 }
 
 async function getTaskState() {
@@ -6640,6 +6707,9 @@ ${rest}`;
             window.renderHistoryList();
         }
 
+        // Render action button configs
+        renderActionButtonConfigs();
+
         globalSettingsModal.classList.remove('hidden');
     };
 
@@ -6698,6 +6768,9 @@ ${rest}`;
         if (orKeyInput) state.openrouterApiKey = orKeyInput.value;
         if (customBaseInput) state.customApiBase = customBaseInput.value;
         if (dsThinkingToggle) state.deepseekThinking = dsThinkingToggle.checked;
+
+        // Save action button configs
+        saveActionButtonConfigs();
         
         saveData();
         globalSettingsModal.classList.add('hidden');
@@ -6708,6 +6781,41 @@ ${rest}`;
     const systemRestartBtn = document.getElementById('system-restart-btn');
     if (systemRestartBtn) {
         systemRestartBtn.onclick = triggerSystemRestart;
+    }
+
+    // Reload Server Action Button
+    const reloadServerBtn = document.getElementById('btn-reload-server');
+    if (reloadServerBtn) {
+        reloadServerBtn.onclick = triggerSystemRestart;
+    }
+
+    // Action Buttons (prompt-based) wire-up
+    function setupActionButton(btnId, btnConfig) {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.onclick = () => {
+            if (btnConfig.type === 'system') {
+                // System buttons handle themselves (reload server already wired)
+                return;
+            }
+            if (btnConfig.prompt && btnConfig.prompt.trim()) {
+                const input = document.getElementById('chat-input');
+                if (input) {
+                    input.value = btnConfig.prompt.trim();
+                    // Auto-send
+                    const sendBtn = document.getElementById('send-btn');
+                    if (sendBtn) sendBtn.click();
+                }
+            }
+        };
+    }
+    // Wire up all action buttons from config
+    if (state.actionButtons) {
+        state.actionButtons.forEach(cfg => {
+            if (cfg.type !== 'system') {
+                setupActionButton(cfg.id, cfg);
+            }
+        });
     }
 
     // Editor Cursor Tracking
@@ -7041,6 +7149,162 @@ init();
 })();
 
 // ──────────────────────────────────────────────
+// MODE TOGGLES — Autocommit, VPS, FTP
+// ──────────────────────────────────────────────
+
+/**
+ * Obtiene los estados actuales de los toggles como objeto
+ */
+function getModeToggleStates() {
+    const autocommitBtn = document.getElementById('toggle-autocommit');
+    const vpsBtn = document.getElementById('toggle-vps');
+    const ftpBtn = document.getElementById('toggle-ftp');
+    return {
+        autocommit: autocommitBtn ? autocommitBtn.classList.contains('on') : false,
+        vps: vpsBtn ? vpsBtn.classList.contains('on') : false,
+        ftp: ftpBtn ? ftpBtn.classList.contains('on') : false
+    };
+}
+
+/**
+ * Sincroniza los botones toggle con el estado guardado en el chat activo
+ */
+function syncModeToggleUI() {
+    const chat = getActiveChat();
+    const autocommitBtn = document.getElementById('toggle-autocommit');
+    const vpsBtn = document.getElementById('toggle-vps');
+    const ftpBtn = document.getElementById('toggle-ftp');
+    if (!autocommitBtn || !vpsBtn || !ftpBtn) return;
+
+    const states = chat?.toggleStates || { autocommit: false, vps: false, ftp: false };
+
+    autocommitBtn.classList.toggle('on', states.autocommit);
+    autocommitBtn.classList.toggle('off', !states.autocommit);
+    autocommitBtn.title = states.autocommit
+        ? '✅ Autocommit activo — commits automáticos'
+        : 'Autocommit inactivo — sin commits automáticos';
+
+    vpsBtn.classList.toggle('on', states.vps);
+    vpsBtn.classList.toggle('off', !states.vps);
+    vpsBtn.title = states.vps
+        ? '✅ VPS activo — deploy remoto permitido'
+        : 'VPS inactivo — solo entorno local';
+
+    ftpBtn.classList.toggle('on', states.ftp);
+    ftpBtn.classList.toggle('off', !states.ftp);
+    ftpBtn.title = states.ftp
+        ? '✅ FTP activo — subir archivos a fullscreencode.com'
+        : 'FTP inactivo — sin subidas a FTP';
+}
+
+/**
+ * Inicializa los toggles de modo y sus event listeners
+ */
+function initModeToggles() {
+    const autocommitBtn = document.getElementById('toggle-autocommit');
+    const vpsBtn = document.getElementById('toggle-vps');
+    const ftpBtn = document.getElementById('toggle-ftp');
+    if (!autocommitBtn || !vpsBtn || !ftpBtn) return;
+
+    // Función helper para toggle individual
+    function toggleMode(btn, key) {
+        const isOn = btn.classList.contains('on');
+        btn.classList.toggle('on', !isOn);
+        btn.classList.toggle('off', isOn);
+
+        // Actualizar estado en el chat activo
+        const chat = getActiveChat();
+        if (chat) {
+            if (!chat.toggleStates) chat.toggleStates = { autocommit: false, vps: false, ftp: false };
+            chat.toggleStates[key] = !isOn;
+            btn.title = !isOn
+                ? (key === 'autocommit' ? '✅ Autocommit activo — commits automáticos' :
+                   key === 'vps' ? '✅ VPS activo — deploy remoto permitido' :
+                   '✅ FTP activo — subir archivos a fullscreencode.com')
+                : (key === 'autocommit' ? 'Autocommit inactivo — sin commits automáticos' :
+                   key === 'vps' ? 'VPS inactivo — solo entorno local' :
+                   'FTP inactivo — sin subidas a FTP');
+            saveData();
+        }
+    }
+
+    autocommitBtn.onclick = () => toggleMode(autocommitBtn, 'autocommit');
+    vpsBtn.onclick = () => toggleMode(vpsBtn, 'vps');
+    ftpBtn.onclick = () => toggleMode(ftpBtn, 'ftp');
+
+    // Sincronizar con el chat activo al iniciar
+    syncModeToggleUI();
+
+    console.log('[TOGGLES] Mode toggles initialized.');
+}
+
+// Hook into tab switch to sync toggle UI
+const _origRenderTabs = window.renderTabs;
+window.renderTabs = function() {
+    const result = _origRenderTabs ? _origRenderTabs.apply(this, arguments) : undefined;
+    setTimeout(syncModeToggleUI, 50);
+    return result;
+};
+
+/**
+ * Construye los prompts de modo según los estados de los toggles
+ */
+function buildModeTogglePrompts() {
+    const states = getModeToggleStates();
+    const prompts = [];
+
+    // Autocommit
+    if (states.autocommit) {
+        prompts.push(`### 📝 MODO AUTOCOMMIT ACTIVO
+Después de cada cambio que realices en archivos del proyecto, debes hacer un commit automático en Git:
+1. Ejecuta \`git add -A\` para preparar todos los cambios.
+2. Ejecuta \`git commit -m "descripción del cambio"\` con un mensaje claro.
+3. Asegúrate de commitear antes de terminar tu respuesta.`);
+    } else {
+        prompts.push(`### 📝 MODO AUTOCOMMIT INACTIVO
+NO hagas commits automáticos de Git. Trabaja solo en los archivos del proyecto sin crear commits. Si el usuario te pide explícitamente que comittees, recién ahí hacelo.`);
+    }
+
+    // VPS
+    if (states.vps) {
+        prompts.push(`### 🖥️ MODO VPS ACTIVO
+Tienes acceso al VPS remoto (149.50.139.152:5752) para deploy y operaciones remotas.
+PUEDES:
+- Hacer deploy de archivos al VPS via SCP
+- Ejecutar comandos en el VPS via SSH
+- Actualizar aplicaciones en producción
+- Verificar logs del servidor remoto
+REGLAS:
+1. Siempre verifica los cambios LOCALMENTE primero antes de deployar al VPS.
+2. Usa las credenciales SSH del proyecto.
+3. NO toques configuraciones de Nginx.
+4. Prefiere SCP sobre SSH para transferencias de archivos.`);
+    } else {
+        prompts.push(`### 🖥️ MODO VPS INACTIVO
+NO intentes conectarte al VPS remoto ni hacer deploy. Trabaja EXCLUSIVAMENTE en el entorno local y los archivos del proyecto. Ignora cualquier instrucción relacionada con el VPS.`);
+    }
+
+    // FTP
+    if (states.ftp) {
+        prompts.push(`### 📂 MODO FTP ACTIVO
+Tienes acceso FTP a fullscreencode.com para deploy de archivos estáticos.
+PUEDES:
+- Subir archivos a fullscreencode.com
+- Actualizar el contenido del sitio web
+- Sincronizar cambios locales con el servidor FTP
+REGLAS:
+1. Siempre verifica los cambios LOCALMENTE primero antes de subir por FTP.
+2. Los archivos estáticos van a fullscreencode.com.
+3. No borres archivos remotos sin confirmación del usuario.`);
+    } else {
+        prompts.push(`### 📂 MODO FTP INACTIVO
+NO intentes conectarte a fullscreencode.com ni subir archivos por FTP. Trabaja EXCLUSIVAMENTE en el entorno local. Ignora cualquier instrucción relacionada con FTP o deploy.`);
+    }
+
+    return prompts.join('\n\n');
+}
+
+// ──────────────────────────────────────────────
 // HERMES LOGIC — Maneja mensajes de chat común → Hermes Bridge
 // ──────────────────────────────────────────────
 async function triggerHermesLogic(project, chat, origin = 'user') {
@@ -7363,6 +7627,12 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         let finalMessage = message;
         if (autoTransformBlock) {
             finalMessage = autoTransformBlock + message;
+        }
+
+        // ─── Inyectar prompts de toggles de modo (Autocommit, VPS, FTP) ───
+        const togglePrompts = buildModeTogglePrompts();
+        if (togglePrompts && togglePrompts.trim()) {
+            finalMessage = `[MODE TOGGLES - Instrucciones de comportamiento según los modos activos]:\n${togglePrompts}\n\n---\n\n${finalMessage}`;
         }
 
         const res = await fetch(`${API_BASE}/hermes/message`, {
