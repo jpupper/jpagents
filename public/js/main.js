@@ -1155,7 +1155,7 @@ async function loadData(shouldScan = true) {
         renderTabs();
     } catch (e) {
         console.error("Error loading data:", e);
-        await createNewProject();
+        // 🐛 BUGFIX: NO crear proyecto aqui (evita bucle infinito saveData->WS->loadData->error->createNewProject)
     }
 }
 
@@ -1912,6 +1912,15 @@ async function generateGenerativeProjectName() {
 }
 
 async function createNewProject(customName = null) {
+    // 🐛 BUGFIX: Prevenir recursion que crea proyectos de mas
+    if (window.__jpCreatingProject) {
+        console.warn('[createNewProject] ⏭️ Ignorado: ya hay una creacion en curso');
+        return null;
+    }
+    window.__jpCreatingProject = true;
+
+    try {    console.log('[createNewProject] llamado por:', new Error().stack.split('\n')[2]?.trim());
+
     // Si customName es un evento (por ser un event listener), ignorarlo
     if (customName && typeof customName === 'object' && customName.constructor.name.includes('Event')) {
         customName = null;
@@ -1986,7 +1995,10 @@ async function createNewProject(customName = null) {
     adminLog(`📁 Nuevo proyecto creado: <strong>${projectName}</strong>`);
 
     return newProject;
-}
+
+    } finally {
+        window.__jpCreatingProject = false;
+    }}
 
 
 async function checkProjectHealth(project) {
