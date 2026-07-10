@@ -4617,6 +4617,251 @@ pre code.hljs {
   opacity: 0.6;
 }
 
+/* ─── Action Button Sub-Tabs (Tab-per-button) ─── */
+.action-btn-sub-nav {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 10px;
+}
+
+.action-btn-sub-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-family: inherit;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.action-btn-sub-tab:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.08);
+  color: var(--text-primary);
+}
+
+.action-btn-sub-tab.active {
+  background: rgba(124, 77, 255, 0.12);
+  border-color: rgba(124, 77, 255, 0.3);
+  color: #a78bfa;
+  font-weight: 600;
+}
+
+.action-btn-sub-tab-icon {
+  font-size: 0.9rem;
+}
+
+.action-btn-sub-tab-label {
+  line-height: 1;
+}
+
+.action-btn-sub-tab-badge {
+  font-size: 0.55rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(124, 77, 255, 0.12);
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+}
+
+.action-btn-sub-tab-badge.system {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
+
+.action-btn-sub-tab-badge.mode {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+
+.action-btn-sub-tab-badge.toggle {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+
+.action-btn-sub-pane-header .item-type-badge {
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(124, 77, 255, 0.15);
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-left: auto;
+}
+
+.action-btn-sub-pane-header .item-type-badge.system {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.action-btn-sub-pane-header .item-type-badge.mode {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+
+.action-btn-sub-panes {
+  min-height: 120px;
+}
+
+.action-btn-sub-pane {
+  animation: fadeIn 0.15s ease;
+}
+
+.action-btn-sub-pane.hidden {
+  display: none;
+}
+
+.action-btn-sub-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.action-btn-pane-icon {
+  font-size: 1.2rem;
+}
+
+.action-btn-pane-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.action-btn-sub-pane .action-btn-prompt-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: rgba(0,0,0,0.2);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.action-btn-sub-pane .action-btn-prompt-textarea:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px rgba(124, 77, 255, 0.15);
+}
+
+.action-btn-sub-pane .action-btn-prompt-textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.action-btn-sub-pane .action-btn-prompt-textarea:read-only {
+  opacity: 0.5;
+}
+
+.action-btn-sub-pane .field-help {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Mode Toggle Prompt Config ─── */
+.mode-toggle-prompt-group {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: rgba(255,255,255,0.02);
+}
+
+.mode-toggle-prompt-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.mode-prompt-icon {
+  font-size: 1rem;
+}
+
+.mode-prompt-label {
+  color: var(--text-primary);
+}
+
+.mode-toggle-prompt-row {
+  display: flex;
+  gap: 12px;
+}
+
+.mode-toggle-prompt-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mode-prompt-sub-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mode-toggle-prompt-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: rgba(0,0,0,0.2);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.mode-toggle-prompt-textarea:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px rgba(124, 77, 255, 0.15);
+}
+
+.config-separator {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 20px 0;
+  opacity: 0.3;
+}
+
+@media (max-width: 640px) {
+  .mode-toggle-prompt-row {
+    flex-direction: column;
+  }
+}
+
+/* ─── End Action Button Sub-Tabs ─── */
+
 /* ─── Hermes play/stop buttons ─── */
 .btn-hermes-play, .btn-hermes-stop {
   display: flex;

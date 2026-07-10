@@ -189,7 +189,9 @@ async function triggerSystemRestart() {
     }
 }
 
-// ─── Action Button Config Render & Save ───
+// ─── Action Button Config Render & Save (Tab-per-button) ───
+let activeActionBtnTab = 0;
+
 function renderActionButtonConfigs() {
     const container = document.getElementById('action-button-config-list');
     if (!container) return;
@@ -200,33 +202,107 @@ function renderActionButtonConfigs() {
         return;
     }
 
-    container.innerHTML = buttons.map((btn, idx) => {
-        const isSystem = btn.type === 'system';
-        const typeLabel = isSystem ? '⚙️ Sistema' : '📝 Prompt';
-        const typeClass = isSystem ? 'system' : 'prompt';
-        return `<div class="action-button-config-item" data-btn-idx="${idx}">
-          <div class="config-item-header">
-            <span class="item-icon">${btn.icon || '🔘'}</span>
-            <span class="item-label">${btn.label}</span>
-            <span class="item-type-badge ${typeClass}">${typeLabel}</span>
+    // Clamp active tab index
+    if (activeActionBtnTab >= buttons.length) activeActionBtnTab = 0;
+
+    // Build sub-sub-tab navigation
+    const navHtml = buttons.map((btn, idx) => {
+        const active = idx === activeActionBtnTab ? ' active' : '';
+        const isToggle = btn.type === 'mode-toggle';
+        const icon = btn.icon || '🔘';
+        let badge = '';
+        if (isToggle) badge = '<span class="action-btn-sub-tab-badge toggle">ON/OFF</span>';
+        else badge = '<span class="action-btn-sub-tab-badge">Prompt</span>';
+        return `<button class="action-btn-sub-tab${active}" data-action-btn-idx="${idx}">
+          <span class="action-btn-sub-tab-icon">${icon}</span>
+          <span class="action-btn-sub-tab-label">${btn.label}</span>
+          ${badge}
+        </button>`;
+    }).join('');
+
+    // Build content panes (only the active one is visible)
+    const prompts = state.modeTogglePrompts || {};
+    const contentHtml = buttons.map((btn, idx) => {
+        const isToggle = btn.type === 'mode-toggle';
+        const hidden = idx !== activeActionBtnTab ? ' hidden' : '';
+        const modeData = isToggle ? (prompts[btn.modeKey] || { on: '', off: '' }) : {};
+        return `<div class="action-btn-sub-pane${hidden}" data-action-btn-pane-idx="${idx}">
+          <div class="action-btn-sub-pane-header">
+            <span class="action-btn-pane-icon">${btn.icon || '🔘'}</span>
+            <span class="action-btn-pane-label">${btn.label}</span>
+            <span class="item-type-badge ${isToggle ? 'toggle' : ''}">${isToggle ? '🔄 ON/OFF' : '📝 Prompt'}</span>
           </div>
-          <textarea class="action-btn-prompt-textarea" data-btn-id="${btn.id}" ${isSystem ? 'disabled' : ''}
-            placeholder="${isSystem ? 'Este botón ejecuta una acción del sistema (no requiere prompt).' : 'Escribí el prompt que se enviará al agente al hacer clic...'}">${(btn.prompt || '')}</textarea>
-          <p class="field-help">${isSystem ? 'Botón de sistema — no necesita prompt.' : 'Este texto se enviará automáticamente al chat cuando hagas clic en el botón.'}</p>
+          ${isToggle ? `
+            <div class="mode-toggle-prompt-row">
+              <div class="mode-toggle-prompt-col">
+                <label class="mode-prompt-sub-label">✅ ON</label>
+                <textarea class="action-btn-prompt-textarea mode-on" data-mode="${btn.modeKey}" data-state="on" rows="6">${escapeHtml(modeData.on || '')}</textarea>
+              </div>
+              <div class="mode-toggle-prompt-col">
+                <label class="mode-prompt-sub-label">❌ OFF</label>
+                <textarea class="action-btn-prompt-textarea mode-off" data-mode="${btn.modeKey}" data-state="off" rows="6">${escapeHtml(modeData.off || '')}</textarea>
+              </div>
+            </div>
+            <p class="field-help">Estos prompts se inyectan automáticamente en el contexto del agente cuando activás (ON) o desactivás (OFF) este modo desde la barra de herramientas.</p>`
+          : `
+          <textarea class="action-btn-prompt-textarea" data-btn-id="${btn.id}" rows="6"
+            placeholder="Escribí el prompt que se enviará al agente al hacer clic...">${escapeHtml(btn.prompt || '')}</textarea>
+          <p class="field-help">Este texto se enviará automáticamente al chat cuando hagas clic en el botón.</p>`}
         </div>`;
     }).join('');
+
+    container.innerHTML = `
+      <div class="action-btn-sub-nav">${navHtml}</div>
+      <div class="action-btn-sub-panes">${contentHtml}</div>
+    `;
+
+    // Wire up sub-sub-tab clicks
+    container.querySelectorAll('.action-btn-sub-tab').forEach(btn => {
+        btn.onclick = () => {
+            const idx = parseInt(btn.dataset.actionBtnIdx);
+            if (isNaN(idx)) return;
+            // Save current textareas before switching
+            const activePane = container.querySelector('.action-btn-sub-pane:not(.hidden)');
+            if (activePane) {
+                const textareas = activePane.querySelectorAll('.action-btn-prompt-textarea');
+                textareas.forEach(ta => {
+                    const mode = ta.dataset.mode;
+                    const stateKey = ta.dataset.state;
+                    const curBtn = (state.actionButtons || []).find(b => b.id === ta.dataset.btnId);
+                    if (mode && stateKey) {
+                        if (!state.modeTogglePrompts[mode]) state.modeTogglePrompts[mode] = {};
+                        state.modeTogglePrompts[mode][stateKey] = ta.value;
+                    } else if (curBtn) {
+                        curBtn.prompt = ta.value;
+                    }
+                });
+            }
+            activeActionBtnTab = idx;
+            renderActionButtonConfigs();
+        };
+    });
 }
 
-function saveActionButtonConfigs() {
-    const container = document.getElementById('action-button-config-list');
+// ─── Mode Toggle Prompt Config Render & Save ───
+
+function renderModeTogglePromptConfigs() {
+    const container = document.getElementById('mode-toggle-prompt-configs');
+    if (!container) return;
+    // Integrado en renderActionButtonConfigs()
+    container.innerHTML = '<p class="field-help">Los prompts de AUTOMMIT, VPS y FTP se configuran en los botones de acción de arriba. Cada botón tipo toggle tiene campos para los prompts ON y OFF.</p>';
+}
+
+function saveModeTogglePromptConfigs() {
+    const container = document.getElementById('mode-toggle-prompt-configs');
     if (!container) return;
 
-    const textareas = container.querySelectorAll('.action-btn-prompt-textarea');
+    const textareas = container.querySelectorAll('.mode-toggle-prompt-textarea');
     textareas.forEach(ta => {
-        const btnId = ta.dataset.btnId;
-        const btn = (state.actionButtons || []).find(b => b.id === btnId);
-        if (btn && btn.type !== 'system') {
-            btn.prompt = ta.value;
+        const mode = ta.dataset.mode;
+        const stateKey = ta.dataset.state;
+        if (mode && stateKey) {
+            if (!state.modeTogglePrompts[mode]) state.modeTogglePrompts[mode] = {};
+            state.modeTogglePrompts[mode][stateKey] = ta.value;
         }
     });
 }
@@ -1178,6 +1254,21 @@ async function loadData(shouldScan = true) {
                     }
                 }
             }
+
+            // Load mode toggle prompts
+            if (data.modeTogglePrompts) {
+                for (const mode of ['autocommit', 'vps', 'ftp']) {
+                    if (data.modeTogglePrompts[mode]) {
+                        if (!state.modeTogglePrompts[mode]) state.modeTogglePrompts[mode] = {};
+                        if (data.modeTogglePrompts[mode].on !== undefined) {
+                            state.modeTogglePrompts[mode].on = data.modeTogglePrompts[mode].on;
+                        }
+                        if (data.modeTogglePrompts[mode].off !== undefined) {
+                            state.modeTogglePrompts[mode].off = data.modeTogglePrompts[mode].off;
+                        }
+                    }
+                }
+            }
         }
 
         // ─── 🐛 BUGFIX: Restaurar terminalLogs y chat messages perdidos por loadData() ───
@@ -1345,8 +1436,8 @@ function setupOpenFolderExplorer() {
 
 
 
-async function saveData() {
-    console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2]);
+async function saveData(skipSync = false) {
+    console.log('[SYNC-FLOW] 💾 saveData() called. amIMaster =', amIMaster, 'caller =', new Error().stack.split('\n')[2], 'skipSync:', skipSync);
     if (!amIMaster) {
         claimMaster();
     }
@@ -1433,7 +1524,8 @@ async function saveData() {
             fileExplorerWidth: state.fileExplorerWidth,
             fileExplorerVisible: state.fileExplorerVisible,
             deletedProjectIds: state.deletedProjectIds,
-            actionButtons: state.actionButtons
+            actionButtons: state.actionButtons,
+            modeTogglePrompts: state.modeTogglePrompts
         };
         
         const payloadSize = new Blob([JSON.stringify(payload)]).size;
@@ -1448,7 +1540,7 @@ async function saveData() {
             const errText = await res.text().catch(() => res.statusText);
             console.error("[STATE] Error al guardar el estado:", errText);
         } else {
-            if (amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
+            if (!skipSync && amIMaster && syncWs && syncWs.readyState === WebSocket.OPEN) {
                 syncWs.send(JSON.stringify({ event: 'sync:stateUpdate' }));
             }
         }
@@ -2350,6 +2442,22 @@ window.stopAgent = (projectId, chatId) => {
         chat.isStopped = true;
         chat.isThinking = false;
         chat.isStreaming = false;
+
+        // 🐛 BUGFIX V2: Marcar timestamp de stop para que handleHermesStatus
+        // pueda ignorar eventos WS stale del request anterior.
+        chat._stopInitiatedAt = Date.now();
+        // Limpiar después de 5s (la ventana de protección para eventos stale)
+        setTimeout(() => { delete chat._stopInitiatedAt; }, 5000);
+
+        // 🐛 BUGFIX: Resetear isRunning al detener (stopAgent solo seteaba isStopped/isThinking/isStreaming)
+        chat.isRunning = false;
+
+        // 🐛 BUGFIX: Cerrar WebSocket de progreso si existe (evita que el progressWs
+        // de la request anterior siga vivo interfiriendo con la siguiente request)
+        if (chat._progressWs) {
+            try { chat._progressWs.close(); } catch(_) {}
+            chat._progressWs = null;
+        }
 
         // Admin log
         adminLog(`🛑 Deteniendo agente <strong>${chat.name}</strong> en proyecto <strong>${project.name}</strong>`);
@@ -6656,6 +6764,11 @@ ${rest}`;
             document.querySelectorAll('.sub-tab-pane').forEach(pane => pane.classList.add('hidden'));
             const targetPane = document.getElementById(`sub-tab-${target}`);
             if (targetPane) targetPane.classList.remove('hidden');
+
+            // Render action button configs when action-buttons tab is selected
+            if (target === 'action-buttons') {
+                renderActionButtonConfigs();
+            }
         };
     });
 
@@ -6707,8 +6820,9 @@ ${rest}`;
             window.renderHistoryList();
         }
 
-        // Render action button configs
+        // Render action button configs and mode toggle prompts
         renderActionButtonConfigs();
+        renderModeTogglePromptConfigs();
 
         globalSettingsModal.classList.remove('hidden');
     };
@@ -6769,8 +6883,9 @@ ${rest}`;
         if (customBaseInput) state.customApiBase = customBaseInput.value;
         if (dsThinkingToggle) state.deepseekThinking = dsThinkingToggle.checked;
 
-        // Save action button configs
+        // Save action button configs and mode toggle prompts
         saveActionButtonConfigs();
+        saveModeTogglePromptConfigs();
         
         saveData();
         globalSettingsModal.classList.add('hidden');
@@ -6793,26 +6908,38 @@ ${rest}`;
     function setupActionButton(btnId, btnConfig) {
         const btn = document.getElementById(btnId);
         if (!btn) return;
-        btn.onclick = () => {
-            if (btnConfig.type === 'system') {
-                // System buttons handle themselves (reload server already wired)
-                return;
-            }
-            if (btnConfig.prompt && btnConfig.prompt.trim()) {
-                const input = document.getElementById('chat-input');
-                if (input) {
-                    input.value = btnConfig.prompt.trim();
-                    // Auto-send
-                    const sendBtn = document.getElementById('send-btn');
-                    if (sendBtn) sendBtn.click();
+        if (btnConfig.type === 'system' || btnConfig.type === 'action') {
+            // Wrap existing onclick to also send prompt first
+            const origHandler = btn.onclick;
+            btn.onclick = () => {
+                // Send prompt first if set
+                if (btnConfig.prompt && btnConfig.prompt.trim()) {
+                    const input = document.getElementById('chat-input');
+                    if (input) {
+                        input.value = btnConfig.prompt.trim();
+                        const sendBtn = document.getElementById('send-btn');
+                        if (sendBtn) sendBtn.click();
+                    }
                 }
+                // Then execute original action
+                if (origHandler) origHandler();
+            };
+            return;
+        }
+        if (btnConfig.prompt && btnConfig.prompt.trim()) {
+            const input = document.getElementById('chat-input');
+            if (input) {
+                input.value = btnConfig.prompt.trim();
+                // Auto-send
+                const sendBtn = document.getElementById('send-btn');
+                if (sendBtn) sendBtn.click();
             }
-        };
+        }
     }
     // Wire up all action buttons from config
     if (state.actionButtons) {
         state.actionButtons.forEach(cfg => {
-            if (cfg.type !== 'system') {
+            if (cfg.type !== 'mode-toggle') {
                 setupActionButton(cfg.id, cfg);
             }
         });
@@ -7251,57 +7378,25 @@ window.renderTabs = function() {
  */
 function buildModeTogglePrompts() {
     const states = getModeToggleStates();
-    const prompts = [];
+    const prompts = state.modeTogglePrompts || {};
+    const result = [];
 
     // Autocommit
-    if (states.autocommit) {
-        prompts.push(`### 📝 MODO AUTOCOMMIT ACTIVO
-Después de cada cambio que realices en archivos del proyecto, debes hacer un commit automático en Git:
-1. Ejecuta \`git add -A\` para preparar todos los cambios.
-2. Ejecuta \`git commit -m "descripción del cambio"\` con un mensaje claro.
-3. Asegúrate de commitear antes de terminar tu respuesta.`);
-    } else {
-        prompts.push(`### 📝 MODO AUTOCOMMIT INACTIVO
-NO hagas commits automáticos de Git. Trabaja solo en los archivos del proyecto sin crear commits. Si el usuario te pide explícitamente que comittees, recién ahí hacelo.`);
+    if (prompts.autocommit) {
+        result.push(states.autocommit ? prompts.autocommit.on : prompts.autocommit.off);
     }
 
     // VPS
-    if (states.vps) {
-        prompts.push(`### 🖥️ MODO VPS ACTIVO
-Tienes acceso al VPS remoto (149.50.139.152:5752) para deploy y operaciones remotas.
-PUEDES:
-- Hacer deploy de archivos al VPS via SCP
-- Ejecutar comandos en el VPS via SSH
-- Actualizar aplicaciones en producción
-- Verificar logs del servidor remoto
-REGLAS:
-1. Siempre verifica los cambios LOCALMENTE primero antes de deployar al VPS.
-2. Usa las credenciales SSH del proyecto.
-3. NO toques configuraciones de Nginx.
-4. Prefiere SCP sobre SSH para transferencias de archivos.`);
-    } else {
-        prompts.push(`### 🖥️ MODO VPS INACTIVO
-NO intentes conectarte al VPS remoto ni hacer deploy. Trabaja EXCLUSIVAMENTE en el entorno local y los archivos del proyecto. Ignora cualquier instrucción relacionada con el VPS.`);
+    if (prompts.vps) {
+        result.push(states.vps ? prompts.vps.on : prompts.vps.off);
     }
 
     // FTP
-    if (states.ftp) {
-        prompts.push(`### 📂 MODO FTP ACTIVO
-Tienes acceso FTP a fullscreencode.com para deploy de archivos estáticos.
-PUEDES:
-- Subir archivos a fullscreencode.com
-- Actualizar el contenido del sitio web
-- Sincronizar cambios locales con el servidor FTP
-REGLAS:
-1. Siempre verifica los cambios LOCALMENTE primero antes de subir por FTP.
-2. Los archivos estáticos van a fullscreencode.com.
-3. No borres archivos remotos sin confirmación del usuario.`);
-    } else {
-        prompts.push(`### 📂 MODO FTP INACTIVO
-NO intentes conectarte a fullscreencode.com ni subir archivos por FTP. Trabaja EXCLUSIVAMENTE en el entorno local. Ignora cualquier instrucción relacionada con FTP o deploy.`);
+    if (prompts.ftp) {
+        result.push(states.ftp ? prompts.ftp.on : prompts.ftp.off);
     }
 
-    return prompts.join('\n\n');
+    return result.join('\n\n');
 }
 
 // ──────────────────────────────────────────────
@@ -7314,6 +7409,20 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     // nunca se creaba el progress message, y el agente se quedaba "procesando"
     // para siempre sin enviar el mensaje a Hermes.
     // En vez de babealar, simplemente re-setear isThinking y proceder.
+
+    // 🐛 BUGFIX REAL: Re-sincronizar con state.projects por si loadData() reemplazó
+    // los objetos entre la captura del parámetro y esta ejecución (ej: sync:stateUpdated
+    // durante el auto-start de triggerAgentLogic). Si no, el progress message se pushea
+    // a un objeto chat huérfano que renderMessages() (usa getActiveChat()) no ve.
+    const _freshProj = state.projects.find(p => p.id === project.id);
+    if (_freshProj) {
+        const _freshChat = _freshProj.chats.find(c => c.id === chat.id);
+        if (_freshChat) {
+            project = _freshProj;
+            chat = _freshChat;
+        }
+    }
+
     if (chat.isThinking) {
         console.log(`[HERMES] ⚠️ isThinking ya era true (llegó WS 'running' antes que triggerHermesLogic). Reseteando y procediendo...`);
     }
@@ -7351,24 +7460,26 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
 
     const instanceKey = project.id + ':' + chat.id;
 
-    // Crear un bloque de progreso como mensaje "system" en el chat
-    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const progressMsg = {
-        role: 'system',
-        id: progressMsgId,
-        content: '⚡ Invocando Hermes...\n',
-        timestamp: Date.now(),
-        isProgress: true,
-        minimized: false // mientras genera, maximizado
-    };
-    chat.messages.push(progressMsg);
-    renderMessages();
-    saveData();
+    saveData(true); // silent save - no WS broadcast
 
     // Conectar WebSocket para recibir progreso en vivo
+        // 🐛 BUGFIX: Cerrar WebSocket anterior si existe (ej: de una request que se detuvo)
+    if (chat._progressWs) {
+        try { chat._progressWs.close(); } catch(_) {}
+        chat._progressWs = null;
+    }
+
+    // 🐛 BUGFIX: Incrementar contador de request para invalidar catch blocks obsoletos.
+    // Si el catch block de la request anterior se ejecuta DESPUÉS de que esta
+    // nueva request ya arrancó (race condition con la microtask del abort), no debe
+    // pisar los flags (isStreaming, isThinking) ni llamar renderMessages()/updateThinking()
+    const _currentRequestSeq = (chat._requestSeq || 0) + 1;
+    chat._requestSeq = _currentRequestSeq;
+
     let progressWs = null;
     try {
         progressWs = new WebSocket(`ws://${window.location.hostname}:4699/ws/hermes`);
+        chat._progressWs = progressWs;
         // Throttle para evitar re-renders excesivos durante progreso rápido
         let progressRenderTimer = null;
         progressWs.onmessage = (event) => {
@@ -7525,6 +7636,49 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                                     }
                                                     chatMessages.appendChild(div);
                                                 });
+                                                // 🐛 BUGFIX: Hermes-progress SIEMPRE visible (mismo fix que chat-ui.js)
+                                                // El inline render del WS handler no tiene el fallback de renderMessages(),
+                                                // asi que si este throttled render se dispara antes de que renderMessages()
+                                                // se ejecute, el contenedor se pierde. Lo agregamos aqui tambien.
+                                                chatMessages.querySelectorAll('.hermes-progress').forEach(el => el.remove());
+                                                const _hpDiv = document.createElement('div');
+                                                _hpDiv.className = 'message system hermes-progress';
+                                                const _hpActive = chat.messages.find(m => m.isProgress && !m.finished);
+                                                if (_hpActive) {
+                                                    _hpDiv.id = _hpActive.id;
+                                                    const _hpLines = (_hpActive.content || '').split('\n').filter(l => l.trim());
+                                                    const _hpSummary = _hpLines[0] || '⚡ Invocando Hermes...';
+                                                    _hpDiv.innerHTML = `
+                                                        <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
+                                                            <span class="progress-arrow">▼</span>
+                                                            <span class="progress-summary">${escapeHtml(_hpSummary)}</span>
+                                                        </div>
+                                                        <div class="hermes-progress-detail" style="display: block">
+                                                            <pre>${formatProgressLines(_hpActive.content || '')}</pre>
+                                                        </div>
+                                                    `;
+                                                } else if (chat.isThinking) {
+                                                    _hpDiv.innerHTML = `
+                                                        <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
+                                                            <span class="progress-arrow">▼</span>
+                                                            <span class="progress-summary">⚡ Invocando Hermes...</span>
+                                                        </div>
+                                                        <div class="hermes-progress-detail" style="display: block">
+                                                            <pre>${formatProgressLines(chat.thinkingSubtext || 'Procesando...')}</pre>
+                                                        </div>
+                                                    `;
+                                                } else {
+                                                    _hpDiv.innerHTML = `
+                                                        <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
+                                                            <span class="progress-arrow">▶</span>
+                                                            <span class="progress-summary">⏸️ Hermes inactivo</span>
+                                                        </div>
+                                                        <div class="hermes-progress-detail" style="display: none">
+                                                            <pre>Hermes no está ejecutándose actualmente. Enviá un mensaje para iniciar una consulta.</pre>
+                                                        </div>
+                                                    `;
+                                                }
+                                                chatMessages.appendChild(_hpDiv);
                                                 // ─── RE-INSERT thinking bubble if chat is still active and thinking ───
                                                 if (chat.isThinking) {
                                                     const thinkingDiv = document.createElement('div');
@@ -7666,6 +7820,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             renderMessages();
             updateThinking(chat, false);
             if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            chat._progressWs = null;
             return;
         }
 
@@ -7821,6 +7976,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         }
 
         if (progressWs) { try { progressWs.close(); } catch(e) {}
+        chat._progressWs = null;
         }
         
         // ─── Auto-transformación: Detectar solicitud de reinicio ───
@@ -7878,8 +8034,17 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             // pusheó "🛑 Solicitud de detención", llamó renderMessages() y saveData()
             // Solo asegurarse de cerrar el WS si sigue abierto
             if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            chat._progressWs = null;
             chat.isStreaming = false;
             saveData();
+            return;
+        }
+        // 🐛 BUGFIX: Si ya arrancó una nueva request, no pisar su estado.
+        // El catch block de la request anterior puede ejecutarse DESPUÉS de que
+        // la nueva request ya creó su progress message e inició su fetch.
+        if (chat._requestSeq && chat._requestSeq !== _currentRequestSeq) {
+            if (progressWs) { try { progressWs.close(); } catch(e) {} }
+            chat._progressWs = null;
             return;
         }
         const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
@@ -7911,6 +8076,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         renderMessages();
         updateThinking(chat, false);
         if (progressWs) { try { progressWs.close(); } catch(e) {} }
+        chat._progressWs = null;
     }
 }
 

@@ -41,59 +41,123 @@ export function renderMessages(shouldRenderLayout = false) {
         renderTabs();
     }
 
-    if (!chat.messages || chat.messages.length === 0) {
-        chatMessages.innerHTML = `<div class="welcome-screen"><h2>Hilo de contexto limpio</h2><p>Este agente está listo para recibir instrucciones.</p></div>`;
-        return;
+    chatMessages.innerHTML = '';
+
+    // ─── Renderizar mensajes del chat ───
+    if (chat.messages && chat.messages.length > 0) {
+        chat.messages.forEach(m => {
+            // 🐛 BUGFIX: NO ocultar NUNCA los progress messages.
+            // El filtro original (m.isProgress && m.finished && m._hidden) ocultaba
+            // los progress viejos, y el contenedor NUNCA VOLVÍA a aparecer.
+            // Ahora renderizamos TODOS los progress siempre.
+            //if (m.isProgress && m.finished && m._hidden) return;
+
+            const div = document.createElement('div');
+            div.className = `message ${m.role}`;
+
+            let imageHtml = '';
+            if (m.images && m.images.length > 0) {
+                imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
+            }
+
+            if (m.isProgress) {
+                div.id = m.id;
+                const isMinimized = m.minimized === true;
+                const isFinished = m.finished === true;
+                const progressLines = (m.content || '').split('\n').filter(l => l.trim());
+                const summary = progressLines[0] || '⚡ Procesando...';
+                const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
+                const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
+                const displaySummary = errorLine || doneLine || summary;
+                const detailContent = progressLines.slice(1).join('\n');
+                const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
+                div.className = `message system hermes-progress ${stateClass}`;
+                div.innerHTML = `
+                    <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="window.toggleProgress(this)">
+                        <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
+                        <span class="progress-summary">${escapeHtml(displaySummary)}</span>
+                    </div>
+                    <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
+                        <pre>${formatProgressLines(detailContent)}</pre>
+                    </div>
+                `;
+            } else {
+                div.innerHTML = imageHtml + formatMarkdown(m.content);
+            }
+
+            if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
+                const changesDiv = document.createElement('div');
+                changesDiv.className = 'file-changes';
+                m.fileChanges.forEach(change => {
+                    changesDiv.innerHTML += `<span class="file-change ${change.type}">${change.type === 'add' ? '+' : '-'} ${change.file}</span>`;
+                });
+                div.appendChild(changesDiv);
+            }
+
+            chatMessages.appendChild(div);
+        });
     }
 
-    chatMessages.innerHTML = '';
-    chat.messages.forEach(m => {
-        if (m.isProgress && m.finished && m._hidden) return;
+    // 🐛 BUGFIX V2: El contenedor Hermes-progress SIEMPRE visible.
+    // Estrategia corregida:
+    //   - El forEach de arriba ya renderizó todos los progress (finished y activos).
+    //   - Para evitar acumular múltiples progress en el DOM, removemos los que
+    //     renderizó el forEach y creamos UNO solo con el estado actual.
+    //   - La race condition original (saveData → sync:stateUpdate → loadData)
+    //     se previno con saveData(true) en triggerHermesLogic, que omite el
+    //     broadcast WS durante el setup inicial.
+    chatMessages.querySelectorAll('.hermes-progress').forEach(el => el.remove());
 
-        const div = document.createElement('div');
-        div.className = `message ${m.role}`;
+    const statusDiv = document.createElement('div');
+    statusDiv.className = 'message system hermes-progress';
+    const activeProgress = chat.messages?.find(m => m.isProgress && !m.finished);
 
-        let imageHtml = '';
-        if (m.images && m.images.length > 0) {
-            imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
-        }
+    if (activeProgress) {
+        // Hermes está corriendo y hay un progressMsg vivo en chat.messages
+        statusDiv.id = activeProgress.id;
+        const progressLines = (activeProgress.content || '').split('\n').filter(l => l.trim());
+        const summary = progressLines[0] || '⚡ Invocando Hermes...';
+        statusDiv.innerHTML = `
+            <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
+                <span class="progress-arrow">▼</span>
+                <span class="progress-summary">${escapeHtml(summary)}</span>
+            </div>
+            <div class="hermes-progress-detail" style="display: block">
+                <pre>${formatProgressLines(activeProgress.content || '')}</pre>
+            </div>
+        `;
+    } else if (chat.isThinking) {
+        // Hermes está corriendo pero no hay progressMsg en messages (stale chat, etc.)
+        statusDiv.innerHTML = `
+            <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
+                <span class="progress-arrow">▼</span>
+                <span class="progress-summary">⚡ Invocando Hermes...</span>
+            </div>
+            <div class="hermes-progress-detail" style="display: block">
+                <pre>${formatProgressLines(chat.thinkingSubtext || 'Procesando...')}</pre>
+            </div>
+        `;
+    } else {
+        // Hermes inactivo — SIEMPRE visible
+        statusDiv.innerHTML = `
+            <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
+                <span class="progress-arrow">▶</span>
+                <span class="progress-summary">⏸️ Hermes inactivo</span>
+            </div>
+            <div class="hermes-progress-detail" style="display: none">
+                <pre>Hermes no está ejecutándose actualmente. Enviá un mensaje para iniciar una consulta.</pre>
+            </div>
+        `;
+    }
+    chatMessages.appendChild(statusDiv);
 
-        if (m.isProgress) {
-            div.id = m.id;
-            const isMinimized = m.minimized === true;
-            const isFinished = m.finished === true;
-            const progressLines = (m.content || '').split('\n').filter(l => l.trim());
-            const summary = progressLines[0] || '⚡ Procesando...';
-            const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
-            const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
-            const displaySummary = errorLine || doneLine || summary;
-            const detailContent = progressLines.slice(1).join('\n');
-            const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
-            div.className = `message system hermes-progress ${stateClass}`;
-            div.innerHTML = `
-                <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="window.toggleProgress(this)">
-                    <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
-                    <span class="progress-summary">${escapeHtml(displaySummary)}</span>
-                </div>
-                <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
-                    <pre>${formatProgressLines(detailContent)}</pre>
-                </div>
-            `;
-        } else {
-            div.innerHTML = imageHtml + formatMarkdown(m.content);
-        }
-
-        if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
-            const changesDiv = document.createElement('div');
-            changesDiv.className = 'file-changes';
-            m.fileChanges.forEach(change => {
-                changesDiv.innerHTML += `<span class="file-change ${change.type}">${change.type === 'add' ? '+' : '-'} ${change.file}</span>`;
-            });
-            div.appendChild(changesDiv);
-        }
-
-        chatMessages.appendChild(div);
-    });
+    // Si no hay mensajes, mostrar welcome screen (después del contenedor Hermes)
+    if (!chat.messages || chat.messages.length === 0) {
+        const welcomeDiv = document.createElement('div');
+        welcomeDiv.className = 'welcome-screen';
+        welcomeDiv.innerHTML = '<h2>Hilo de contexto limpio</h2><p>Este agente está listo para recibir instrucciones.</p>';
+        chatMessages.appendChild(welcomeDiv);
+    }
 
     if (thinkingHtml) {
         const tempDiv = document.createElement('div');

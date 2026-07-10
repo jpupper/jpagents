@@ -129,9 +129,29 @@ export let state = {
     lastRenderedChatId: null,
     lastRenderedProjectId: null,
     // Action Buttons config: { id: { id, label, icon, prompt, type } }
+    // type: 'action' = botón simple con prompt editable
+    // type: 'mode-toggle' = toggle ON/OFF con prompts separados (usa state.modeTogglePrompts[key])
     actionButtons: [
-      { id: 'btn-reload-server', label: 'Reload Server', icon: '🔄', type: 'system', prompt: '' }
-    ]
+      { id: 'btn-autocommit', label: 'AutoCommit', icon: '📝', type: 'mode-toggle', modeKey: 'autocommit' },
+      { id: 'btn-vps', label: 'VPS', icon: '🖥️', type: 'mode-toggle', modeKey: 'vps' },
+      { id: 'btn-ftp', label: 'FTP', icon: '📂', type: 'mode-toggle', modeKey: 'ftp' },
+      { id: 'btn-reload-server', label: 'Reload Server', icon: '🔄', type: 'action', prompt: '🔄 Recargar servidor backend' }
+    ],
+    // Mode Toggle Prompts: prompts que se inyectan en el contexto del agente según el estado ON/OFF de cada toggle
+    modeTogglePrompts: {
+      autocommit: {
+        on: '### 📝 MODO AUTOCOMMIT ACTIVO\nDespués de cada cambio que realices en archivos del proyecto, debes hacer un commit automático en Git:\n1. Ejecuta \\`git add -A\\` para preparar todos los cambios.\n2. Ejecuta \\`git commit -m "descripción del cambio"\\` con un mensaje claro.\n3. Asegúrate de commitear antes de terminar tu respuesta.',
+        off: '### 📝 MODO AUTOCOMMIT INACTIVO\nNO hagas commits automáticos de Git. Trabaja solo en los archivos del proyecto sin crear commits. Si el usuario te pide explícitamente que comittees, recién ahí hacelo.'
+      },
+      vps: {
+        on: '### 🖥️ MODO VPS ACTIVO\nTienes acceso al VPS remoto (149.50.139.152:5752) para deploy y operaciones remotas.\nPUEDES:\n- Hacer deploy de archivos al VPS via SCP\n- Ejecutar comandos en el VPS via SSH\n- Actualizar aplicaciones en producción\n- Verificar logs del servidor remoto\nREGLAS:\n1. Siempre verifica los cambios LOCALMENTE primero antes de deployar al VPS.\n2. Usa las credenciales SSH del proyecto.\n3. NO toques configuraciones de Nginx.\n4. Prefiere SCP sobre SSH para transferencias de archivos.',
+        off: '### 🖥️ MODO VPS INACTIVO\nNO intentes conectarte al VPS remoto ni hacer deploy. Trabaja EXCLUSIVAMENTE en el entorno local y los archivos del proyecto. Ignora cualquier instrucción relacionada con el VPS.'
+      },
+      ftp: {
+        on: '### 📂 MODO FTP ACTIVO\nTienes acceso FTP a fullscreencode.com para deploy de archivos estáticos.\nPUEDES:\n- Subir archivos a fullscreencode.com\n- Actualizar el contenido del sitio web\n- Sincronizar cambios locales con el servidor FTP\nREGLAS:\n1. Siempre verifica los cambios LOCALMENTE primero antes de subir por FTP.\n2. Los archivos estáticos van a fullscreencode.com.\n3. No borres archivos remotos sin confirmación del usuario.',
+        off: '### 📂 MODO FTP INACTIVO\nNO intentes conectarte a fullscreencode.com ni subir archivos por FTP. Trabaja EXCLUSIVAMENTE en el entorno local. Ignora cualquier instrucción relacionada con FTP o deploy.'
+      }
+    }
   };
 
 window.__jpState = state;

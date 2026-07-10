@@ -80,6 +80,12 @@ export function handleHermesStatus(data) {
                 chat.totalOutputTokens = (chat.totalOutputTokens || 0) + (tokens.output || 0);
                 chat.totalApiCalls = (chat.totalApiCalls || 0) + 1;
             }
+            // 🐛 BUGFIX V3 (el verdadero): Persistir isThinking=false al servidor.
+            // Sin esto, el próximo loadData() restaura isThinking=true del server stale
+            // y el agente aparece como "prendido" para siempre.
+            if (typeof window.saveData === 'function') {
+                window.saveData(true); // silent save — no broadcast WS
+            }
         } else if (isStopped) {
             chat.isThinking = false;
             chat.isRunning = false;
