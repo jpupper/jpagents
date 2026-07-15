@@ -307,6 +307,7 @@
               <button id="refresh-matrix-btn" class="btn-icon" title="Refrescar Árbol">🔄</button>
               <button id="reset-zoom-btn" class="btn-icon" title="Resetear Zoom">🎯</button>
               <button id="clear-matrix-btn" class="btn-icon btn-danger-outline" title="Limpiar Matrix">🗑️</button>
+              <button id="matrix-graph-btn" class="btn-icon" title="Grafo de Dependencias">🗺️</button>
               <div class="matrix-legend">
                 <span class="legend-item"><i class="dot user-input"></i> User Input</span>
                 <span class="legend-item"><i class="dot thinking"></i> Pensando</span>
@@ -319,6 +320,24 @@
           <div id="matrix-canvas-container" class="matrix-canvas-container">
             <svg id="matrix-svg"></svg>
             <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
+          </div>
+        </div>
+
+        <!-- Graph Modal (inside Matrix tab) -->
+        <div id="graph-modal" class="graph-modal hidden">
+          <div class="graph-modal-header">
+            <h3>🗺️ Grafo de Dependencias</h3>
+            <div class="graph-modal-controls">
+              <button id="modal-graph-scan-btn" class="btn-icon" title="Escanear Proyecto">🔍</button>
+              <button id="modal-graph-refresh-btn" class="btn-icon" title="Refrescar">🔄</button>
+              <button id="modal-graph-reset-btn" class="btn-icon" title="Reset Zoom">🔲</button>
+              <span id="modal-graph-stats" class="graph-stats">---</span>
+              <button id="modal-graph-close-btn" class="btn-icon btn-danger-outline" title="Cerrar">✖</button>
+            </div>
+          </div>
+          <div id="modal-graph-canvas" class="graph-modal-canvas">
+            <svg id="modal-graph-svg"></svg>
+            <div id="modal-graph-tooltip" class="graph-tooltip hidden"></div>
           </div>
         </div>
 

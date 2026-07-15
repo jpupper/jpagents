@@ -161,8 +161,39 @@ class HermesBridge extends EventEmitter {
         const instance = this.instances.get(instanceKey);
         const prevSessionId = instance?._sessionId || undefined;
 
-        // Construir mensajes: system con workdir, luego user query
+        // ─── En vez de inyectar el grafo completo (~5000+ tokens), solo avisamos que
+        // existe el tool getMemoryGraph para consultar dependencias ON DEMAND.
+        // El agente puede llamar getMemoryGraph(query='mi-archivo') cuando realmente
+        // necesite saber dependencias de un archivo especifico, ahorrando tokens.
+        let graphAvailable = false;
+        let graphFileCount = 0;
+        let graphEdgeCount = 0;
+        try {
+            const jpPort = process.env.JPAGENTS_PORT || 4699;
+            const graphRes = await fetch(`http://127.0.0.1:${jpPort}/api/memory/graph?projectId=${encodeURIComponent(projectId)}`);
+            if (graphRes.ok) {
+                const graphData = await graphRes.json();
+                if (graphData.nodes && graphData.nodes.length > 0) {
+                    graphAvailable = true;
+                    graphFileCount = graphData.fileCount || graphData.nodes.length;
+                    graphEdgeCount = graphData.edgeCount || (graphData.edges || []).length;
+                    console.log(`[HERMES-BRIDGE] 📊 Grafo disponible: ${graphFileCount} archivos, ${graphEdgeCount} dependencias (NO inyectado - usar tool getMemoryGraph on demand)`);
+                }
+            }
+        } catch (e) {
+            console.log(`[HERMES-BRIDGE] 📊 Grafo no disponible para ${projectId}: ${e.message}`);
+        }
+
+        // Construir mensajes: context ligero del grafo (solo metadata) → system con workdir → user query
         const messages = [];
+        if (graphAvailable) {
+            messages.push({
+                role: 'system',
+                content: `📊 **Grafo de dependencias disponible** (${graphFileCount} archivos, ${graphEdgeCount} dependencias).
+Usá el tool \`getMemoryGraph\` para consultar dependencias de archivos ESPECÍFICOS cuando los necesites. No tires del grafo completo — consultá solo lo que necesites.
+Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y qué archivos dependen de él.`
+            });
+        }
         if (workdir) {
             messages.push({
                 role: 'system',

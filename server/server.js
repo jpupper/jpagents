@@ -29,6 +29,9 @@ import { execAsync, execFileAsync, __filename, __dirname, port, MAX_START_RETRIE
 import { writeCrashLog } from './utils/crash-log.js';
 import app from './app.js';
 
+// ─── Memory Graph (dependencias del proyecto) ───
+import { handleScan, handleGetGraph, handleSearch, handleListCached } from './memory-graph.js';
+
 // ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
 // Previene crashes cuando stdout/stderr pipe se rompe (ej: concurrently cierra stream)
 const __origConsole = { log: console.log, error: console.error, warn: console.warn };
@@ -2081,7 +2084,11 @@ app.post('/api/utils/search', async (req, res) => {
     }
 });
 
-
+// ─── MEMORY GRAPH API ───
+app.post('/api/memory/scan', handleScan);
+app.get('/api/memory/graph', handleGetGraph);
+app.get('/api/memory/search', handleSearch);
+app.get('/api/memory/cached', handleListCached);
 
 // Admin API
 app.get('/api/admin/stats', async (req, res) => {

@@ -166,11 +166,73 @@ export function highlightGitDiff(diffText) {
     }).join('\n');
 }
 
+// ── _parseStructuredCode ──
+// Detecta bloques estructurados del agente Hermes como:
+//   type : code
+//   raw:
+//   lang: javascript
+//   text:
+//   <code content>
+// y extrae solo el código con el lenguaje, listo para diff-formatting.
+function _parseStructuredCode(text) {
+    if (!text || typeof text !== 'string') return null;
+    // Detectar líneas como "type : code" o "type: text" al inicio de línea
+    const typeMatch = text.match(/^type\s*:\s*(code|text)\s*$/m);
+    if (!typeMatch) return null;
+
+    const langMatch = text.match(/^lang\s*:\s*(.+)$/m);
+    const lang = langMatch ? langMatch[1].trim() : '';
+
+    // Encontrar dónde empieza "text:" (puede tener contenido en la misma línea o la siguiente)
+    const textStartMatch = text.match(/^text\s*:\s*(.*)$/m);
+    if (!textStartMatch) return null;
+
+    // La línea de "text:" - si tiene contenido inline después de ":"
+    const textLineIndex = text.indexOf(textStartMatch[0]);
+    const afterTextLine = text.indexOf('\n', textLineIndex + textStartMatch[0].length);
+    const codeStart = afterTextLine !== -1 ? afterTextLine + 1 : text.length;
+    const code = text.slice(codeStart).trim();
+
+    return { lang, code };
+}
+
+// ── _formatCodeWithDiff ──
+// Toma un bloque de código y lo formatea con diff-style para líneas +/-.
+function _formatCodeWithDiff(code, lang) {
+    if (!code) return '';
+    const langClass = lang ? ` class="language-${escapeHtml(lang)}"` : '';
+    const lines = code.split('\n');
+    const formattedLines = lines.map(line => {
+        const esc = escapeHtml(line);
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith('+') && !trimmed.startsWith('+++')) {
+            return `<span class="code-diff-add">${esc}</span>`;
+        }
+        if (trimmed.startsWith('-') && !trimmed.startsWith('---')) {
+            return `<span class="code-diff-del">${esc}</span>`;
+        }
+        if (/^@@ /.test(trimmed)) {
+            return `<span class="code-diff-hunk">${esc}</span>`;
+        }
+        return esc;
+    }).join('\n');
+    return `<pre${langClass}><code>${formattedLines}</code></pre>`;
+}
+
 // ── formatMarkdown ──
 export function formatMarkdown(text) {
     try {
         const clean = stripAnsi(text);
-        const str = typeof clean === 'string' ? clean : (typeof clean === 'object' ? JSON.stringify(clean, null, 2) : String(clean || ""));
+        let str = typeof clean === 'string' ? clean : (typeof clean === 'object' ? JSON.stringify(clean, null, 2) : String(clean || ""));
+
+        // Preprocesar: detectar bloques estructurados type:code/text
+        const parsed = _parseStructuredCode(str);
+        if (parsed) {
+            // El contenido es un bloque estructurado type:code/text
+            // Devolver solo el código formateado con diff
+            return _formatCodeWithDiff(parsed.code, parsed.lang);
+        }
+
         if (window.marked && window.marked.parse) {
             return window.marked.parse(str, { gfm: true, breaks: true });
         }

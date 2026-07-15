@@ -283,30 +283,10 @@ function renderActionButtonConfigs() {
     });
 }
 
-// ─── Mode Toggle Prompt Config Render & Save ───
-
-function renderModeTogglePromptConfigs() {
-    const container = document.getElementById('mode-toggle-prompt-configs');
-    if (!container) return;
-    // Integrado en renderActionButtonConfigs()
-    container.innerHTML = '<p class="field-help">Los prompts de AUTOMMIT, VPS y FTP se configuran en los botones de acción de arriba. Cada botón tipo toggle tiene campos para los prompts ON y OFF.</p>';
-}
-
-function saveModeTogglePromptConfigs() {
-    const container = document.getElementById('mode-toggle-prompt-configs');
-    if (!container) return;
-
-    const textareas = container.querySelectorAll('.mode-toggle-prompt-textarea');
-    textareas.forEach(ta => {
-        const mode = ta.dataset.mode;
-        const stateKey = ta.dataset.state;
-        if (mode && stateKey) {
-            if (!state.modeTogglePrompts[mode]) state.modeTogglePrompts[mode] = {};
-            state.modeTogglePrompts[mode][stateKey] = ta.value;
-        }
-    });
-}
 // ─── End Action Button Config ───
+// NOTA: renderModeTogglePromptConfigs() y saveModeTogglePromptConfigs() fueron eliminados
+// porque los prompts de mode-toggle se configuran via renderActionButtonConfigs()
+// y se guardan automaticamente al cambiar de pestana en el modal.
 
 // MCP Client Implementation
 class MCPClient {
@@ -1000,6 +980,29 @@ async function init() {
     try { await checkSystemHealth(); } catch (e) { console.warn('[INIT] checkSystemHealth falló:', e.message || e); }
     try { await fetchModels(); } catch (e) { console.warn('[INIT] fetchModels falló:', e.message || e); }
     try { await loadData(); applyPanelState(); } catch (e) { console.warn('[INIT] loadData falló:', e.message || e); }
+
+    // 🐛 BUGFIX: Al cargar la página, resetear isThinking en TODOS los chats.
+    // isThinking es un flag de runtime que indica que un agente está corriendo LOCALMENTE.
+    // Si el servidor lo tiene en true (porque la sesión anterior crasheó), los chats
+    // quedan trabados en estado "pensando" y nunca muestran nuevo progreso.
+    for (const proj of state.projects) {
+        if (Array.isArray(proj.chats)) {
+            for (const c of proj.chats) {
+                if (c.isThinking) {
+                    console.log(`[INIT] Limpiando isThinking trabado en chat "${c.name}" (${c.id.slice(-8)})`);
+                    c.isThinking = false;
+                    // También finalizar progress messages huérfanos
+                    for (const pm of c.messages || []) {
+                        if (pm.isProgress && !pm.finished) {
+                            pm.finished = true;
+                            pm.content += '\n⏹️ Sesión anterior interrumpida';
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     try { await loadSkills(); } catch (e) { console.warn('[INIT] loadSkills falló:', e.message || e); }
     
 
@@ -1284,7 +1287,12 @@ async function loadData(shouldScan = true) {
             if (Array.isArray(p.chats)) {
                 for (const chat of p.chats) {
                     const oldMsgs = _oldChatMessages.get(chat.id);
-                    if (oldMsgs && oldMsgs.length > chat.messages.length) {
+                    // 🐛 CRITICAL BUGFIX: Cambiar > por >=.
+                    // Cuando hay un progressMsg NUEVO en oldMsgs y el servidor trae
+                    // un progressMsg VIEJO (de sesion anterior), las longitudes son IGUALES
+                    // pero los mensajes son distintos. Con > no se restauraba, perdiendo
+                    // el progressMsg en vivo y las herramientas 1x1 nunca aparecian.
+                    if (oldMsgs && oldMsgs.length >= chat.messages.length) {
                         chat.messages = oldMsgs;
                     }
                 }
@@ -2516,6 +2524,7 @@ function updateViewVisibility() {
     adminTabContent.classList.add('hidden');
     if (skillsTabContent) skillsTabContent.classList.add('hidden');
     if (matrixTabContent) matrixTabContent.classList.add('hidden');
+
     if (terminalTabContent) terminalTabContent.classList.add('hidden');
     const hermesTabContent = document.getElementById('hermes-tab-content');
     if (hermesTabContent) hermesTabContent.classList.add('hidden');
@@ -2566,11 +2575,14 @@ function updateViewVisibility() {
                             if (res.ok) activeMatrix.update(p.id);
                         } catch (e) { console.error("Error clearing traces:", e); }
                     };
+
                 }
             }
         }
         return;
     }
+
+
 
     if (project && project.activeTabId === 'git') {
         saveFileBtn.classList.add('hidden');
@@ -3562,26 +3574,41 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
 
     updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
+
+    // 🐛 BUGFIX V4: Crear progressMsg ANTES de marcar isThinking como true.
+    // updateThinking() NO se usa aquí porque llamaría a window.saveData()
+    // SIN skipSync, disparando WS broadcast → loadData() → reemplaza
+    // state.projects. El chat quedaría huérfano, y el progressWs (que captura
+    // chat por closure) pushearía la respuesta final al array de mensajes
+    // huérfano — no al que renderMessages() lee de state.projects.
+    // En vez de updateThinking(), seteamos flags y renderizamos directamente.
+    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const progressMsg = {
+        role: 'system',
+        id: progressMsgId,
+        content: '⚡ Invocando Hermes...\n',
+        timestamp: Date.now(),
+        isProgress: true,
+        minimized: false // mientras genera, maximizado
+    };
+    chat.messages.push(progressMsg);
+    chat.isThinking = true;
+    chat.isRunning = true;
+    chat.isStreaming = true;
+    chat.thinkingStatus = 'Esperando respuesta';
+    chat.thinkingSubtext = 'Procesando...';
+    chat.lastProgress = Date.now();
+    // Update UI: show stop button and thinking indicator
+    const stopBtn = document.getElementById('stop-btn');
+    const thinkingInd = document.getElementById('chat-thinking-indicator');
+    const statusSpan = document.getElementById('chat-thinking-status');
+    if (stopBtn) stopBtn.classList.remove('hidden');
+    if (thinkingInd) thinkingInd.classList.remove('hidden');
+    if (statusSpan) statusSpan.textContent = 'Procesando...';
     renderMessages();
+    // Refresh admin monitor and agent badge in background
+    if (typeof _debounceThinkingLayout === 'function') _debounceThinkingLayout();
 
-    // Si el proyecto tiene un nombre inicial aleatorio, generar uno real tras el primer prompt
-    if (project.isInitialName && chat.messages.length > 0) {
-        console.log("[NAMING] Generando nombre real para el proyecto tras primer prompt...");
-        project.isInitialName = false; // Marcar como procesado para no repetir
-        generateGenerativeProjectName().then(newName => {
-            if (newName) {
-                console.log(`[NAMING] Proyecto renombrado: ${project.name} -> ${newName}`);
-                project.name = newName;
-                renderProjectList();
-                saveData();
-            }
-        });
-    }
-
-    // 1. Sync Task State
-    let taskState = await getTaskState();
-
-    // If user just sent a message, determine if it's a technical task
     const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
     if (lastUserMsg && origin === 'user') {
         chat.validationRetries = 0; // Reiniciar contador para nueva tarea
@@ -6820,9 +6847,8 @@ ${rest}`;
             window.renderHistoryList();
         }
 
-        // Render action button configs and mode toggle prompts
+        // Render action button configs (mode-toggle prompts incluidos)
         renderActionButtonConfigs();
-        renderModeTogglePromptConfigs();
 
         globalSettingsModal.classList.remove('hidden');
     };
@@ -6883,10 +6909,24 @@ ${rest}`;
         if (customBaseInput) state.customApiBase = customBaseInput.value;
         if (dsThinkingToggle) state.deepseekThinking = dsThinkingToggle.checked;
 
-        // Save action button configs and mode toggle prompts
-        saveActionButtonConfigs();
-        saveModeTogglePromptConfigs();
-        
+        // Action button prompts se guardan al cambiar de pestana (onclick en sub-tabs)
+        // Guardar tambien la pestana activa actual por si el usuario no cambio de tab
+        const activePane = document.querySelector('#action-button-config-list .action-btn-sub-pane:not(.hidden)');
+        if (activePane) {
+            const textareas = activePane.querySelectorAll('.action-btn-prompt-textarea');
+            textareas.forEach(ta => {
+                const mode = ta.dataset.mode;
+                const stateKey = ta.dataset.state;
+                const curBtn = (state.actionButtons || []).find(b => b.id === ta.dataset.btnId);
+                if (mode && stateKey) {
+                    if (!state.modeTogglePrompts[mode]) state.modeTogglePrompts[mode] = {};
+                    state.modeTogglePrompts[mode][stateKey] = ta.value;
+                } else if (curBtn) {
+                    curBtn.prompt = ta.value;
+                }
+            });
+        }
+
         saveData();
         globalSettingsModal.classList.add('hidden');
         alert("Configuración guardada correctamente.");
@@ -6908,6 +6948,7 @@ ${rest}`;
     function setupActionButton(btnId, btnConfig) {
         const btn = document.getElementById(btnId);
         if (!btn) return;
+        // Only 'action' and 'system' type buttons can have prompts
         if (btnConfig.type === 'system' || btnConfig.type === 'action') {
             // Wrap existing onclick to also send prompt first
             const origHandler = btn.onclick;
@@ -6924,17 +6965,9 @@ ${rest}`;
                 // Then execute original action
                 if (origHandler) origHandler();
             };
-            return;
         }
-        if (btnConfig.prompt && btnConfig.prompt.trim()) {
-            const input = document.getElementById('chat-input');
-            if (input) {
-                input.value = btnConfig.prompt.trim();
-                // Auto-send
-                const sendBtn = document.getElementById('send-btn');
-                if (sendBtn) sendBtn.click();
-            }
-        }
+        // NOTA: 'mode-toggle' type buttons no pasan por aca
+        // Se manejan directamente en initModeToggles()
     }
     // Wire up all action buttons from config
     if (state.actionButtons) {
@@ -7376,8 +7409,8 @@ window.renderTabs = function() {
 /**
  * Construye los prompts de modo según los estados de los toggles
  */
-function buildModeTogglePrompts() {
-    const states = getModeToggleStates();
+function buildModeTogglePrompts(chat) {
+    const states = chat?.toggleStates || getModeToggleStates();  // 🐛 BUGFIX: leer del chat específico, no del DOM global
     const prompts = state.modeTogglePrompts || {};
     const result = [];
 
@@ -7427,9 +7460,45 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         console.log(`[HERMES] ⚠️ isThinking ya era true (llegó WS 'running' antes que triggerHermesLogic). Reseteando y procediendo...`);
     }
 
-    updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
-    renderMessages();
+
+    // 🐛 BUGFIX V4: Crear progressMsg ANTES de updateThinking().
+    // updateThinking() llama a window.saveData() (sin skipSync) que puede
+    // disparar WS broadcast → loadData() → reemplaza state.projects.
+    // Si el progressMsg se pushea DESPUÉS, el push va al objeto chat
+    // huérfano y renderMessages() (que usa getActiveChat()) devuelve el
+    // NUEVO chat de state.projects SIN el progressMsg.
+    // Al pushearlo ANTES, loadData() lo preserva via _oldChatMessages.
+
+    // 🐛 BUGFIX: Finalizar TODOS los progressMsgs activos de runs anteriores.
+    // Si no, se acumulan y renderMessages() muestra el primero (viejo y stale).
+    for (const pm of chat.messages) {
+        if (pm.isProgress && !pm.finished) {
+            pm.finished = true;
+            pm.content += '\n⏹️ Interrumpido (nueva consulta iniciada)';
+        }
+    }
+
+    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const progressMsg = {
+        role: 'system',
+        id: progressMsgId,
+        content: '⚡ Invocando Hermes...\n',
+        timestamp: Date.now(),
+        isProgress: true,
+        minimized: false // mientras genera, maximizado
+    };
+    chat.messages.push(progressMsg);
+
+    // 🐛 BUGFIX: saveData(true) DEBE ir ANTES de updateThinking().
+    // updateThinking llama a saveData() no-silent cuando prevThinking !== isThinking,
+    // lo que trigger un sync:stateUpdate → loadData() en el mismo tab → 
+    // REEMPLAZA el objeto chat → el WebSocket _progressWs se serializa como {}.
+    // Al guardar primero (silent), prevenimos el broadcast prematuro.
+    saveData(true); // silent save - no WS broadcast
+
+    updateThinking(chat, true, "Esperando respuesta", "Procesando...", true); // skipSave=true
+    // renderMessages() ya es llamado dentro de updateThinking()
 
     const lastUserMsg = chat.messages.filter(m => m.role === 'user').pop();
     if (!lastUserMsg) {
@@ -7460,8 +7529,6 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
 
     const instanceKey = project.id + ':' + chat.id;
 
-    saveData(true); // silent save - no WS broadcast
-
     // Conectar WebSocket para recibir progreso en vivo
         // 🐛 BUGFIX: Cerrar WebSocket anterior si existe (ej: de una request que se detuvo)
     if (chat._progressWs) {
@@ -7487,8 +7554,12 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                 const data = JSON.parse(event.data);
                 if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
                     if (data.type === 'progress' || data.type === 'stdout') {
-                        // Agregar línea al mensaje de progreso (solo en data, no en DOM)
-                        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+                        // 🐛 BUGFIX: Usar getActiveChat() en vez del chat del closure.
+                        // Después de saveData→loadData (sync:stateUpdate), el objeto chat
+                        // del closure queda stale y sus mensajes no son los que renderMessages() lee.
+                        // Siempre buscar el progressMsg en el chat ACTIVO actual.
+                        const activeChat = getActiveChat();
+                        const progressChatMsg = activeChat?.messages?.find(m => m.id === progressMsgId);
                         if (progressChatMsg) {
                                 // Replace literal \n (backslash + n) with actual newlines for cleaner formatting of multiline arguments/diffs
                                 const processedText = data.text.replace(/\\n/g, '\n');
@@ -7545,18 +7616,17 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
 
                                             if (isThinkingLine) {
                                                 formatted = '🤔 ' + thinkContent.slice(0, 150);
-                                                // Update thinking-subtext DATA on the chat object (always)
-                                                chat.thinkingSubtext = thinkContent.slice(0, 150);
+                                                // 🐛 BUGFIX: Actualizar thinkingSubtext en el chat ACTIVO (no closure stale)
+                                                if (activeChat) activeChat.thinkingSubtext = thinkContent.slice(0, 150);
                                             } else if (clean.match(/^I'?ll|^Let me|^Now |^First|^Then|^Next|^Using |^Checking|^Looking|^Starting|^Attempting|^Processing/i)) {
                                                 formatted = '🤔 ' + clean.slice(0, 150);
-                                                // Update thinking-subtext DATA on the chat object (always)
-                                                chat.thinkingSubtext = clean.slice(0, 150);
+                                                if (activeChat) activeChat.thinkingSubtext = clean.slice(0, 150);
                                             }
                                             // ANY tool emoji prefix → update thinking-subtext (💻🔍📄✏️🔧 etc.)
                                             else if (clean.match(/^[💻🔍📄✏️🔧🔎🌐👆⌨️🐍📋❓🧠⏰👁️🎨🔊⚡⚙️📖📝🤔✅❌]/u)) {
                                                 const maxLen = 120;
                                                 formatted = clean.length > maxLen ? clean.slice(0, maxLen - 3) + '...' : clean;
-                                                chat.thinkingSubtext = clean.replace(/^.[^\w]*/, '').trim().slice(0, 100);
+                                                if (activeChat) activeChat.thinkingSubtext = clean.replace(/^.[^\w]*/, '').trim().slice(0, 100);
                                             }
                                             // Error-like lines
                                             else if (clean.includes('error') || clean.includes('⚠️') || clean.includes('❌')) {
@@ -7580,139 +7650,16 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-100).join('\n');
                             }
 
-                            // --- UPDATE DOM DIRECTLY: only if this chat is the currently active chat ---
-                            const activeChat = getActiveChat();
-                            if (activeChat && activeChat.id === chat.id) {
-                                // Buscar el elemento del progreso por ID específico en el DOM actual
-                                const progressEl = chatMessages.querySelector(`#${progressMsgId}`);
-                                if (progressEl) {
-                                    const summaryEl = progressEl.querySelector('.progress-summary');
-                                    const detailPre = progressEl.querySelector('.hermes-progress-detail pre');
-                                    if (summaryEl) {
-                                        const firstLine = progressChatMsg.content.split('\n').find(l => l.trim()) || '⚡ Procesando...';
-                                        summaryEl.textContent = firstLine;
+                            // --- THROTTLED RENDER: única fuente de verdad ---
+                            if (!progressRenderTimer) {
+                                progressRenderTimer = setTimeout(() => {
+                                    progressRenderTimer = null;
+                                    const currentActiveChat = getActiveChat();
+                                    if (currentActiveChat && currentActiveChat.id === chat.id) {
+                                        renderMessages(false);
+                                        chatMessages.scrollTop = chatMessages.scrollHeight;
                                     }
-                                    if (detailPre) {
-                                        const progressLines = progressChatMsg.content.split('\n').filter(l => l.trim());
-                                        const detailContent = progressLines.slice(1).join('\n');
-                                        detailPre.innerHTML = formatProgressLines(detailContent);
-                                    }
-                                } else {
-                                    // Si no existe en DOM, hacer renderMessages UNA VEZ (throttled)
-                                    if (!progressRenderTimer) {
-                                        progressRenderTimer = setTimeout(() => {
-                                            progressRenderTimer = null;
-                                            
-                                            // Verificar de nuevo si sigue activo este chat
-                                            const currentActiveChat = getActiveChat();
-                                            if (currentActiveChat && currentActiveChat.id === chat.id) {
-                                                chatMessages.innerHTML = '';
-                                                chat.messages.forEach(m => {
-                                                    if (m.isProgress && m.finished && m._hidden) return;
-                                                    const div = document.createElement('div');
-                                                    div.className = `message ${m.role}`;
-                                                    if (m.isProgress) {
-                                                        div.id = m.id;
-                                                        const isFinished = m.finished === true;
-                                                        const progressLines = m.content.split('\n').filter(l => l.trim());
-                                                        const summary = progressLines[0] || '⚡ Procesando...';
-                                                        const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
-                                                        const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
-                                                        const displaySummary = errorLine || doneLine || summary;
-                                                        const detailContent = progressLines.slice(1).join('\n');
-                                                        const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
-                                                        div.className = `message system hermes-progress ${stateClass}`;
-                                                        div.innerHTML = `
-                                                            <div class="hermes-progress-toggle maximized">
-                                                                <span class="progress-arrow">▼</span>
-                                                                <span class="progress-summary">${escapeHtml(displaySummary)}</span>
-                                                            </div>
-                                                            <div class="hermes-progress-detail">
-                                                                <pre>${formatProgressLines(detailContent)}</pre>
-                                                            </div>
-                                                        `;
-                                                    } else {
-                                                        div.innerHTML = formatMarkdown(m.content);
-                                                    }
-                                                    chatMessages.appendChild(div);
-                                                });
-                                                // 🐛 BUGFIX: Hermes-progress SIEMPRE visible (mismo fix que chat-ui.js)
-                                                // El inline render del WS handler no tiene el fallback de renderMessages(),
-                                                // asi que si este throttled render se dispara antes de que renderMessages()
-                                                // se ejecute, el contenedor se pierde. Lo agregamos aqui tambien.
-                                                chatMessages.querySelectorAll('.hermes-progress').forEach(el => el.remove());
-                                                const _hpDiv = document.createElement('div');
-                                                _hpDiv.className = 'message system hermes-progress';
-                                                const _hpActive = chat.messages.find(m => m.isProgress && !m.finished);
-                                                if (_hpActive) {
-                                                    _hpDiv.id = _hpActive.id;
-                                                    const _hpLines = (_hpActive.content || '').split('\n').filter(l => l.trim());
-                                                    const _hpSummary = _hpLines[0] || '⚡ Invocando Hermes...';
-                                                    _hpDiv.innerHTML = `
-                                                        <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
-                                                            <span class="progress-arrow">▼</span>
-                                                            <span class="progress-summary">${escapeHtml(_hpSummary)}</span>
-                                                        </div>
-                                                        <div class="hermes-progress-detail" style="display: block">
-                                                            <pre>${formatProgressLines(_hpActive.content || '')}</pre>
-                                                        </div>
-                                                    `;
-                                                } else if (chat.isThinking) {
-                                                    _hpDiv.innerHTML = `
-                                                        <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
-                                                            <span class="progress-arrow">▼</span>
-                                                            <span class="progress-summary">⚡ Invocando Hermes...</span>
-                                                        </div>
-                                                        <div class="hermes-progress-detail" style="display: block">
-                                                            <pre>${formatProgressLines(chat.thinkingSubtext || 'Procesando...')}</pre>
-                                                        </div>
-                                                    `;
-                                                } else {
-                                                    _hpDiv.innerHTML = `
-                                                        <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
-                                                            <span class="progress-arrow">▶</span>
-                                                            <span class="progress-summary">⏸️ Hermes inactivo</span>
-                                                        </div>
-                                                        <div class="hermes-progress-detail" style="display: none">
-                                                            <pre>Hermes no está ejecutándose actualmente. Enviá un mensaje para iniciar una consulta.</pre>
-                                                        </div>
-                                                    `;
-                                                }
-                                                chatMessages.appendChild(_hpDiv);
-                                                // ─── RE-INSERT thinking bubble if chat is still active and thinking ───
-                                                if (chat.isThinking) {
-                                                    const thinkingDiv = document.createElement('div');
-                                                    thinkingDiv.className = 'message agent thinking';
-                                                    thinkingDiv.innerHTML = `
-                                                        <div class="thinking-bubble-content">
-                                                            <div class="spinner"></div>
-                                                            <div class="thinking-text-wrapper">
-                                                                <div class="thinking-status">${escapeHtml(chat.thinkingStatus || 'El agente está pensando...')}</div>
-                                                                <div class="thinking-subtext">${escapeHtml(chat.thinkingSubtext || 'Procesando...')}</div>
-                                                            </div>
-                                                        </div>
-                                                    `;
-                                                    chatMessages.appendChild(thinkingDiv);
-                                                }
-                                                chatMessages.scrollTop = chatMessages.scrollHeight;
-                                            }
-                                        }, 200);
-                                    }
-                                }
-
-                                // ─── UPDATE thinking-subtext DOM (only for active chat) ───
-                                const activeThinkingSub = chatMessages.querySelector('.thinking-subtext');
-                                if (activeThinkingSub && chat.thinkingSubtext) {
-                                    activeThinkingSub.textContent = chat.thinkingSubtext;
-                                }
-
-                                // ─── UPDATE thinking indicator in header (only for active chat) ───
-                                const statusEl = document.getElementById('chat-thinking-status');
-                                if (statusEl) {
-                                    const lastClean = lines.filter(l => l.trim()).pop() || '';
-                                    const short = lastClean.replace(/\x1b\[[0-9;]*m/g, '').replace(/[🔄⚡📦🔧📝🚀✅❌🔮🧪]/g, '').trim().slice(0, 60);
-                                    if (short) statusEl.textContent = '⚡ ' + short;
-                                }
+                                }, 150);
                             }
                         }
                     }
@@ -7784,7 +7731,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         }
 
         // ─── Inyectar prompts de toggles de modo (Autocommit, VPS, FTP) ───
-        const togglePrompts = buildModeTogglePrompts();
+        const togglePrompts = buildModeTogglePrompts(chat);
         if (togglePrompts && togglePrompts.trim()) {
             finalMessage = `[MODE TOGGLES - Instrucciones de comportamiento según los modos activos]:\n${togglePrompts}\n\n---\n\n${finalMessage}`;
         }
@@ -7805,11 +7752,13 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
 
         if (!res.ok) {
             const errData = await res.json().catch(() => ({ error: 'Error del servidor' }));
-            // Reemplazar mensaje de progreso con error
-            const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+            // BUGFIX V5: buscar progressMsg en LIVE state (chat puede estar stale)
+            const _pjErr = state.projects?.find(p => p.id === project?.id);
+            const _liveChatErr = _pjErr?.chats?.find(c => c.id === chat?.id) || chat;
+            const progressChatMsg = _liveChatErr?.messages?.find(m => m.id === progressMsgId);
             if (progressChatMsg) {
                 progressChatMsg.content = '❌ Error: ' + (errData.error || res.statusText);
-                progressChatMsg.isProgress = false;
+                progressChatMsg.finished = true;
             } else {
                 chat.messages.push({
                     role: 'assistant',
@@ -7852,7 +7801,10 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         const tokenUsage = data.usage || null;
 
         // ─── Actualizar progreso a estado finalizado pero visible ───
-        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        // BUGFIX V5: Buscar progressMsg en LIVE state (chat puede estar stale tras loadData)
+        const _pj2 = state.projects?.find(p => p.id === project?.id);
+        const _liveChat2 = _pj2?.chats?.find(c => c.id === chat?.id) || chat;
+        const progressChatMsg = _liveChat2?.messages?.find(m => m.id === progressMsgId);
         if (progressChatMsg) {
             // Marcar como finalizado pero NO oculto: queda minimizado y visible
             progressChatMsg.finished = true;
@@ -8047,7 +7999,10 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             chat._progressWs = null;
             return;
         }
-        const progressChatMsg = chat.messages.find(m => m.id === progressMsgId);
+        // BUGFIX V5: buscar progressMsg en LIVE state (chat puede estar stale)
+        const _pjErr2 = state.projects?.find(p => p.id === project?.id);
+        const _liveChatErr2 = _pjErr2?.chats?.find(c => c.id === chat?.id) || chat;
+        const progressChatMsg = _liveChatErr2?.messages?.find(m => m.id === progressMsgId);
         if (progressChatMsg) {
             const errTime = new Date().toLocaleTimeString();
             progressChatMsg.content += '\n❌ Error: ' + e.message + ' (' + errTime + ')\n';
@@ -8429,4 +8384,85 @@ window.gotoSearchResult = (projectId) => {
             }
         }, 200);
     });
+})();
+
+// --- Graph Modal Handlers (inside Matrix tab) ---
+// Graph modal handlers (run directly - module ensures DOM is ready)
+(() => {
+    const graphBtn = document.getElementById('matrix-graph-btn');
+    const modal = document.getElementById('graph-modal');
+    const closeBtn = document.getElementById('modal-graph-close-btn');
+
+    if (graphBtn && modal) {
+        graphBtn.onclick = () => {
+            modal.classList.remove('hidden');
+            if (!modal._graphInstance) {
+                import('./memory-graph.js').then(mod => {
+                    modal._graphInstance = mod.initMemoryGraph('modal-graph-canvas', 'modal-graph-svg');
+                    const project = getActiveProject();
+                    if (project && project.folder && modal._graphInstance) {
+                        modal._graphInstance.loadGraph(project.id);
+                    }
+                }).catch(err => {
+                    console.error('[GRAPH-MODAL] Error:', err);
+                });
+            } else {
+                const project = getActiveProject();
+                if (project && modal._graphInstance) {
+                    modal._graphInstance.loadGraph(project.id);
+                }
+            }
+        };
+    }
+
+    if (closeBtn && modal) {
+        closeBtn.onclick = () => modal.classList.add('hidden');
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.classList.add('hidden');
+        };
+    }
+
+    const scanBtn = document.getElementById('modal-graph-scan-btn');
+    if (scanBtn) {
+        scanBtn.onclick = async () => {
+            const modalEl = document.getElementById('graph-modal');
+            const project = getActiveProject();
+            if (project && project.folder && modalEl && modalEl._graphInstance) {
+                scanBtn.textContent = '⏳';
+                await modalEl._graphInstance.scanProject(project.id, project.folder);
+                scanBtn.textContent = '🔍';
+            } else {
+                showToast('⚠️ Seleccioná un proyecto con carpeta configurada', 'warning');
+            }
+        };
+    }
+
+    const refreshBtn = document.getElementById('modal-graph-refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.onclick = () => {
+            const modalEl = document.getElementById('graph-modal');
+            const project = getActiveProject();
+            if (project && modalEl && modalEl._graphInstance) {
+                modalEl._graphInstance.loadGraph(project.id);
+            }
+        };
+    }
+
+    const resetBtn = document.getElementById('modal-graph-reset-btn');
+    if (resetBtn) {
+        resetBtn.onclick = () => {
+            const modalEl = document.getElementById('graph-modal');
+            if (modalEl && modalEl._graphInstance) {
+                modalEl._graphInstance.resetZoom();
+            }
+        };
+    }
+
+    window.openFileFromGraph = (filePath) => {
+        const project = getActiveProject();
+        if (project && project.folder) {
+            const fullPath = project.folder.replace(/\\\\/g, '/') + '/' + filePath;
+            window.openFile(fullPath);
+        }
+    };
 })();

@@ -783,6 +783,7 @@ optgroup {
     margin: 0.25rem 0;
     border-radius: 0;
     overflow: hidden;
+    min-height: 32px; /* Evita colapso en flexbox column con overflow:hidden */
 }
 .hermes-progress-toggle {
     display: flex;
@@ -1036,6 +1037,30 @@ optgroup {
 .message.agent strong { color: #fff; font-weight: 600; }
 .message.agent ul, .message.agent ol { margin-left: 1.2rem; margin-bottom: 0.8rem; }
 .message.agent li { margin-bottom: 0.3rem; }
+/* Diff highlighting inside code blocks in agent messages */
+.message.agent pre code .code-diff-add {
+    color: #3fb950;
+    background-color: rgba(63, 185, 80, 0.12);
+    display: block;
+    padding: 0 8px;
+    margin: 0 -8px;
+    border-left: 3px solid #3fb950;
+}
+.message.agent pre code .code-diff-del {
+    color: #f85149;
+    background-color: rgba(248, 81, 73, 0.12);
+    display: block;
+    padding: 0 8px;
+    margin: 0 -8px;
+    border-left: 3px solid #f85149;
+}
+.message.agent pre code .code-diff-hunk {
+    color: #79c0ff;
+    font-weight: 600;
+    display: block;
+    padding: 0 8px;
+    margin: 0 -8px;
+}
 /* Collapsible File/Code Block */
 .file-collapsible {
   margin: 1rem 0;
@@ -6834,3 +6859,195 @@ pre code.hljs {
 }
 
 /* ─── /Tablero de Tareas ─── */
+
+
+/* ─── Graph Tab (Memory Graph) ─── */
+.graph-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.graph-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface-color, #1e1e2e);
+    border-bottom: 1px solid var(--border-color, #333);
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.graph-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary, #e0e0e0);
+    margin: 0;
+    white-space: nowrap;
+}
+
+.graph-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.graph-stats {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #888);
+    margin-left: 8px;
+    padding: 4px 10px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 6px;
+    white-space: nowrap;
+}
+
+.graph-canvas-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg-color, #0f0f1a);
+}
+
+#graph-svg {
+    width: 100%;
+    height: 100%;
+}
+
+.graph-tooltip {
+    position: fixed;
+    background: rgba(20, 20, 35, 0.95);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 0.8rem;
+    color: var(--text-primary, #e0e0e0);
+    pointer-events: none;
+    z-index: 10000;
+    max-width: 320px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    transition: opacity 0.15s ease;
+}
+
+.graph-tooltip.hidden {
+    opacity: 0;
+    pointer-events: none !important;
+}
+
+.graph-tooltip-header {
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+}
+
+.graph-tooltip-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary, #aaa);
+}
+
+/* Graph tab in tabs bar */
+.graph-tab .dot {
+    display: none;
+}
+
+
+/* ─── Graph Modal Overlay ─── */
+.graph-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+    animation: fadeIn 0.2s ease;
+}
+
+.graph-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface-color, #1e1e2e);
+    border-bottom: 1px solid var(--border-color, #333);
+    border-radius: 12px 12px 0 0;
+    width: 80vw;
+    max-width: 1100px;
+    flex-shrink: 0;
+}
+
+.graph-modal-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary, #e0e0e0);
+    margin: 0;
+    white-space: nowrap;
+}
+
+.graph-modal-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.graph-modal-canvas {
+    width: 80vw;
+    max-width: 1100px;
+    height: 70vh;
+    background: var(--bg-color, #1a1a2e);
+    border-radius: 0 0 12px 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+.graph-modal-canvas svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.graph-stats {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #aaa);
+    padding: 2px 8px;
+    background: var(--surface-alt, #2a2a3e);
+    border-radius: 4px;
+}
+
+.graph-tooltip {
+    position: absolute;
+    background: var(--surface-color, #1e1e2e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 8px;
+    padding: 10px 14px;
+    pointer-events: none;
+    z-index: 1001;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    max-width: 300px;
+}
+
+.graph-tooltip-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary, #e0e0e0);
+    margin-bottom: 4px;
+}
+
+.graph-tooltip-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary, #aaa);
+}

@@ -212,9 +212,8 @@ const searchKnowledge = tool(
             } else {
                 results.forEach((r, i) => {
                     formattedResults += `--- Documento: ${r.metadata.source} ---\n${r.pageContent}\n\n`;
-                });
+            });
             }
-
             await logAgentTrace(config.configurable.projectId || "global", config.configurable.thread_id, "tool_result", { tool: "search_knowledge", success: true });
             return formattedResults;
         } catch (err) {
@@ -226,6 +225,127 @@ const searchKnowledge = tool(
         name: "search_knowledge",
         description: "Busca información en la base de conocimiento (documentos RAG subidos por el usuario) para responder preguntas sobre manuales, guías o documentación.",
         schema: z.object({ query: z.string().describe("Pregunta o término a buscar en los documentos") }),
+    }
+);
+
+
+const getMemoryGraph = tool(
+    async ({ projectId, query }, config) => {
+        try {
+            const threadId = config.configurable.thread_id;
+            await logAgentTrace(config.configurable.projectId || "global", threadId, "tool_call", { tool: "getMemoryGraph", args: { projectId, query } });
+
+            // Get the project folder from sessions
+            let folderPath = '';
+            try {
+                const { getCollection } = await import('../db/db.js');
+                const collection = getCollection('sessions');
+                const data = await collection.findOne({ _id: 'global_state' });
+                const sessions = data ? data.state : { projects: [] };
+                const project = sessions.projects?.find(p => p.id === projectId);
+                if (project && project.folder) {
+                    folderPath = project.folder;
+                }
+            } catch (e) {
+                // Sessions not available
+            }
+
+            if (!folderPath) {
+                return "No se encontró la carpeta del proyecto. Asegurate de que el proyecto tenga una carpeta configurada.";
+            }
+
+            let result;
+            if (query) {
+                // Search in the graph
+                const searchUrl = `http://127.0.0.1:${process.env.JPAGENTS_PORT || 4699}/api/memory/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(query)}`;
+                const res = await fetch(searchUrl);
+                if (!res.ok) {
+                    // First scan the project
+                    await fetch(`http://127.0.0.1:${process.env.JPAGENTS_PORT || 4699}/api/memory/scan`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectId, folderPath })
+                    });
+                    // Try again
+                    const res2 = await fetch(searchUrl);
+                    if (!res2.ok) return "No se pudo buscar en el grafo: " + (await res2.text());
+                    result = await res2.json();
+                } else {
+                    result = await res.json();
+                }
+            } else {
+                // Get full graph
+                const graphUrl = `http://127.0.0.1:${process.env.JPAGENTS_PORT || 4699}/api/memory/graph?projectId=${encodeURIComponent(projectId)}`;
+                let res = await fetch(graphUrl);
+                if (!res.ok) {
+                    // First scan the project
+                    await fetch(`http://127.0.0.1:${process.env.JPAGENTS_PORT || 4699}/api/memory/scan`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectId, folderPath })
+                    });
+                    const res2 = await fetch(graphUrl);
+                    if (!res2.ok) return "No se pudo obtener el grafo: " + (await res2.text());
+                    result = await res2.json();
+                } else {
+                    result = await res.json();
+                }
+            }
+
+            // Format the result for the agent
+            let summary = '';
+            if (result.nodes) {
+                const byType = {};
+                for (const n of result.nodes) {
+                    byType[n.type] = (byType[n.type] || 0) + 1;
+                }
+                const typeSummary = Object.entries(byType).map(([t, c]) => `${t}: ${c}`).join(', ');
+                summary = `📊 **Grafo de Dependencias** (${result.fileCount} archivos, ${result.edgeCount} dependencias)\n`;
+                summary += `Tipos: ${typeSummary}\n`;
+                summary += `Escaneado: ${new Date(result.scannedAt).toLocaleTimeString()}\n\n`;
+
+                if (query && result.results) {
+                    summary += `🔍 **Resultados para: "${query}"** (${result.totalResults} hits)\n\n`;
+                    for (const r of result.results.slice(0, 10)) {
+                        summary += `📄 ${r.file}\n`;
+                        if (r.connections && r.connections.length > 0) {
+                            summary += `   Conexiones: ${r.connections.map(c => c.target || c.source).join(', ').slice(0, 200)}\n`;
+                        }
+                        if (r.summary) {
+                            summary += `   ${r.summary}\n`;
+                        }
+                        summary += '\n';
+                    }
+                } else {
+                    // Top files by size
+                    const topFiles = result.nodes.sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 15);
+                    summary += '📁 **Archivos principales** (por tamaño):\n\n';
+                    for (const f of topFiles) {
+                        const sizeKB = (f.size / 1024).toFixed(1);
+                        summary += `  ${f.file} (${sizeKB}KB)\n`;
+                    }
+                }
+            } else if (result.results) {
+                summary = `🔍 **Resultados para: "${query}"**\n\n`;
+                for (const r of result.results.slice(0, 10)) {
+                    summary += `  📄 ${r.file}\n`;
+                }
+            }
+
+            await logAgentTrace(config.configurable.projectId || "global", threadId, "tool_result", { tool: "getMemoryGraph", success: true });
+            return summary || "(sin datos)";
+        } catch (err) {
+            await logAgentTrace(config.configurable.projectId || "global", config.configurable.thread_id, "tool_result", { tool: "getMemoryGraph", success: false, error: err.message });
+            return `ERROR AL OBTENER GRAFO: ${err.message}`;
+        }
+    },
+    {
+        name: "getMemoryGraph",
+        description: "Obtiene el grafo de dependencias del proyecto (archivos y sus imports). Útil para entender la estructura del proyecto ANTES de leer archivos. Opcional: pasar 'query' para buscar archivos específicos.",
+        schema: z.object({
+            projectId: z.string().describe("ID del proyecto a consultar"),
+            query: z.string().optional().describe("Búsqueda opcional (nombre de archivo o término en exports)")
+        }),
     }
 );
 
@@ -395,7 +515,7 @@ const webIndex = tool(
     }
 );
 
-const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles, searchKnowledge, webFetch, webSearch, webIndex];
+const tools = [listFiles, readFile, writeFile, editFile, executeJs, summarizeRepo, searchFiles, searchKnowledge, getMemoryGraph, webFetch, webSearch, webIndex];
 const toolNode = new ToolNode(tools);
 
 // Define el esquema de estado del grafo

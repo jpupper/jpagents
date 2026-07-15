@@ -68,6 +68,22 @@ export function handleHermesStatus(data) {
                 console.log(`[WS-HERMES] Resync '${status}' ignorado para ${instanceKey} — agente marcado como activo localmente`);
                 return; // No tocar el estado
             }
+            // 🐛 BUGFIX V5: Finalizar el progressMsg activo cuando el agente completa.
+            // Sin esto, renderMessages() siempre encuentra un progressMsg activo (isProgress && !finished)
+            // y muestra el modal MAXIMIZADO (detalle visible), ocultando el resumen final del asistente.
+            // NOTA: chat ya viene del loop state.projects, es el objeto VIVO — no necesita re-búsqueda.
+            const _hp = chat.messages?.find(m => m.isProgress && !m.finished);
+            if (_hp) {
+                _hp.finished = true;
+                _hp.minimized = true;
+                const _ht = new Date().toLocaleTimeString();
+                // Si hay error, mostrar ❌; si no, ✅ completado
+                if (error) {
+                    _hp.content += '\n❌ Error: ' + error + ' (' + _ht + ')';
+                } else {
+                    _hp.content += '\n✅ Tarea completada — ' + _ht;
+                }
+            }
             chat.isThinking = false;
             chat.isRunning = false;
             chat.isStreaming = false;

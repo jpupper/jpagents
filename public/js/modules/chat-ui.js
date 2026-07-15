@@ -61,29 +61,12 @@ export function renderMessages(shouldRenderLayout = false) {
             }
 
             if (m.isProgress) {
-                div.id = m.id;
-                const isMinimized = m.minimized === true;
-                const isFinished = m.finished === true;
-                const progressLines = (m.content || '').split('\n').filter(l => l.trim());
-                const summary = progressLines[0] || '⚡ Procesando...';
-                const doneLine = isFinished ? progressLines.find(l => l.includes('✅ Tarea completada')) : null;
-                const errorLine = isFinished ? progressLines.find(l => l.includes('❌ Error')) : null;
-                const displaySummary = errorLine || doneLine || summary;
-                const detailContent = progressLines.slice(1).join('\n');
-                const stateClass = errorLine ? 'errored' : (isFinished ? 'completed' : '');
-                div.className = `message system hermes-progress ${stateClass}`;
-                div.innerHTML = `
-                    <div class="hermes-progress-toggle ${isMinimized ? 'minimized' : 'maximized'}" onclick="window.toggleProgress(this)">
-                        <span class="progress-arrow">${isMinimized ? '▶' : '▼'}</span>
-                        <span class="progress-summary">${escapeHtml(displaySummary)}</span>
-                    </div>
-                    <div class="hermes-progress-detail" style="display: ${isMinimized ? 'none' : 'block'}">
-                        <pre>${formatProgressLines(detailContent)}</pre>
-                    </div>
-                `;
-            } else {
-                div.innerHTML = imageHtml + formatMarkdown(m.content);
+                // Progress messages se renderizan en el bloque dedicado abajo
+                // No renderizarlos aca evita crear elementos DOM que se eliminan inmediatamente
+                return;
             }
+
+            div.innerHTML = imageHtml + formatMarkdown(m.content);
 
             if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
                 const changesDiv = document.createElement('div');
@@ -100,20 +83,25 @@ export function renderMessages(shouldRenderLayout = false) {
 
     // 🐛 BUGFIX V2: El contenedor Hermes-progress SIEMPRE visible.
     // Estrategia corregida:
-    //   - El forEach de arriba ya renderizó todos los progress (finished y activos).
-    //   - Para evitar acumular múltiples progress en el DOM, removemos los que
-    //     renderizó el forEach y creamos UNO solo con el estado actual.
+    //   - El forEach ahora SKIPEA progress messages (antes los renderizaba y los removia).
+    //   - Creamos UN unico bloque con el estado actual del agente.
     //   - La race condition original (saveData → sync:stateUpdate → loadData)
     //     se previno con saveData(true) en triggerHermesLogic, que omite el
     //     broadcast WS durante el setup inicial.
+    // Limpiar cualquier progress residual del DOM (renders anteriores)
     chatMessages.querySelectorAll('.hermes-progress').forEach(el => el.remove());
 
     const statusDiv = document.createElement('div');
     statusDiv.className = 'message system hermes-progress';
-    const activeProgress = chat.messages?.find(m => m.isProgress && !m.finished);
+    // Buscar el ÚLTIMO progressMsg activo (no finished), no el primero.
+    // Con el fix de limpieza en triggerHermesLogic solo debería haber uno,
+    // pero si por alguna razón hay múltiples, mostrar el más reciente.
+    const allActive = chat.messages?.filter(m => m.isProgress && !m.finished) || [];
+    const activeProgress = allActive.length > 0 ? allActive[allActive.length - 1] : null;
+    const lastFinishedProgress = !activeProgress ? chat.messages?.filter(m => m.isProgress && m.finished).pop() : null;
 
     if (activeProgress) {
-        // Hermes está corriendo y hay un progressMsg vivo en chat.messages
+        // Hermes ejecutándose con progressMsg vivo
         statusDiv.id = activeProgress.id;
         const progressLines = (activeProgress.content || '').split('\n').filter(l => l.trim());
         const summary = progressLines[0] || '⚡ Invocando Hermes...';
@@ -126,8 +114,25 @@ export function renderMessages(shouldRenderLayout = false) {
                 <pre>${formatProgressLines(activeProgress.content || '')}</pre>
             </div>
         `;
+    } else if (lastFinishedProgress) {
+        // Hermes completó — mostrar resultado final con file changes
+        statusDiv.id = lastFinishedProgress.id;
+        const progressLines = (lastFinishedProgress.content || '').split('\n').filter(l => l.trim());
+        const summary = progressLines.find(l => l.includes('✅ Tarea completada')) || progressLines[0] || '✅ Tarea completada';
+        const hasErrors = progressLines.some(l => l.includes('❌ Error'));
+        const stateClass = hasErrors ? 'errored' : 'completed';
+        statusDiv.className = `message system hermes-progress ${stateClass}`;
+        statusDiv.innerHTML = `
+            <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
+                <span class="progress-arrow">▶</span>
+                <span class="progress-summary">${escapeHtml(summary)}</span>
+            </div>
+            <div class="hermes-progress-detail" style="display: none">
+                <pre>${formatProgressLines(lastFinishedProgress.content || '')}</pre>
+            </div>
+        `;
     } else if (chat.isThinking) {
-        // Hermes está corriendo pero no hay progressMsg en messages (stale chat, etc.)
+        // Hermes corriendo sin progressMsg (stale chat, etc.)
         statusDiv.innerHTML = `
             <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
                 <span class="progress-arrow">▼</span>
@@ -167,9 +172,10 @@ export function renderMessages(shouldRenderLayout = false) {
         }
     }
 
-    // Highlight code blocks
+    // Highlight code blocks (skip pre-formatted diff blocks with inline spans)
     if (window.hljs) {
         chatMessages.querySelectorAll('pre code').forEach((block) => {
+            if (block.querySelector('.code-diff-add, .code-diff-del, .code-diff-hunk')) return;
             window.hljs.highlightElement(block);
         });
     }
@@ -255,7 +261,7 @@ const _debounceThinkingLayout = () => {
 };
 
 // ─── updateThinking ───
-export function updateThinking(chat, isThinking, status = '', subtext = '') {
+export function updateThinking(chat, isThinking, status = '', subtext = '', skipSave = false) {
     if (!chat) return;
     const prevThinking = chat.isThinking;
     chat.isThinking = isThinking;
@@ -300,7 +306,10 @@ export function updateThinking(chat, isThinking, status = '', subtext = '') {
         // y loadData() reemplaza los objetos de proyecto, perdiendo el draftInput.
         // Si el usuario estaba escribiendo mientras el agente terminaba, se borra el texto.
         saveChatDraft();
-        window.saveData();
+        // 🐛 BUGFIX: skipSave=true cuando el caller ya hizo saveData(true) (ej: triggerHermesLogic).
+        // Si no skipeamos, el saveData() no-silent trigger un sync:stateUpdate → loadData()
+        // en el mismo tab, que serializa _progressWs (WebSocket) como {} y rompe el progreso en vivo.
+        if (!skipSave) window.saveData();
 
         // 🐛 BUGFIX: Trackear cual chat acaba de terminar de pensar (para BC handler)
         // Cuando el agente termina, el BC 'thinking-changed' se recibe en el mismo tab
