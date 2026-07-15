@@ -304,10 +304,21 @@
           <div class="matrix-header">
             <h2>🕸️ Agentic Matrix Tree</h2>
             <div class="matrix-controls">
-              <button id="refresh-matrix-btn" class="btn-icon" title="Refrescar Árbol">🔄</button>
-              <button id="reset-zoom-btn" class="btn-icon" title="Resetear Zoom">🎯</button>
-              <button id="clear-matrix-btn" class="btn-icon btn-danger-outline" title="Limpiar Matrix">🗑️</button>
-              <button id="matrix-graph-btn" class="btn-icon" title="Grafo de Dependencias">🗺️</button>
+              <div class="matrix-view-toggle">
+                <button id="matrix-mode-agent-history" class="btn-toggle active" title="Agent History">📊 Agent History</button>
+                <button id="matrix-mode-graph" class="btn-toggle" title="Grafo de Dependencias">🗺️ Grafo</button>
+              </div>
+              <div class="matrix-actions" id="matrix-actions-agent-history">
+                <button id="refresh-matrix-btn" class="btn-icon" title="Refrescar Árbol">🔄</button>
+                <button id="reset-zoom-btn" class="btn-icon" title="Resetear Zoom">🎯</button>
+                <button id="clear-matrix-btn" class="btn-icon btn-danger-outline" title="Limpiar Matrix">🗑️</button>
+              </div>
+              <div class="matrix-actions hidden" id="matrix-actions-graph">
+                <button id="matrix-graph-scan-btn" class="btn-icon" title="Escanear Proyecto">🔍</button>
+                <button id="matrix-graph-refresh-btn" class="btn-icon" title="Refrescar Grafo">🔄</button>
+                <button id="matrix-graph-reset-btn" class="btn-icon" title="Resetear Zoom">🎯</button>
+                <span id="graph-stats" class="graph-stats">---</span>
+              </div>
               <div class="matrix-legend">
                 <span class="legend-item"><i class="dot user-input"></i> User Input</span>
                 <span class="legend-item"><i class="dot thinking"></i> Pensando</span>
@@ -320,6 +331,8 @@
           <div id="matrix-canvas-container" class="matrix-canvas-container">
             <svg id="matrix-svg"></svg>
             <div id="matrix-tooltip" class="matrix-tooltip hidden"></div>
+            <svg id="matrix-graph-svg" class="hidden"></svg>
+            <div id="matrix-graph-tooltip" class="graph-tooltip hidden"></div>
           </div>
         </div>
 

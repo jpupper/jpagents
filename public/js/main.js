@@ -33,6 +33,8 @@ let draggedTabType = null;
 // ── Local: check if agent is active ──
 
 let activeMatrix = null;
+let _matrixGraphInstance = null;
+let _matrixViewMode = 'agent-history';
 
 // --- Console Log Interceptor ---
 (function () {
@@ -2575,13 +2577,108 @@ function updateViewVisibility() {
                             if (res.ok) activeMatrix.update(p.id);
                         } catch (e) { console.error("Error clearing traces:", e); }
                     };
+                }
 
+                // ─── Matriz View Mode Toggle Buttons ───
+                const btnAgentHistory = document.getElementById('matrix-mode-agent-history');
+                const btnGraph = document.getElementById('matrix-mode-graph');
+                if (btnAgentHistory) {
+                    btnAgentHistory.onclick = () => {
+                        if (_matrixViewMode === 'agent-history') return;
+                        _matrixViewMode = 'agent-history';
+                        applyMatrixViewMode(project ? project.id : 'admin');
+                    };
+                }
+                if (btnGraph) {
+                    btnGraph.onclick = () => {
+                        if (_matrixViewMode === 'graph') return;
+                        _matrixViewMode = 'graph';
+                        applyMatrixViewMode(project ? project.id : 'admin');
+                    };
+                }
+
+                // ─── Graph Scan/Refresh/Reset Buttons ───
+                const graphScanBtn = document.getElementById('matrix-graph-scan-btn');
+                if (graphScanBtn) {
+                    graphScanBtn.onclick = async () => {
+                        const p = getActiveProject();
+                        if (p && p.folder && _matrixGraphInstance) {
+                            graphScanBtn.textContent = '⏳';
+                            await _matrixGraphInstance.scanProject(p.id, p.folder);
+                            graphScanBtn.textContent = '🔍';
+                        } else {
+                            showToast('⚠️ Seleccioná un proyecto con carpeta configurada', 'warning');
+                        }
+                    };
+                }
+                const graphRefreshBtn = document.getElementById('matrix-graph-refresh-btn');
+                if (graphRefreshBtn) {
+                    graphRefreshBtn.onclick = () => {
+                        const p = getActiveProject();
+                        if (p && _matrixGraphInstance) {
+                            _matrixGraphInstance.loadGraph(p.id);
+                        }
+                    };
+                }
+                const graphResetBtn = document.getElementById('matrix-graph-reset-btn');
+                if (graphResetBtn) {
+                    graphResetBtn.onclick = () => {
+                        if (_matrixGraphInstance) _matrixGraphInstance.resetZoom();
+                    };
                 }
             }
+            // Aplicar el modo de vista actual (grafo o agent-history)
+            applyMatrixViewMode(project.id);
         }
         return;
     }
 
+
+// ─── Matrix View Mode: toggle between Agent History and Dependency Graph ───
+function applyMatrixViewMode(projectId) {
+    const svgAgent = document.getElementById('matrix-svg');
+    const svgGraph = document.getElementById('matrix-graph-svg');
+    const tooltipAgent = document.getElementById('matrix-tooltip');
+    const tooltipGraph = document.getElementById('matrix-graph-tooltip');
+    const actionsAgent = document.getElementById('matrix-actions-agent-history');
+    const actionsGraph = document.getElementById('matrix-actions-graph');
+    const btnAgent = document.getElementById('matrix-mode-agent-history');
+    const btnGraph = document.getElementById('matrix-mode-graph');
+
+    if (!svgAgent || !svgGraph) return;
+
+    if (_matrixViewMode === 'graph') {
+        svgAgent.classList.add('hidden');
+        svgGraph.classList.remove('hidden');
+        if (tooltipAgent) tooltipAgent.classList.add('hidden');
+        if (tooltipGraph) tooltipGraph.classList.remove('hidden');
+        if (actionsAgent) actionsAgent.classList.add('hidden');
+        if (actionsGraph) actionsGraph.classList.remove('hidden');
+        if (btnAgent) btnAgent.classList.remove('active');
+        if (btnGraph) btnGraph.classList.add('active');
+
+        if (!_matrixGraphInstance) {
+            import('./memory-graph.js').then(mod => {
+                _matrixGraphInstance = mod.initMemoryGraph('matrix-canvas-container', 'matrix-graph-svg');
+                if (_matrixGraphInstance && projectId) {
+                    _matrixGraphInstance.loadGraph(projectId);
+                }
+            }).catch(err => {
+                console.error('[MATRIX-GRAPH] Error loading memory-graph:', err);
+            });
+        } else {
+            if (projectId) _matrixGraphInstance.loadGraph(projectId);
+        }
+    } else {
+        svgAgent.classList.remove('hidden');
+        svgGraph.classList.add('hidden');
+        if (tooltipGraph) tooltipGraph.classList.add('hidden');
+        if (actionsGraph) actionsGraph.classList.add('hidden');
+        if (actionsAgent) actionsAgent.classList.remove('hidden');
+        if (btnGraph) btnGraph.classList.remove('active');
+        if (btnAgent) btnAgent.classList.add('active');
+    }
+}
 
 
     if (project && project.activeTabId === 'git') {
