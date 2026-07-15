@@ -16,7 +16,7 @@ import path from 'path';
 import { existsSync } from 'fs';
 
 // ─── Cache en memoria: projectId → { nodes, edges, scannedAt } ───
-const graphCache = new Map();
+export const graphCache = new Map();
 
 // ─── Extensiones de archivo que escaneamos ───
 const SCANNABLE_EXTS = new Set([
@@ -139,7 +139,7 @@ function resolveImport(importPath, sourceDir) {
 /**
  * Escanea un directorio recursivamente.
  */
-async function scanDirectory(rootDir, projectId) {
+export async function scanDirectory(rootDir, projectId) {
   const nodes = [];
   const edges = [];
   const nodeMap = new Map();

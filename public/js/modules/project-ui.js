@@ -157,27 +157,20 @@ export function renderTabs() {
         </div>
     `;
 
-    // 8. File Tabs
+    // 8. Editor Tab (single tab, replaces individual file tabs)
     const openFiles = project.openFiles || [];
-    openFiles.forEach((file, idx) => {
-        const sanitizedPath = file.path.replace(/\\/g, '/');
+    if (openFiles.length > 0) {
+        const activeFile = openFiles.find(f => f.path.replace(/\\\\/g, '/') === project.activeFileId);
+        const activeClassName = project.activeTabId === 'editor' ? 'active' : '';
         tabsHtml += `
-            <div class="tab file-tab ${project.activeTabId === sanitizedPath ? 'active' : ''}" 
-                 data-tab-id="${sanitizedPath}"
-                 data-tab-type="file"
-                 data-tab-idx="${idx}"
-                 draggable="true"
-                 ondragstart="window.onTabDragStart(event, '${sanitizedPath}', 'file')"
-                 ondragend="window.onTabDragEnd(event)"
-                 ondragover="window.onTabDragOver(event)"
-                 ondragleave="window.onTabDragLeave(event)"
-                 ondrop="window.onTabDrop(event, '${sanitizedPath}', 'file')"
-                 onclick="window.switchTab('${sanitizedPath}')">
-                <span>📄 ${file.name}</span>
-                <span class="tab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanitizedPath}')">✕</span>
+            <div class="tab editor-tab ${activeClassName}" 
+                 data-tab-id="editor"
+                 data-tab-type="editor"
+                 onclick="window.switchTab('editor')">
+                <span>📝 Editor (${openFiles.length})</span>
             </div>
         `;
-    });
+    }
 
     tabsNav.innerHTML = tabsHtml;
     window.updateViewVisibility?.();

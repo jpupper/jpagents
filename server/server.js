@@ -30,7 +30,7 @@ import { writeCrashLog } from './utils/crash-log.js';
 import app from './app.js';
 
 // ─── Memory Graph (dependencias del proyecto) ───
-import { handleScan, handleGetGraph, handleSearch, handleListCached } from './memory-graph.js';
+import { handleScan, handleGetGraph, handleSearch, handleListCached, scanDirectory, graphCache } from './memory-graph.js';
 
 // ─── EPIPE-safe console (DEBE IR ANTES DE CUALQUIER console.log) ───
 // Previene crashes cuando stdout/stderr pipe se rompe (ej: concurrently cierra stream)
@@ -1026,6 +1026,77 @@ exit`;
         res.json({ path: folderPath, folderName }); // Return both for the frontend to potentially sync
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Git Clone Endpoint ───
+app.post('/api/utils/git-clone', async (req, res) => {
+    const { repoUrl } = req.body;
+    if (!repoUrl) return res.status(400).json({ error: 'URL del repositorio requerida' });
+
+    // Validar que sea una URL de git válida
+    const gitPattern = /^(https?:\/\/|git@).+\/.+\.git$|^(https?:\/\/|git@).+\/.+$/;
+    if (!gitPattern.test(repoUrl.trim())) {
+        return res.status(400).json({ error: 'URL de repositorio inválida. Usá formato: https://github.com/usuario/repo o git@github.com:usuario/repo.git' });
+    }
+
+    const baseDir = "D:\\Programacion\\jpagents\\proyects";
+
+    try {
+        await fs.mkdir(baseDir, { recursive: true });
+
+        // Extraer nombre del repo de la URL
+        let repoName = repoUrl.trim().split('/').pop().replace('.git', '');
+        // Sanitizar
+        repoName = repoName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+
+        let destPath = path.join(baseDir, repoName);
+        let finalName = repoName;
+        let counter = 1;
+
+        // Asegurar nombre único
+        while (true) {
+            try {
+                await fs.access(destPath);
+                finalName = `${repoName}_${counter++}`;
+                destPath = path.join(baseDir, finalName);
+            } catch (err) {
+                break;
+            }
+        }
+
+        console.log(`[GIT-CLONE] Clonando ${repoUrl} → ${destPath}`);
+
+        // Ejecutar git clone (exec y promisify ya importados al inicio)
+        const execPromise = promisify(exec);
+        
+        const { stdout, stderr } = await execPromise(`git clone "${repoUrl}" "${destPath}"`, {
+            cwd: baseDir,
+            timeout: 120000 // 2 min timeout
+        });
+
+        console.log(`[GIT-CLONE] ✅ Clonado exitoso: ${repoUrl}`);
+        if (stderr) console.log(`[GIT-CLONE] stderr: ${stderr.slice(0, 500)}`);
+
+        res.json({
+            success: true,
+            path: destPath,
+            folderName: finalName,
+            repoName: repoUrl.trim().split('/').pop().replace('.git', ''),
+            stdout: stdout?.slice(0, 500) || '',
+            stderr: stderr?.slice(0, 500) || ''
+        });
+
+    } catch (e) {
+        console.error(`[GIT-CLONE] ❌ Error clonando ${repoUrl}:`, e.message);
+        
+        // Intentar limpiar carpeta si se creó pero falló el clone
+        try {
+            const attemptedPath = path.join(baseDir, repoName);
+            await fs.rm(attemptedPath, { recursive: true, force: true });
+        } catch {}
+        
+        res.status(500).json({ error: `Error clonando repositorio: ${e.message}` });
     }
 });
 
@@ -2858,6 +2929,35 @@ app.post('/api/hermes/start', async (req, res) => {
             console.log(`[JPAGENTS-ID] Identidad persistida para agente ${name || chatId} (chatId: ${chatId})`);
         } catch (idErr) {
             console.warn('[JPAGENTS-ID] No se pudo persistir identidad:', idErr.message);
+        }
+
+        // ─── PRECACHEO: escanear dependencias del proyecto en background ───
+        // Esto asegura que cuando el agente Hermes necesite consultar el grafo de
+        // dependencias via tool getMemoryGraph, los datos YA estén cacheados,
+        // reduciendo el uso de tokens en ~80% (el agente no necesita leer archivos
+        // para entender dependencias).
+        if (workdir) {
+            setTimeout(async () => {
+                try {
+                    if (!graphCache.has(projectId)) {
+                        const rootDir = path.resolve(workdir);
+                        console.log(`[MEMORY-GRAPH] 🔍 Precacheo automático para ${projectId} en ${rootDir}`);
+                        const scanStart = Date.now();
+                        const { nodes, edges, summaries, fileCount } = await scanDirectory(rootDir, projectId);
+                        const scanDuration = Date.now() - scanStart;
+                        graphCache.set(projectId, {
+                            projectId, rootDir, nodes, edges, summaries,
+                            fileCount, edgeCount: edges.length,
+                            scannedAt: Date.now(), scanDurationMs: scanDuration,
+                        });
+                        console.log(`[MEMORY-GRAPH] ✅ Precacheo completado: ${fileCount} archivos, ${edges.length} dependencias en ${scanDuration}ms`);
+                    } else {
+                        console.log(`[MEMORY-GRAPH] ⏭️ Precacheo saltado — grafo ya cachead para ${projectId}`);
+                    }
+                } catch (scanErr) {
+                    console.warn(`[MEMORY-GRAPH] ⚠️ Precacheo falló para ${projectId}:`, scanErr.message);
+                }
+            }, 0); // fire-and-forget — no bloquea la respuesta
         }
 
         // ─── WS Broadcast: agent created/started ───

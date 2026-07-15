@@ -1723,6 +1723,55 @@ textarea {
   height: 100%;
 }
 
+.editor-subtabs {
+  display: flex;
+  background: #0d1117;
+  border-bottom: 1px solid var(--border-color);
+  overflow-x: auto;
+  flex-shrink: 0;
+  min-height: 36px;
+  gap: 0;
+}
+
+.editor-subtab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border-color);
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.editor-subtab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-color);
+}
+
+.editor-subtab.active {
+  background: #161b22;
+  color: var(--text-color);
+  border-bottom: 2px solid var(--accent-color, #58a6ff);
+}
+
+.editor-subtab .subtab-close {
+  font-size: 0.7rem;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+  padding: 2px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.editor-subtab .subtab-close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .editor-header {
   padding: 0.8rem 1.5rem;
   background: #161b22;

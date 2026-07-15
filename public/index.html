@@ -32,6 +32,8 @@
               <button id="new-chat" class="btn-primary" title="Nuevo Proyecto">+</button>
               <button id="scan-folder-sidebar" class="btn-icon-sidebar"
                 title="Abrir Carpeta de Proyecto Existente">📁</button>
+              <button id="clone-github-btn" class="btn-icon-sidebar"
+                title="Clonar Repositorio de GitHub">🐙</button>
               <button onclick="window.handleDeleteAllClick(event)" class="btn-danger-outline btn-delete-all" title="Borrar todos los proyectos">🗑️
                 Todo</button>
             </div>
@@ -660,6 +662,7 @@
 
         <!-- Editor View -->
         <div id="editor-tab-content" class="tab-content hidden">
+          <div id="editor-subtabs" class="editor-subtabs"></div>
           <div class="editor-header">
             <h3 id="current-filename">Archivo.js</h3>
             <div id="pending-actions" class="pending-actions hidden">

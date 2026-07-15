@@ -15,6 +15,7 @@ import fs from 'fs';
 import sqlite3 from 'sqlite3';
 import os from 'os';
 import { spawnHermes, findHermesPath, extractPanelResponse, extractSessionId } from './hermes-executor.js';
+import { logAgentTrace } from '../agents/agent_trace_logger.js';
 
 /**
  * Extrae la respuesta limpia del stdout de Hermes.
@@ -202,6 +203,9 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
         }
         messages.push({ role: 'user', content: query });
 
+        // ─── AGENT HISTORY TRACE: log thinking ───
+        logAgentTrace(projectId, chatId, 'thinking', { query: query.slice(0, 200) }).catch(() => {});
+
         try {
             const result = await client.chat(
                 messages,
@@ -217,12 +221,24 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
                         // 🐛 BUGFIX: Hermes emite DOS tool events por accion:
                         // 1. Al empezar: {name, status:"running"} — sin emoji ni preview
                         // 2. Al terminar: {name, emoji, preview, result, status:"completed"}
-                        // Solo mostramos el segundo (tiene contenido util). El primero
-                        // es ruido — un ⚡ search_files... sin contexto que ensucia el progreso.
+                        // Para el display solo mostramos el segundo (tiene contenido util).
+                        // Para las TRACES (Agent History Matrix) loggeamos AMBOS.
                         const emoji = toolEvent.emoji;
                         const preview = toolEvent.preview || toolEvent.result || '';
-                        if (!emoji && !preview) return; // skip bare start events
-                        
+                        const isStart = !emoji && !preview;
+                        const isFailed = toolEvent.status === 'failed';
+
+                        // ─── AGENT HISTORY TRACE ───
+                        if (isStart) {
+                            // Start event → tool_call trace
+                            logAgentTrace(projectId, chatId, 'tool_call', { tool: toolEvent.name }).catch(() => {});
+                        } else {
+                            // Complete/failed event → tool_result trace
+                            logAgentTrace(projectId, chatId, 'tool_result', { tool: toolEvent.name, emoji, preview: preview.slice(0, 80), success: !isFailed }).catch(() => {});
+                        }
+
+                        if (isStart) return; // skip bare start events for display
+
                         const displayEmoji = emoji || '⚡';
                         const line = preview
                             ? `${displayEmoji} ${toolEvent.name}: "${preview.slice(0, 80)}"`
@@ -242,7 +258,13 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
                 {
                     model: model || 'hermes-agent',
                     stream: true,
-                    sessionId: prevSessionId,
+                    // 🐛 BUGFIX: NO reusar sessionId de corridas anteriores.
+                    // El contexto de conversación ya se inyecta inline en finalMessage
+                    // por el handler /api/hermes/message (server.js:3206-3211).
+                    // Reusar sessionId causa que el Gateway trate la request como
+                    // "continuación sin re-ejecutar el loop de agente", omitiendo
+                    // tool events (hermes.tool.progress) y rompiendo la UI de progreso.
+                    // sessionId: prevSessionId,
                 }
             );
 
@@ -530,6 +552,9 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
             status: 'running',
             name: instance.name || chatId
         });
+
+        // ─── AGENT HISTORY TRACE: log user_input ───
+        logAgentTrace(projectId, chatId, 'user_input', { message: message.slice(0, 500) }).catch(() => {});
 
         try {
             const result = await this._runHermesQuery(instanceKey, projectId, instance.workdir, message, instance.model);
@@ -856,13 +881,18 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
 
     // --- WebSocket helpers ---
     registerWSClient(ws) {
+        console.log('[WS-BRIDGE] registerWSClient — _wsClients antes:', this._wsClients.size);
         this._wsClients.add(ws);
-        ws.on('close', () => this._wsClients.delete(ws));
+        ws.on('close', () => {
+            console.log('[WS-BRIDGE] Cliente WS desconectado, _wsClients restantes:', this._wsClients.size - 1);
+            this._wsClients.delete(ws);
+        });
 
         // ─── RESYNC: Re-enviar estado actual de TODAS las instancias al cliente recién conectado ───
         // Esto evita que tras una reconexion WS, el frontend muestre todos los agentes como idle
         // cuando en realidad hay agentes corriendo (bug de "lucecita naranja").
         try {
+            console.log('[WS-BRIDGE] Resync para', this.instances.size, 'instancias');
             for (const [instanceKey, instance] of this.instances) {
                 const statusMsg = JSON.stringify({
                     event: 'hermes:status',
@@ -879,7 +909,9 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
     }
 
     _broadcastLog(instanceKey, projectId, type, text) {
+        console.log('[WS-BROADCAST] 📤 _broadcastLog instanceKey:', instanceKey, 'type:', type, 'text preview:', (text||'').slice(0,60));
         const msg = JSON.stringify({ event: 'hermes:log', instanceKey, projectId, type, text, timestamp: Date.now() });
+        console.log('[WS-BROADCAST] _wsClients count:', this._wsClients.size);
         for (const ws of this._wsClients) {
             try { ws.send(msg); } catch { this._wsClients.delete(ws); }
         }

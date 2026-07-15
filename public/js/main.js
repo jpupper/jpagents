@@ -1209,8 +1209,22 @@ async function loadData(shouldScan = true) {
 
         if (Array.isArray(data)) {
             state.projects = data.map(sanitizeProject).filter(_filterDeleting);
+            // Migration: old file-path activeTabId → 'editor' + activeFileId
+            for (const p of state.projects) {
+                if (p.activeTabId && p.openFiles && p.openFiles.some(f => f.path.replace(/\\/g, '/') === p.activeTabId)) {
+                    p.activeFileId = p.activeTabId;
+                    p.activeTabId = 'editor';
+                }
+            }
         } else if (data && typeof data === 'object') {
             state.projects = (data.projects || []).map(sanitizeProject).filter(_filterDeleting);
+            // Migration: old file-path activeTabId → 'editor' + activeFileId
+            for (const p of state.projects) {
+                if (p.activeTabId && p.openFiles && p.openFiles.some(f => f.path.replace(/\\/g, '/') === p.activeTabId)) {
+                    p.activeFileId = p.activeTabId;
+                    p.activeTabId = 'editor';
+                }
+            }
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
             state.namingPrompt = data.namingPrompt || DEFAULT_NAMING_PROMPT;
             state.secondAgentConfig = data.secondAgentConfig || {
@@ -1289,12 +1303,12 @@ async function loadData(shouldScan = true) {
             if (Array.isArray(p.chats)) {
                 for (const chat of p.chats) {
                     const oldMsgs = _oldChatMessages.get(chat.id);
-                    // 🐛 CRITICAL BUGFIX: Cambiar > por >=.
-                    // Cuando hay un progressMsg NUEVO en oldMsgs y el servidor trae
-                    // un progressMsg VIEJO (de sesion anterior), las longitudes son IGUALES
-                    // pero los mensajes son distintos. Con > no se restauraba, perdiendo
-                    // el progressMsg en vivo y las herramientas 1x1 nunca aparecian.
+                    const oldLen = oldMsgs ? oldMsgs.length : 0;
+                    const newLen = chat.messages ? chat.messages.length : 0;
                     if (oldMsgs && oldMsgs.length >= chat.messages.length) {
+                        if (oldMsgs.length > chat.messages.length) {
+                            console.log('[LOADDATA] 🐛 Restoring messages for chat', chat.id, 'old:', oldMsgs.length, 'new:', chat.messages.length);
+                        }
                         chat.messages = oldMsgs;
                     }
                 }
@@ -1444,6 +1458,159 @@ function setupOpenFolderExplorer() {
 
 }   // function setupOpenFolderExplorer()
 
+
+// ─── GitHub Clone Modal ───
+window.showCloneGithubModal = function () {
+    // Si ya existe, solo mostrarlo
+    let existing = document.getElementById('clone-github-modal');
+    if (existing) {
+        existing.style.display = 'flex';
+        return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal';
+    overlay.id = 'clone-github-modal';
+    overlay.style.display = 'flex';
+
+    overlay.innerHTML = `
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3>🐙 Clonar Repositorio de GitHub</h3>
+                <button class="close-modal" onclick="this.closest('.modal').remove()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 2rem;">
+                <div class="config-field">
+                    <label style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: block;">
+                        🔗 URL del Repositorio
+                    </label>
+                    <p class="field-help" style="margin-bottom: 12px; font-size: 0.85rem; opacity: 0.7;">
+                        Pegá la URL del repositorio que querés clonar (HTTPS o SSH).
+                    </p>
+                    <input type="text" id="clone-repo-url" class="config-input"
+                        placeholder="https://github.com/usuario/repo.git"
+                        style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-primary); font-family: 'Outfit', sans-serif;"
+                        autofocus />
+                </div>
+                <div id="clone-status" class="hidden" style="margin-top: 1rem; padding: 1rem; border-radius: 10px; background: rgba(255,255,255,0.03);"></div>
+            </div>
+            <div class="modal-footer" style="gap: 12px;">
+                <button class="btn-danger-outline" onclick="this.closest('.modal').remove()" style="width: auto; padding-inline: 1.5rem;">Cancelar</button>
+                <button class="btn-primary" id="clone-github-execute" style="width: auto; padding-inline: 2rem; display: flex; align-items: center; gap: 8px;">
+                    🚀 Clonar
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Handler del botón Clonar
+    document.getElementById('clone-github-execute').onclick = async () => {
+        const urlInput = document.getElementById('clone-repo-url');
+        const statusDiv = document.getElementById('clone-status');
+        const cloneBtn = document.getElementById('clone-github-execute');
+        const repoUrl = urlInput.value.trim();
+
+        if (!repoUrl) {
+            statusDiv.className = '';
+            statusDiv.style.color = '#ff6b35';
+            statusDiv.textContent = '⚠️ Ingresá una URL de repositorio';
+            return;
+        }
+
+        // Validar formato de URL
+        if (!repoUrl.match(/^(https?:\/\/|git@)/)) {
+            statusDiv.className = '';
+            statusDiv.style.color = '#ff6b35';
+            statusDiv.textContent = '⚠️ URL inválida. Debe empezar con https:// o git@';
+            return;
+        }
+
+        // Deshabilitar UI durante el clonado
+        cloneBtn.disabled = true;
+        cloneBtn.innerHTML = '⏳ Clonando...';
+        urlInput.disabled = true;
+        statusDiv.className = '';
+        statusDiv.style.color = 'var(--text-primary)';
+        statusDiv.textContent = '🔄 Clonando repositorio...';
+
+        try {
+            const res = await fetch(`${API_BASE}/utils/git-clone`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repoUrl })
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                statusDiv.style.color = '#ff4444';
+                statusDiv.textContent = `❌ ${data.error || 'Error al clonar'}`;
+                // Re-habilitar
+                cloneBtn.disabled = false;
+                cloneBtn.innerHTML = '🚀 Clonar';
+                urlInput.disabled = false;
+                return;
+            }
+
+            statusDiv.style.color = '#4caf50';
+            statusDiv.textContent = `✅ Repositorio clonado exitosamente en:\n${data.path}`;
+
+            // Crear proyecto automáticamente apuntando a la carpeta clonada
+            try {
+                const repoDisplayName = data.repoName || repoUrl.split('/').pop().replace('.git', '');
+                const newProject = await createNewProject(repoDisplayName);
+                if (newProject) {
+                    // Asignar la carpeta clonada al nuevo proyecto
+                    newProject.folder = data.path;
+                    newProject.isNew = true;
+
+                    const projRes = await fetch(`${API_BASE}/projects/set-folder`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectId: newProject.id, folderPath: data.path })
+                    });
+
+                    if (projRes.ok) {
+                        // Escanear la carpeta del proyecto clonado
+                        window.scanFolder(data.path, newProject.id);
+                    }
+
+                    renderProjectList();
+                    renderTabs();
+
+                    statusDiv.innerHTML = `✅ Repositorio clonado y proyecto <strong>${repoDisplayName}</strong> creado.`;
+                }
+            } catch (projectErr) {
+                console.error('Error creando proyecto:', projectErr);
+                statusDiv.innerHTML = `✅ Repositorio clonado en <code>${data.path}</code>.<br>
+                    ⚠️ No se pudo crear el proyecto automáticamente. Recargá la página.`;
+            }
+
+            // Cambiar botón a success
+            cloneBtn.innerHTML = '✅ Clonado';
+            setTimeout(() => {
+                overlay.remove();
+            }, 2500);
+
+        } catch (e) {
+            console.error('Error cloning repository:', e);
+            statusDiv.style.color = '#ff4444';
+            statusDiv.textContent = `❌ Error de conexión: ${e.message}`;
+            cloneBtn.disabled = false;
+            cloneBtn.innerHTML = '🚀 Clonar';
+            urlInput.disabled = false;
+        }
+    };
+
+    // Enter en el input también ejecuta el clone
+    document.getElementById('clone-repo-url').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('clone-github-execute').click();
+        }
+    });
+};
 
 
 async function saveData(skipSync = false) {
@@ -2737,7 +2904,7 @@ function applyMatrixViewMode(projectId) {
 
     const chats = project.chats || [];
     const isChat = chats.some(c => c.id === project.activeTabId);
-    const isOpenFile = project.openFiles.some(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+    const isEditor = project.activeTabId === 'editor';
 
     if (isChat) {
         saveFileBtn.classList.add('hidden');
@@ -2847,10 +3014,12 @@ function applyMatrixViewMode(projectId) {
         renderAdminMessages();
         // Detener health-check al salir de un chat
         stopHealthCheck();
-    } else if (isOpenFile) {
+    } else if (isEditor) {
         saveFileBtn.classList.remove('hidden');
         editorTabContent.classList.remove('hidden');
-        const file = project.openFiles.find(f => f.path.replace(/\\/g, '/') === project.activeTabId);
+        window.renderFileSubTabs();
+        const activeFileId = project.activeFileId;
+        const file = activeFileId ? project.openFiles.find(f => f.path.replace(/\\/g, '/') === activeFileId) : null;
         if (file) {
             currentFilename.textContent = file.name;
             pendingActions.classList.toggle('hidden', !file.pendingContent);
@@ -2963,6 +3132,30 @@ window.switchTab = (id) => {
     }
 };
 
+/**
+ * Render file sub-tabs inside the editor view
+ */
+window.renderFileSubTabs = function() {
+    const p = window.getActiveProject();
+    const container = document.getElementById('editor-subtabs');
+    if (!container || !p) return;
+    const files = p.openFiles || [];
+    if (files.length === 0) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+    container.classList.remove('hidden');
+    const activeId = p.activeFileId;
+    container.innerHTML = files.map(f => {
+        const sanPath = f.path.replace(/\\/g, '/');
+        const isActive = sanPath === activeId;
+        return `<div class="editor-subtab ${isActive ? 'active' : ''}" onclick="window.openFile('${sanPath.replace(/'/g, "\\\\'")}')">
+            📄 ${f.name}
+            <span class="subtab-close" onclick="event.stopPropagation(); window.closeFileTab('${sanPath.replace(/'/g, "\\\\'")}')">✕</span>
+        </div>`;
+    }).join('');
+};
 
 window.addChat = async () => {
     const p = getActiveProject();
@@ -3003,7 +3196,8 @@ window.deleteChat = (id) => {
         if (openChats.length > 0) {
             p.activeTabId = openChats[0].id;
         } else if (p.openFiles.length > 0) {
-            p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
+            p.activeFileId = p.openFiles[0].path.replace(/\\/g, '/');
+            p.activeTabId = 'editor';
         } else {
             p.activeTabId = null;
         }
@@ -5104,7 +5298,7 @@ async function processAgentActions(text, project, chat) {
                 const openFile = project.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
                 if (openFile) {
                     openFile.content = resultText;
-                    if (project.activeTabId === sanPath) updateViewVisibility();
+                    if (project.activeFileId === sanPath) updateViewVisibility();
                 }
             } else if (toolName === 'write_file' || toolName === 'WRITE') {
                 const fileName = (toolArgs.path || toolArgs.fileName || "").split('/').pop();
@@ -5730,7 +5924,8 @@ async function performWrite(fileName, content, project, chat) {
             project.openFiles.push({ path: sanPath, name: displayName, content: oldContent, oldContent: oldContent, pendingContent: content });
         }
         if (state.autoOpenModifiedFiles) {
-            project.activeTabId = sanPath;
+            project.activeFileId = sanPath;
+            project.activeTabId = 'editor';
             renderTabs();
             updateViewVisibility();
         }
@@ -5805,7 +6000,8 @@ async function performWrite(fileName, content, project, chat) {
         }
 
         if (state.autoOpenModifiedFiles) {
-            project.activeTabId = sanPath;
+            project.activeFileId = sanPath;
+            project.activeTabId = 'editor';
             renderTabs();
             updateViewVisibility();
         }
@@ -6711,6 +6907,9 @@ ${rest}`;
     if (scanFolderSidebarBtn) scanFolderSidebarBtn.onclick = window.safePickFolder;
     folderPathInput.oninput = (e) => window.scanFolder(e.target.value, state.activeProjectId);
     newChatBtn.onclick = createNewProject;
+    // Botón de clonar GitHub
+    const cloneGithubBtn = document.getElementById('clone-github-btn');
+    if (cloneGithubBtn) cloneGithubBtn.onclick = window.showCloneGithubModal;
     const thinkingToggleChat = document.getElementById('deepseek-thinking-toggle-chat');
     if (thinkingToggleChat) {
         thinkingToggleChat.checked = state.deepseekThinking;
@@ -7644,19 +7843,73 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     try {
         progressWs = new WebSocket(`ws://${window.location.hostname}:4699/ws/hermes`);
         chat._progressWs = progressWs;
+        console.log('[WS-PROGRESS] 🔌 WebSocket creado para instanceKey:', instanceKey, 'progressMsgId:', progressMsgId);
         // Throttle para evitar re-renders excesivos durante progreso rápido
         let progressRenderTimer = null;
+        progressWs.onopen = () => {
+            console.log('[WS-PROGRESS] ✅ WebSocket CONECTADO para instanceKey:', instanceKey);
+        };
         progressWs.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                // Diagnostic: log ALL hermes:log events, not just matching
+                if (data.event === 'hermes:log') {
+                    if (data.instanceKey === instanceKey) {
+                        console.log('[WS-PROGRESS] ✅ MATCH instanceKey:', instanceKey, 'type:', data.type, 'text preview:', (data.text||'').slice(0,60));
+                    }
+                }
                 if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
                     if (data.type === 'progress' || data.type === 'stdout') {
-                        // 🐛 BUGFIX: Usar getActiveChat() en vez del chat del closure.
-                        // Después de saveData→loadData (sync:stateUpdate), el objeto chat
-                        // del closure queda stale y sus mensajes no son los que renderMessages() lee.
-                        // Siempre buscar el progressMsg en el chat ACTIVO actual.
+                        // 🐛 BUGFIX V6: Buscar EN VIVO el progressMsg en el proyecto/chat correcto.
+                        // getActiveChat() puede devolver un chat distinto al que se pusheó el
+                        // progressMsg si loadData() (sync:stateUpdate, visibilitychange,
+                        // BroadcastChannel) reemplazó state.projects entre la creación del
+                        // progressMsg y la llegada del primer evento WS.
+                        // En vez de fallar silenciosamente (el contenido NUNCA se actualiza y
+                        // las herramientas no aparecen), buscamos el progressMsg en TODOS los
+                        // chats del proyecto, y si no existe lo CREAMOS sobre la marcha.
+                        let resolvedChat = null;
+                        let progressChatMsg = null;
+                        // 1. Try active chat first (most common case, fastest path)
                         const activeChat = getActiveChat();
-                        const progressChatMsg = activeChat?.messages?.find(m => m.id === progressMsgId);
+                        if (activeChat) {
+                            progressChatMsg = activeChat.messages?.find(m => m.id === progressMsgId);
+                            if (progressChatMsg) resolvedChat = activeChat;
+                        }
+                        // 2. If not found, search the project identified by instanceKey
+                        if (!progressChatMsg) {
+                            const [pkProjectId, pkChatId] = instanceKey.split(':');
+                            const targetProj = state.projects?.find(p => p.id === pkProjectId);
+                            if (targetProj) {
+                                const targetChat = targetProj.chats?.find(c => c.id === pkChatId);
+                                if (targetChat) {
+                                    progressChatMsg = targetChat.messages?.find(m => m.id === progressMsgId);
+                                    if (progressChatMsg) resolvedChat = targetChat;
+                                }
+                            }
+                        }
+                        // 3. LAST RESORT: Create a new progressMsg on-the-fly in the correct chat
+                        if (!progressChatMsg) {
+                            console.warn('[WS-PROGRESS] ⚠️ progressMsg NOT FOUND — CREANDO nuevo en el chat destino');
+                            const [pkProjectId, pkChatId] = instanceKey.split(':');
+                            const targetProj = state.projects?.find(p => p.id === pkProjectId);
+                            if (targetProj) {
+                                const targetChat = targetProj.chats?.find(c => c.id === pkChatId);
+                                if (targetChat && targetChat.id === getActiveChat()?.id) {
+                                    progressChatMsg = {
+                                        role: 'system',
+                                        id: progressMsgId,
+                                        content: '⚡ Invocando Hermes...\n',
+                                        timestamp: Date.now(),
+                                        isProgress: true,
+                                        minimized: false
+                                    };
+                                    targetChat.messages.push(progressChatMsg);
+                                    resolvedChat = targetChat;
+                                    console.log('[WS-PROGRESS] ✅ NUEVO progressMsg creado en vuelo para:', progressMsgId);
+                                }
+                            }
+                        }
                         if (progressChatMsg) {
                                 // Replace literal \n (backslash + n) with actual newlines for cleaner formatting of multiline arguments/diffs
                                 const processedText = data.text.replace(/\\n/g, '\n');
@@ -7752,7 +8005,11 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 progressRenderTimer = setTimeout(() => {
                                     progressRenderTimer = null;
                                     const currentActiveChat = getActiveChat();
-                                    if (currentActiveChat && currentActiveChat.id === chat.id) {
+                                    // 🐛 BUGFIX V6: Usar resolvedChat en vez de chat (closure puede estar stale).
+                                    // El resolvedChat se resolvió EN VIVO arriba desde state.projects,
+                                    // mientras que chat.id del closure puede apuntar a un objeto reemplazado
+                                    // por loadData().
+                                    if (currentActiveChat && resolvedChat && currentActiveChat.id === resolvedChat.id) {
                                         renderMessages(false);
                                         chatMessages.scrollTop = chatMessages.scrollHeight;
                                     }
@@ -7761,10 +8018,10 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                         }
                     }
                 }
-            } catch(e) {}
+            } catch(e) { console.warn('[WS-PROGRESS] ❌ Error en onmessage:', e.message); }
         };
-        progressWs.onerror = () => {};
-    } catch(e) {}
+        progressWs.onerror = (err) => { console.warn('[WS-PROGRESS] ❌ WebSocket ERROR:', err.message || err); };
+    } catch(e) { console.warn('[WS-PROGRESS] ❌ Error creando WebSocket:', e.message); }
 
     try {
         const controller = new AbortController();
@@ -8007,9 +8264,12 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
                 renderSessionSummary(chat.sessionChanges, project);
 
                 // Auto-abrir archivos modificados en tabs del proyecto (sin robar foco)
+                // Solo abre cuando el toggle está explícitamente TRUE.
+                // Si está false, undefined, o ausente → NO abrir.
                 for (const change of backendChanges) {
                     if (!change.fileName) continue;
-                    const fullPath = pathJoin(project.folder, change.fileName).replace(/\\/g, '/');
+                    if (!state.autoOpenModifiedFiles) break; // skip all if toggle is off or not set
+                    const fullPath = pathJoin(project.folder, change.fileName).replace(/\\\\/g, '/');
                     const alreadyOpen = project.openFiles.some(f => f.path.replace(/\\/g, '/') === fullPath);
                     if (!alreadyOpen) {
                         try {

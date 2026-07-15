@@ -302,8 +302,17 @@ window.openFile = async function (path, options = {}) {
     if (!p) return;
 
     const san = path.replace(/\\/g, '/');
-    const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
-    if (existing) { if (setActive) { p.activeTabId = san; window.renderTabs(); } return; }
+        const existing = p.openFiles.find(f => f.path.replace(/\\/g, '/') === san);
+    if (existing) {
+        if (setActive) {
+            p.activeFileId = san;
+            p.activeTabId = 'editor';
+            window.renderTabs();
+            window.renderFileSubTabs();
+            window.updateViewVisibility();
+        }
+        return;
+    }
     try {
         const res = await window.fetchWithLog(`${window.API_BASE}/files/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: san }) });
         if (!res.ok) {
@@ -312,8 +321,12 @@ window.openFile = async function (path, options = {}) {
         }
         const data = await res.json();
         p.openFiles.push({ path: san, name: san.split('/').pop(), content: data.content });
-        if (setActive) p.activeTabId = san;
+        if (setActive) {
+            p.activeFileId = san;
+            p.activeTabId = 'editor';
+        }
         window.renderTabs();
+        window.renderFileSubTabs();
         window.saveData();
     } catch (e) {
         console.error("Exception opening file:", e);
@@ -324,24 +337,26 @@ window.closeFileTab = function (path) {
     const p = window.getActiveProject();
     if (!p) return;
     p.openFiles = p.openFiles.filter(f => f.path.replace(/\\/g, '/') !== path);
-    if (p.activeTabId === path) {
-        if (p.chats.length > 0) {
-            p.activeTabId = p.chats[0].id;
-        } else if (p.openFiles.length > 0) {
-            p.activeTabId = p.openFiles[0].path.replace(/\\/g, '/');
+    // If closed file was the active sub-tab, switch to first remaining file or leave editor
+    if (p.activeFileId === path) {
+        if (p.openFiles.length > 0) {
+            p.activeFileId = p.openFiles[0].path.replace(/\\/g, '/');
+            p.activeTabId = 'editor';
         } else {
-            p.activeTabId = null;
+            p.activeFileId = null;
+            p.activeTabId = p.chats && p.chats.length > 0 ? p.chats[0].id : null;
         }
     }
     window.renderTabs();
+    window.renderFileSubTabs();
     window.saveData();
 };
 
 window.saveActiveFile = async function () {
     const p = window.getActiveProject();
-    if (!p || !p.activeTabId) return;
+    if (!p || !p.activeFileId) return;
 
-    const sanPath = p.activeTabId;
+    const sanPath = p.activeFileId;
     const file = p.openFiles.find(f => f.path.replace(/\\/g, '/') === sanPath);
     if (!file) return;
 
