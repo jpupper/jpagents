@@ -55,7 +55,8 @@ export function initMatrix(containerId, svgId) {
             if (filterProjectId && trace.projectId !== filterProjectId) return;
 
             if (!projectsMap[trace.projectId]) {
-                projectsMap[trace.projectId] = { name: `Proyecto: ${trace.projectId}`, children: [], type: 'project', id: trace.projectId };
+                const displayName = trace.projectName || `Proyecto: ${trace.projectId}`;
+                projectsMap[trace.projectId] = { name: displayName, children: [], type: 'project', id: trace.projectId };
                 if (!filterProjectId) {
                     root.children.push(projectsMap[trace.projectId]);
                 }
@@ -65,7 +66,8 @@ export function initMatrix(containerId, svgId) {
             let thread = targetNode.children.find(c => c.id === trace.agentId);
 
             if (!thread) {
-                thread = { name: `Agente: ${trace.agentId.substring(0, 8)}`, children: [], type: 'agent', id: trace.agentId };
+                const agentDisplayName = trace.agentName || `Agente: ${trace.agentId.substring(0, 8)}`;
+                thread = { name: agentDisplayName, children: [], type: 'agent', id: trace.agentId };
                 targetNode.children.push(thread);
             }
 

@@ -24,7 +24,7 @@ export function sanitizeProject(p) {
             model: c.model || p.model || '',
             skills: Array.isArray(c.skills) ? c.skills : []
         })) : [
-            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [] }
+            { id: 'chat-' + generateId(), name: 'Agente 1', messages: [], isThinking: false, mode: 'auto', lastProgress: Date.now(), isStopped: false, validationRetries: 0, model: p.model || '', skills: [], toggleStates: { autocommit: false, vps: false, ftp: false } }
         ],
         openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
         sessionChanges: p.sessionChanges || [],

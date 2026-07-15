@@ -337,6 +337,47 @@ import { cleanHermesResponse, extractTelegramSummary, hasResumenFormat, extractR
 app.get('/api/admin/traces', async (req, res) => {
     try {
         const traces = await getAgentTraces();
+
+        // Enrich traces with project/agent names from session state
+        const sessions = await loadSessions().catch(() => null);
+        if (sessions && sessions.projects) {
+            // Build lookup maps
+            const projectMap = {}; // projectId → projectName
+            const chatMap = {}; // chatId → { projectId, agentName }
+            for (const p of sessions.projects) {
+                projectMap[p.id] = p.name || p.id;
+                if (p.chats) {
+                    for (const c of p.chats) {
+                        chatMap[c.id] = {
+                            projectId: p.id,
+                            projectName: p.name || p.id,
+                            agentName: c.name || c.id
+                        };
+                    }
+                }
+            }
+
+            // Enrich each trace
+            for (const trace of traces) {
+                // Resolve project name
+                if (projectMap[trace.projectId]) {
+                    trace.projectName = projectMap[trace.projectId];
+                } else if (chatMap[trace.agentId]) {
+                    // Fallback: resolve project via agentId → chat lookup
+                    trace.projectName = chatMap[trace.agentId].projectName;
+                } else {
+                    trace.projectName = trace.projectId;
+                }
+
+                // Resolve agent name
+                if (chatMap[trace.agentId]) {
+                    trace.agentName = chatMap[trace.agentId].agentName;
+                } else {
+                    trace.agentName = trace.agentId;
+                }
+            }
+        }
+
         res.json(traces);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -345,8 +386,8 @@ app.get('/api/admin/traces', async (req, res) => {
 
 app.post('/api/admin/traces', async (req, res) => {
     try {
-        const { projectId, agentId, stepName, details } = req.body;
-        await logAgentTrace(projectId, agentId, stepName, details);
+        const { projectId, agentId, stepName, details, projectName, agentName } = req.body;
+        await logAgentTrace(projectId, agentId, stepName, details, projectName, agentName);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -682,8 +723,13 @@ app.post('/api/agent/chat', async (req, res) => {
         const threadIdToUse = threadId || "global";
         const projectIdToUse = projectId || "global";
 
-        // Log user input to traces for Requirement 2
-        await logAgentTrace(projectIdToUse, threadIdToUse, "user_input", { message: message });
+        // Load sessions early to resolve project/agent names for traces
+        const sessions = await loadSessions();
+        const project = sessions.projects?.find(p => p.id === projectIdToUse);
+        const chat = project?.chats?.find(c => c.id === threadIdToUse);
+
+        // Log user input to traces with resolved names
+        await logAgentTrace(projectIdToUse, threadIdToUse, "user_input", { message: message }, project?.name, chat?.name);
 
         const config = { 
             configurable: { thread_id: threadIdToUse, projectId: projectIdToUse },
@@ -692,8 +738,6 @@ app.post('/api/agent/chat', async (req, res) => {
 
 
         // Buscar carpeta del proyecto para guiar al agente
-        const sessions = await loadSessions();
-        const project = sessions.projects?.find(p => p.id === projectIdToUse);
         const projectFolder = project ? project.folder : process.cwd();
 
         const basePrompt = systemPrompt || `### 🚨 PROTOCOLO CRÍTICO DE OPERACIÓN (STRICT MCP) 🚨

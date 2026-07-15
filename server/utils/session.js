@@ -34,7 +34,9 @@ const BSON_SIZE_LIMIT_BYTES = 12 * 1024 * 1024; // 12MB JSON → ~15MB BSON (saf
  * @param {Object} [opts] - Opciones opcionales (para trim agresivo en retry)
  * @param {number} [opts.maxMessages] - Máx mensajes por chat (default: 50)
  * @param {number} [opts.maxMsgLength] - Máx chars por mensaje (default: 8000)
- * @param {boolean} [opts.aggressive] - Si true, elimina currentFiles y no preserva system msg
+ * @param {boolean} [opts.aggressive] - Si true, elimina currentFiles, openFiles content, sessionChanges, y objetos runtime
+ * @param {number} [opts.maxOpenFiles] - Máx archivos abiertos a conservar (default: 20)
+ * @param {number} [opts.maxFileContentLen] - Máx chars por contenido de archivo abierto (default: 10000)
  */
 function trimStateSize(state, opts = {}) {
     if (!state?.projects) return;
@@ -92,6 +94,53 @@ function trimStateSize(state, opts = {}) {
         }
     }
 
+    // ─── 🐛 BUGFIX: Recortar openFiles (puede acumular 20+ MB con contenido de archivos) ───
+    const maxOpenFiles = opts.maxOpenFiles ?? 20;
+    const maxFileContentLen = opts.maxFileContentLen ?? 10000;
+    for (const project of state.projects) {
+        if (Array.isArray(project.openFiles) && project.openFiles.length > 0) {
+            if (aggressive) {
+                // Modo agresivo: eliminar el contenido de TODOS los archivos
+                project.openFiles = project.openFiles.map(f => {
+                    const reduced = { path: f.path, name: f.name };
+                    if (f.isDirectory !== undefined) reduced.isDirectory = f.isDirectory;
+                    return reduced;
+                });
+            } else {
+                // Modo normal: limitar cantidad y truncar contenido
+                const files = project.openFiles.slice(-maxOpenFiles);
+                project.openFiles = files.map(f => ({
+                    path: f.path,
+                    name: f.name,
+                    isDirectory: f.isDirectory,
+                    content: typeof f.content === 'string' && f.content.length > maxFileContentLen
+                        ? f.content.slice(0, maxFileContentLen) + `\n[... truncado: original ${f.content.length} chars]`
+                        : (f.content || '')
+                }));
+            }
+            trimmedAny = true;
+        }
+    }
+
+    // ─── 🐛 BUGFIX: Recortar sessionChanges en cada chat (se acumulan sin límite) ───
+    for (const project of state.projects) {
+        if (!project.chats) continue;
+        for (const chat of project.chats) {
+            if (Array.isArray(chat.sessionChanges)) {
+                if (chat.sessionChanges.length > 10) {
+                    chat.sessionChanges = chat.sessionChanges.slice(-10);
+                    trimmedAny = true;
+                }
+            }
+            // En modo agresivo: limpiar objetos runtime que no deberían persistirse
+            if (aggressive) {
+                delete chat._progressWs;
+                delete chat.abortController;
+                delete chat.draftInput;
+            }
+        }
+    }
+
     // ─── Recortar chats del proyecto ───
     for (const project of state.projects) {
         if (project.chats) {
@@ -140,6 +189,27 @@ function trimStateSize(state, opts = {}) {
         }
         if (Array.isArray(state.godMessages) && state.godMessages.length > keepCount) {
             state.godMessages = state.godMessages.slice(-keepCount);
+        }
+
+        // ─── 🐛 BUGFIX: Si sigue muy grande, también eliminar contenido de openFiles ───
+        if (jsonSize > BSON_SIZE_LIMIT_BYTES) {
+            for (const project of state.projects) {
+                if (Array.isArray(project.openFiles) && project.openFiles.length > 0) {
+                    // Primera pasada: truncar contenido a 2000 chars
+                    // Segunda pasada: eliminar contenido por completo
+                    const stripContent = reductionLevel >= 2;
+                    project.openFiles = project.openFiles.map(f => {
+                        const reduced = { path: f.path, name: f.name };
+                        if (f.isDirectory !== undefined) reduced.isDirectory = f.isDirectory;
+                        if (!stripContent && typeof f.content === 'string') {
+                            reduced.content = f.content.length > 2000
+                                ? f.content.slice(0, 2000) + `\n[... truncado: original ${f.content.length} chars]`
+                                : f.content;
+                        }
+                        return reduced;
+                    });
+                }
+            }
         }
 
         jsonSize = Buffer.byteLength(JSON.stringify(state), 'utf8');

@@ -39,7 +39,7 @@ async function saveTraces() {
     }
 }
 
-export async function logAgentTrace(projectId, agentId, stepName, details) {
+export async function logAgentTrace(projectId, agentId, stepName, details, projectName, agentName) {
     try {
         await loadTraces();
 
@@ -51,6 +51,10 @@ export async function logAgentTrace(projectId, agentId, stepName, details) {
             stepName, // e.g., 'callModel', 'callTools', 'reflect'
             details // e.g., { tool: 'write_file', file: 'main.js' }
         };
+
+        // Store resolved names if provided (for display enrichment)
+        if (projectName) traceEntry.projectName = projectName;
+        if (agentName) traceEntry.agentName = agentName;
 
         memoryTraces.push(traceEntry);
         

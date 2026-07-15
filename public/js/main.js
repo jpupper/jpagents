@@ -3106,6 +3106,7 @@ window.switchTab = (id) => {
         saveChatDraft();
         state.activeProjectId = 'admin';
         renderTabs();
+        window.syncModeToggleUI?.();
         return;
     }
 
@@ -3116,6 +3117,7 @@ window.switchTab = (id) => {
 
         p.activeTabId = id;
         renderTabs();
+        window.syncModeToggleUI?.();
         renderMessages(); // To refresh chat if switching to a chat tab
 
         // ─── Renderizar tab de agentes si es el seleccionado ───
@@ -3178,6 +3180,7 @@ window.addChat = async () => {
     p.chats.push(newChat);
     p.activeTabId = newChat.id;
     renderTabs();
+    window.syncModeToggleUI?.();
     saveData();
 };
 
@@ -3203,6 +3206,7 @@ window.deleteChat = (id) => {
         }
     }
     renderTabs();
+    window.syncModeToggleUI?.();
     if (p.activeTabId === 'agents') renderAgentsTab();
     saveData();
 };
@@ -3216,6 +3220,7 @@ window.restoreAgent = (id) => {
         delete chat.closedAt;
         p.activeTabId = id;
         renderTabs();
+        window.syncModeToggleUI?.();
         renderAgentsTab();
         renderMessages();
         restoreChatDraft();
@@ -3749,6 +3754,7 @@ async function performAutomaticValidation(project, chat) {
     adminLog(`🔄 Validando proyecto de <strong>${chat.name}</strong> (Intento ${chat.validationRetries}/${state.maxValidationRetries})`);
 
     updateThinking(chat, true, "Validando proyecto", "Ejecutando run.bat y capturando pantalla...");
+    window.appendProgressToggle(chat, project, "🔄 Validando proyecto...");
 
     try {
         // 1. Check for run.bat
@@ -3971,7 +3977,9 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 projectId: project.id,
                 agentId: chat.id,
                 stepName: 'user_input',
-                details: { message: lastUserMsg ? lastUserMsg.content : "System trigger" }
+                details: { message: lastUserMsg ? lastUserMsg.content : "System trigger" },
+                projectName: project.name || '',
+                agentName: chat.name || ''
             })
         }).catch(() => { });
 
@@ -5115,6 +5123,7 @@ async function processAgentActions(text, project, chat) {
 
         logs.push({ type: 'info', message: `Llamando a herramienta MCP: **${toolName}**...` });
         updateThinking(chat, true, "Usando herramienta MCP", `Llamando a ${toolName}...`);
+        window.appendProgressToggle(chat, project, `🛠️ Llamando a ${toolName}...`);
 
         try {
             let toolArgs;
@@ -5372,6 +5381,7 @@ async function processAgentActions(text, project, chat) {
         const fileName = match[1].trim();
         logs.push({ type: 'info', message: `Solicitud de lectura: **${fileName}**` });
         updateThinking(chat, true, "Leyendo archivo", fileName);
+        window.appendProgressToggle(chat, project, `📖 Leyendo archivo ${fileName}`);
         const filePath = pathJoin(project.folder, fileName);
         const sanPath = filePath.replace(/\\/g, '/');
         try {
@@ -5410,6 +5420,7 @@ async function processAgentActions(text, project, chat) {
         const code = match[1].trim();
         logs.push({ type: 'info', message: `Ejecutando bloque de código dinámico...` });
         updateThinking(chat, true, "Ejecutando JS", "Node.js está procesando el script...");
+        window.appendProgressToggle(chat, project, `🐍 Ejecutando código JS...`);
 
         try {
             const res = await fetchWithLog(`${API_BASE}/execute/node`, {
@@ -5453,6 +5464,7 @@ async function processAgentActions(text, project, chat) {
         const content = match[2];
         logs.push({ type: 'info', message: `Escritura completa (WRITE): **${fileName}**` });
         updateThinking(chat, true, "Escribiendo archivo", fileName);
+        window.appendProgressToggle(chat, project, `📝 Escribiendo archivo ${fileName}`);
         const writeRes = await performWrite(fileName, content, project, chat);
 
         if (writeRes && writeRes.success) {
@@ -5484,6 +5496,7 @@ async function processAgentActions(text, project, chat) {
         const fileName = match[1].trim();
         logs.push({ type: 'info', message: `Modificación parcial (REPLACE): **${fileName}**` });
         updateThinking(chat, true, "Modificando archivo", fileName);
+        window.appendProgressToggle(chat, project, `🔧 Modificando archivo ${fileName}`);
         const blockContent = match[2];
 
         const filePath = pathJoin(project.folder, fileName);
@@ -5688,6 +5701,7 @@ async function autoRetry(errorContext, project, chat, retryCount = 0) {
     console.log(`🔄 AutoRetry ${retryCount + 1}/20: ${errorContext.substring(0, 100)}`);
 
     updateThinking(chat, true, "Auto-corrigiendo", "Corrigiendo formato y re-intentando...");
+    window.appendProgressToggle(chat, project, "🔄 Auto-corrigiendo errores...");
     renderMessages();
 
     // Sync Task State
@@ -7706,7 +7720,7 @@ window.renderTabs = function() {
  * Construye los prompts de modo según los estados de los toggles
  */
 function buildModeTogglePrompts(chat) {
-    const states = chat?.toggleStates || getModeToggleStates();  // 🐛 BUGFIX: leer del chat específico, no del DOM global
+    const states = chat?.toggleStates || { autocommit: false, vps: false, ftp: false };
     const prompts = state.modeTogglePrompts || {};
     const result = [];
 
@@ -7727,6 +7741,65 @@ function buildModeTogglePrompts(chat) {
 
     return result.join('\n\n');
 }
+
+// Exponer syncModeToggleUI para que switchTab y otros llamen directamente
+window.syncModeToggleUI = syncModeToggleUI;
+
+// ─── appendProgressToggle: Actualiza el progressMsg DIRECTAMENTE desde el código ───
+// Exactamente como funciona la thinking-bubble (updateThinking()), pero APPENDEANDO
+// líneas en vez de reemplazar. No depende del WebSocket handler, así que funciona
+// incluso si state.projects fue reemplazado por loadData() entre la creación del
+// progressMsg y la llegada de eventos WS.
+window.appendProgressToggle = function(chatArg, projectArg, formattedLine) {
+    if (!chatArg) return;
+    // Resolver LIVE desde state.projects (como V6)
+    const projId = projectArg?.id || chatArg._projectId || '';
+    const chatId = chatArg.id || '';
+    let liveChat = null;
+    if (projId && chatId) {
+        const liveProj = state.projects?.find(p => p.id === projId);
+        if (liveProj) liveChat = liveProj.chats?.find(c => c.id === chatId);
+    }
+    if (!liveChat) liveChat = chatArg; // fallback
+    
+    // Buscar progressMsg ACTIVO (no finished)
+    let pm = liveChat.messages?.find(m => m.isProgress && !m.finished);
+    // Si no hay activo, buscar el último finished (resucitar visualmente)
+    if (!pm) pm = liveChat.messages?.filter(m => m.isProgress).pop();
+    // 🐛 BUGFIX V7: Si NO existe ningún progressMsg, CREARLO bajo demanda
+    // (misma estrategia que el WS handler en V6). Así cubrimos el caso donde
+    // loadData() reemplazó el chat y el progressMsg original quedó en el chat
+    // huérfano, pero igual se necesita mostrar las herramientas.
+    if (!pm) {
+        pm = {
+            role: 'system',
+            id: 'progress-direct-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+            content: '⚡ Invocando Hermes...\n',
+            timestamp: Date.now(),
+            isProgress: true,
+            minimized: false
+        };
+        liveChat.messages.push(pm);
+        console.log('[PROGRESS-DIRECT] ✅ progressMsg creado bajo demanda en', chatId);
+    }
+    
+    if (pm) {
+        pm.content += formattedLine + '\n';
+        // 🐛 BUGFIX V7: Límite generoso (2000 líneas) en vez de 120
+        const lineCount = pm.content.split('\n').length;
+        if (lineCount > 2000) {
+            const linesArr = pm.content.split('\n');
+            pm.content = '⚡ Procesando...\n' + linesArr.slice(-1950).join('\n');
+        }
+        // Renderizar SOLO si es el chat activo (como updateThinking)
+        const activeChat = getActiveChat();
+        if (activeChat && activeChat.id === liveChat.id) {
+            renderMessages(false);
+            const cm = document.getElementById('chat-messages');
+            if (cm) cm.scrollTop = cm.scrollHeight;
+        }
+    }
+};
 
 // ──────────────────────────────────────────────
 // HERMES LOGIC — Maneja mensajes de chat común → Hermes Bridge
@@ -7848,6 +7921,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         let progressRenderTimer = null;
         progressWs.onopen = () => {
             console.log('[WS-PROGRESS] ✅ WebSocket CONECTADO para instanceKey:', instanceKey);
+            window.appendProgressToggle(chat, project, '🔌 Conectado a Hermes...');
         };
         progressWs.onmessage = (event) => {
             try {
@@ -7895,7 +7969,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                             const targetProj = state.projects?.find(p => p.id === pkProjectId);
                             if (targetProj) {
                                 const targetChat = targetProj.chats?.find(c => c.id === pkChatId);
-                                if (targetChat && targetChat.id === getActiveChat()?.id) {
+                                if (targetChat) {
                                     progressChatMsg = {
                                         role: 'system',
                                         id: progressMsgId,
@@ -7907,6 +7981,11 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                     targetChat.messages.push(progressChatMsg);
                                     resolvedChat = targetChat;
                                     console.log('[WS-PROGRESS] ✅ NUEVO progressMsg creado en vuelo para:', progressMsgId);
+                                    // Force render if this is the active chat so the user sees it immediately
+                                    if (targetChat.id === getActiveChat()?.id) {
+                                        renderMessages(false);
+                                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                                    }
                                 }
                             }
                         }
@@ -7995,9 +8074,9 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                 }
                             // Limitar líneas de progreso para no saturar
                             const lineCount = progressChatMsg.content.split('\n').length;
-                            if (lineCount > 120) {
+                            if (lineCount > 2000) {
                                 const lines_arr = progressChatMsg.content.split('\n');
-                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-100).join('\n');
+                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-1950).join('\n');
                             }
 
                             // --- THROTTLED RENDER: única fuente de verdad ---
@@ -8159,6 +8238,7 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         const _pj2 = state.projects?.find(p => p.id === project?.id);
         const _liveChat2 = _pj2?.chats?.find(c => c.id === chat?.id) || chat;
         const progressChatMsg = _liveChat2?.messages?.find(m => m.id === progressMsgId);
+        window.appendProgressToggle(chat, project, '✅ Respuesta recibida del servidor');
         if (progressChatMsg) {
             // Marcar como finalizado pero NO oculto: queda minimizado y visible
             progressChatMsg.finished = true;
