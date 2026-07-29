@@ -1,10 +1,8 @@
-# ANÁLISIS COMPLETO DE OPTIMIZACIÓN — JP Agents (ACTUALIZADO 29-Jul-2026)
+# ANÁLISIS COMPLETO DE OPTIMIZACIÓN — JP Agents (ACTUALIZADO 29-Jul-2026 2da Revisión)
 
-> ⚠️ **ESTE ANÁLISIS FUE ACTUALIZADO** respecto a la versión anterior (11-Jun-2026).
-> El análisis original asumía que los módulos no estaban creados. En realidad:
-> - TODOS los módulos existen en `public/js/modules/`
-> - TODOS están importados en main.js
-> - Pero las funciones NUNCA se eliminaron de main.js → **código duplicado**
+> ⚠️ **ÚLTIMA ACTUALIZACIÓN: 29-Jul-2026 (2da Revisión)**
+> Se completaron las migraciones de **models-ui.js**, **skills-ui.js**, **session.js**,
+> y **performAutomaticValidation** de agent-engine.js. main.js bajó de 9,475 a **8,605 líneas**.
 
 ---
 
@@ -27,160 +25,146 @@
 | **hermes-engine.js** | ✅ SIN duplicados | `triggerHermesLogic`, `handleHermesStatus` solo en módulo |
 | **terminal-ui.js** | ✅ SIN duplicados | `appendToTerminal`, `connectTerminalStream`, `runTerminalCommand` solo en módulo |
 | **project-ui.js** | ✅ SIN duplicados | `renderProjectList`, `renderTabs` solo en módulo |
+| **models-ui.js** | ✅ ✅ MIGRADO | `fetchModels`, `renderModelSelects`, `checkVisionCapability` — módulo actualizado con todas las features, main.js eliminado |
+| **skills-ui.js** | ✅ ✅ MIGRADO | `loadSkills`, `renderSkillsList`, `updateSkillSelects`, `renderAgentSkills`, `renderProjectSkills` — módulo actualizado con icons, badges, categorías, cache Hermes. main.js eliminado |
+| **session.js** | ✅ ✅ MIGRADO | `saveData`, `loadData`, `loadProjectFull`, `loadChatMessagesFront`, `sanitizeProjectLight` — migradas desde main.js. Fixeado bug de `_oldFullProjects` fuera de scope |
 
 ---
 
 ## 🔶 PARCIALMENTE HECHO (función existe EN AMBOS lados — main.js + módulo)
 
-Estos son los módulos que **TODAVÍA** tienen funciones duplicadas en `main.js`.
-**El trabajo restante**: importar desde el módulo, eliminar la copia de main.js,
-y asegurar que las versiones del módulo tengan la misma funcionalidad.
+Solo **agent-engine.js** tiene duplicaciones pendientes:
 
-### 1. models-ui.js — 3 funciones duplicadas en main.js
-| Función | main.js (línea) | Módulo exporta |
-|---------|----------------|----------------|
-| `fetchModels` | 2716 | ✅ |
-| `renderModelSelects` | 2733 | ✅ |
-| `checkVisionCapability` | 2813 | ✅ |
+### agent-engine.js — 4 funciones aún duplicadas en main.js
+| Función | main.js (línea) | Módulo exporta | Notas |
+|---------|----------------|----------------|-------|
+| `triggerAgentLogic` | ~3450 | ✅ (simplificada) | **1,231 líneas** en main.js, módulo tiene stub. Migración postergada por alta complejidad |
+| `processAgentActions` | ~4678 | ✅ (simplificada) | 663 líneas en main.js. Migración postergada |
+| `autoRetry` | ~5338 | ✅ (simplificada) | 213 líneas en main.js. Delegación vía `window.autoRetry` |
+| `performWrite` | ~5547 | ✅ (simplificada) | 74 líneas en main.js |
+| ~~`performAutomaticValidation`~~ | ~~3362~~ | ✅ ✅ **MIGRADO** | ~92 líneas. Migrado con implementación real. Requiere `window.mcpClient`, `window.getTaskState`, `window.adminLog` |
 
-⚠️ **Problema:** Las versiones de main.js son MÁS COMPLETAS que las del módulo.
-
-### 2. skills-ui.js — 5 funciones duplicadas en main.js
-| Función | main.js (línea) | Módulo exporta |
-|---------|----------------|----------------|
-| `loadSkills` | 2134 | ✅ (más simple — no cachea skills Hermes ni filtra categorías ocultas) |
-| `renderSkillsList` | 2179 | ✅ (más simple — sin icons, badges ni categorías) |
-| `updateSkillSelects` | 2267 | ✅ |
-| `renderAgentSkills` | 2475 | ✅ |
-| `renderProjectSkills` | 2513 | ✅ |
-
-### 3. agent-engine.js — 2 funciones duplicadas en main.js
-| Función | main.js (línea) | Módulo exporta |
-|---------|----------------|----------------|
-| `triggerAgentLogic` | ~4236 | ✅ (simplificada — versión ~500 líneas menos) |
-| `performAutomaticValidation` | ~4148 | ✅ |
-
-⚠️ `triggerAgentLogic` es la **función más compleja de todo main.js** (~500+ líneas)
-
-### 4. session.js — saveData/loadData NO extraídas
-| Función | main.js (línea) | Módulo exporta |
-|---------|----------------|----------------|
-| `saveData()` | ~1964 | ❌ |
-| `loadData()` | ~1359 | ❌ |
-| `sanitizeProject` | — | ✅ ya en módulo |
-| `isTabBusy` | — | ✅ ya en módulo |
+⚠️ `triggerAgentLogic` (1,231 líneas) es la **función más compleja de todo main.js** con ~20+ dependencias internas.
 
 ---
 
-## 🔴 NO CUBIERTO POR EL ANÁLISIS ANTERIOR
+## 🟢 NUEVO: Módulo agent-engine.js fixeado
 
-### Funciones grandes en main.js que nunca se extrajeron:
-| Función | Línea en main.js | Impacto |
-|---------|------------------|--------|
-| `setupEventListeners()` | ~5751 | ~1000+ líneas de event listeners |
-| `triggerAdminAgentLogic()` | ~4442 | Núcleo del admin/orchestrator |
-| `loadData()` | 1359 | Persistencia core |
-| `saveData()` | 1964 | Persistencia core |
-| `init()` | 1155 | Inicialización completa |
-| `MCPClient` class | ~526 | Cliente MCP completo |
-| Mic standalone IIFE | ~620 | Lógica de voz (ya reemplazada por mic.js) |
-| `createNewProject()` | 2600 | Creación de proyectos |
-| `checkSystemHealth()` | 633 | Health checks |
-| `fetchWithLog()` | 563 | API fetch con retry |
-| `performPeriodicSync()` | 679 | Sincronización periódica |
+El módulo `agent-engine.js` tenía **3 imports rotos** que fueron corregidos:
 
-### Gateway Hermes:
-- `lib/hermes-gateway-client.js` — cliente HTTP para gateway Hermes
-- `run.bat` — verificación/arranque del gateway compartido
-- `hermes-bridge.js` — bridge de eventos Hermes
-- `hermes-executor.js` — ejecutor de Hermes CLI
-- `hermes-god-worker.js` — worker Telegram standalone
+| Import roto | Problema | Solución |
+|-------------|----------|----------|
+| `import { D } from './dom-refs.js'` | `D` no existe como export | Eliminado |
+| `import { apiPost, apiGet } from './api.js'` | Son funciones privadas, no exportadas | Reemplazado por `API_BASE, agentsApi, files` |
+| `import { generateId } from './utils.js'` | `generateId` está en state.js, no en utils.js | Eliminado (no usado) |
+
+Además, `performWrite` usaba `agentsApi.chat()` (endpoint incorrecto `/agent/chat` para escribir archivos). Corregido a `files.write()`.
 
 ---
 
-## ✅ LOGROS DESDE EL ÚLTIMO ANÁLISIS (11-Jun → 29-Jul)
+## 📊 MÉTRICA ACTUAL (29-Jul-2026 — Post-Refactor)
 
-| Issue | Antes (11-Jun) | Ahora (29-Jul) |
-|-------|----------------|----------------|
-| `renderTelegramMessages` en admin-engine.js | ❌ No existía → roto | ✅ Existe y funciona |
-| `setupWebSocket()` llamado desde main.js | ❌ No se llamaba | ✅ Se llama (main.js:1241) |
-| main.js tamaño | ~9,300 líneas | **~9,475 líneas** |
-| Módulos importados en main.js | 18 de 20 | **18 de 20** |
-| Funciones duplicadas | **~30+** | **~10 funciones** (models-ui 3 + skills-ui 5 + agent-engine 2 ≈ 10) |
+| Métrica | Antes (11-Jun) | 1ra rev (29-Jul) | **Ahora** | Delta vs 1ra rev |
+|---------|----------------|-----------------|-----------|------------------|
+| **main.js tamaño** | ~9,300 líneas | **9,475** líneas | **8,605** líneas | **-870 líneas** 📉 |
+| Módulos totales | 20 de 20 | 23 módulos | **23 módulos** | = |
+| Módulos sin duplicados | 0 de 16 | 17 de 20 | **22 de 23** | **+5** ✅ |
+| Módulos con duplicados | ~16 | 3 | **1** (agent-engine) | **-2** ✅ |
+| Funciones duplicadas activas | N/A | ~10 | **4** (triggerAgentLogic, processAgentActions, autoRetry, performWrite) | **-6** ✅ |
+| window.X asignaciones | ~70 | ~218 | **~213** | -5 |
+| Top-level declarations | ~171 | ~100 | **~72** | -28 |
+| `export function` en módulos | N/A | ~60+ | **~80+** | +20 |
 
-> 📉 **Progreso:** Se pasó de ~30 funciones duplicadas a solo ~10. Muchas ya se limpiaron.
-> Las restantes son las más complejas (`triggerAgentLogic`, `fetchModels`, skills-ui completas).
-
----
-
-## 📊 MÉTRICA ACTUAL
-
-| Métrica | Valor (29-Jul-2026) |
-|---------|--------------------|
-| main.js tamaño | **9,475 líneas** (~425 KB) |
-| Módulos totales | **23 módulos** en `public/js/modules/` |
-| Módulos sin duplicados en main.js | **17 de 20** (sin contar task-board, pdf-reader, drag-drop) |
-| Módulos con duplicados activos | **3** (models-ui, skills-ui, agent-engine) + session.js (saveData/loadData) |
-| Funciones duplicadas activas | **~10 funciones** |
-| window.X asignaciones en main.js | **~218** |
-| `export function` en módulos | **~60+ funciones** |
+> 📉 **Progreso total en esta sesión: -870 líneas** de main.js eliminadas (de 9,475 → 8,605)
 
 ---
 
-## 📋 PLAN DE ACCIÓN RECOMENDADO (ACTUALIZADO)
+## ✅ LOGROS DE ESTA SESIÓN (29-Jul — Refactor Fase 0+1)
 
-### 🟢 Fase 0 — Bajito (1 hora, riesgo bajo)
-Eliminar funciones duplicadas de main.js que YA EXISTEN en los módulos.
-**Orden recomendado:**
-- [ ] **models-ui.js**: eliminar `fetchModels`, `renderModelSelects`, `checkVisionCapability` de main.js y usar imports
-- [ ] **skills-ui.js**: eliminar `loadSkills`, `renderSkillsList`, `updateSkillSelects`, `renderAgentSkills`, `renderProjectSkills` de main.js y usar imports
+| Refactor | Estado | Líneas eliminadas | Detalle |
+|----------|--------|------------------|---------|
+| **models-ui.js** | ✅ COMPLETO | **-102** | Migradas fetchModels, renderModelSelects, checkVisionCapability con todas las features (cloud models, Ollama, vision, 5 selects) |
+| **skills-ui.js** | ✅ COMPLETO | **-335** | Migradas 5 funciones + window.selectSkill, window.removeAgentSkill, window.removeProjectSkill. Icons, badges, categorías, cache Hermes. Fixeado import `skillsMeta` roto |
+| **session.js** | ✅ COMPLETO | **-450** | Migradas saveData, loadData, loadProjectFull, loadChatMessagesFront, sanitizeProjectLight. Fixeado bug `_oldFullProjects` fuera de scope |
+| **agent-engine.js** | ✅ PARCIAL | **-92** | Migrada performAutomaticValidation. Fixeados 3 imports rotos. Fixeado performWrite endpoint incorrecto |
+| **TOTAL** | | **-979 líneas** | main.js: 9,475 → **8,605** |
 
-### 🟡 Fase 1 — Medio (2-3 horas, riesgo medio)
-- [ ] **session.js**: Migrar `saveData()` y `loadData()` de main.js al módulo
-- [ ] **agent-engine.js**: Reemplazar `triggerAgentLogic` de main.js por la versión del módulo (o viceversa — migrar funcionalidad faltante)
+### Fixes adicionales:
+- `window.mcpClient = mcpClient` — agregado (era necesario para el módulo)
+- `window.getTaskState = getTaskState` — agregado
+- `window.adminLog = adminLog` — agregado
+- `window.checkAllProjectsHealth = checkAllProjectsHealth` — agregado
+- Eliminado dead code: `let isSaving`, `let savePending` (eran locales en main.js, ahora importados de state.js)
 
-### 🔴 Fase 2 — Grande (4-6 horas, riesgo alto)
+---
+
+## 🔴 NO CUBIERTO — Funciones grandes que nunca se extrajeron
+
+| Función | Línea en main.js | Líneas | Dificultad |
+|---------|------------------|--------|------------|
+| `triggerAgentLogic()` | ~3450 | **1,231** | 🔴 Extremo (20+ dependencias) |
+| `processAgentActions()` | ~4678 | **663** | 🔴 Alto |
+| `setupEventListeners()` | ~5751 | **~1,000+** | 🔴 Alto |
+| `triggerAdminAgentLogic()` | ~4442 | **~400** | 🟡 Medio |
+| `autoRetry()` | ~5338 | **213** | 🟡 Medio |
+| `performWrite()` | ~5547 | **74** | 🟢 Fácil |
+| `init()` | ~1155 | **~200** | 🟡 Medio |
+| `MCPClient` class | ~526 | **~50** | 🟢 Fácil |
+| `createNewProject()` | ~2600 | **~100** | 🟢 Fácil |
+| `checkSystemHealth()` | ~633 | **~50** | 🟢 Fácil |
+| `fetchWithLog()` | ~563 | **~70** | 🟢 Fácil |
+| `performPeriodicSync()` | ~679 | **~80** | 🟢 Fácil |
+
+---
+
+## 📋 PLAN DE ACCIÓN RECOMENDADO (ACTUALIZADO — Post-Refactor)
+
+### 🟢 Fase 0 — Bajito (YA HECHO ✅)
+- [x] **models-ui.js**: ✅ Migrado y eliminado de main.js
+- [x] **skills-ui.js**: ✅ Migrado y eliminado de main.js
+
+### 🟡 Fase 1 — Medio (YA HECHO ✅)
+- [x] **session.js**: ✅ Migrado saveData, loadData, loadProjectFull, loadChatMessagesFront, sanitizeProjectLight
+- [ ] **agent-engine.js**: Migrar `triggerAgentLogic` y `processAgentActions` de main.js al módulo (pendiente) | 🔴 Muy complejo
+
+### 🟢 Fase 1.5 — Bajito (por hacer)
+- [ ] **agent-engine.js**: Migrar `autoRetry` y `performWrite` de main.js al módulo (~287 líneas, riesgo bajo-medio)
+- [ ] **setupEventListeners**: Empezar a dividir en sub-módulos (~1,000+ líneas)
+- [ ] **MCPClient**: Extraer a módulo propio (~50 líneas, fácil)
+- [ ] **createNewProject**: Extraer a project-ui.js (~100 líneas, fácil)
+
+### 🔴 Fase 2 — Grande (futuro)
 - [ ] Extraer `setupEventListeners()` (~1000+ líneas) → dividir en eventos por dominio
-- [ ] Extraer `MCPClient` → módulo propio `mcp-client.js`
-- [ ] Extraer `createNewProject()` → `project-ui.js`
 - [ ] Extraer `triggerAdminAgentLogic()` → `admin-engine.js`
 - [ ] Extraer `init()` → limpiar dejando solo lo mínimo indispensable
-- [ ] Extraer mic standalone → opcional (mic.js ya lo reemplaza parcialmente)
 
 ### Fase 3 — Arquitectónico
 - [ ] Consolidar eventos: events.js + setupEventListeners
-- [ ] Reducir window.X assignments (~218 → ~100)
-- [ ] Dividir utils.js en sub-módulos si crece mucho (ya tiene 14 exports)
+- [ ] Reducir window.X assignments (~213 → ~100)
+- [ ] Mover `fetchWithLog` → módulo api.js
 
 ---
 
 ## NOTAS ADICIONALES
 
 ### `setupWebSocket` ya funciona correctamente
-La importación de `events.js` se hace en main.js línea 8, y se llama en línea 1241.
-`events.js` a su vez llama a `connectGlobalWS()` interna y exporta `setupWebSocket`.
-No hay dos implementaciones compitiendo — la de events.js **es** la que se usa.
+La importación de `events.js` se hace en main.js y se llama correctamente.
 
 ### `renderTelegramMessages` ya está en admin-engine.js
-Ya no hay import roto. events.js puede importarla sin problemas desde admin-engine.js.
+Ya no hay import roto. ✅
 
-### Skills UI: el módulo es más simple
-Si se eliminan las versiones de main.js, se pierden features (cache de Hermes,
-icons, badges, categorías ocultas). **Opción A**: migrar features al módulo.
-**Opción B**: mantener main.js como fuente de verdad para skills. La recomendación
-es migrar al módulo (Opción A).
+### agent-engine.js: imports rotos fixeados
+El módulo tenía 3 imports que no funcionaban (`D`, `apiPost`, `apiGet`). Todos corregidos.
 
 ### `triggerAgentLogic`: el elefante en la habitación
-~500+ líneas en main.js. La versión del módulo es mucho más simple. Requiere
-comparación línea por línea para no perder funcionalidad.
+1,231 líneas, 20+ dependencias en main.js. Para migrarlo habría que:
+1. Mover todas las dependencias a window o a módulos
+2. O migrar junto con `buildRefactoredSystemPrompt`, `setAgentActive`, `getModelProvider`, etc.
+Se recomienda hacerlo después de migrar las funciones más fáciles.
 
----
-
-## CAMBIOS DESDE LA VERSIÓN ANTERIOR (11-Jun → 29-Jul)
-
-1. ✅ `renderTelegramMessages` ahora existe en admin-engine.js — bug corregido
-2. ✅ `setupWebSocket` ahora se llama desde main.js — no hay implementaciones competidoras
-3. ✅ Se eliminaron ~20 funciones duplicadas del análisis anterior (chat-ui, admin-engine, terminal-ui, hermes-engine, console-view, image-upload, file-editor, agent-table, project-ui)
-4. 📉 main.js creció de ~9,300 a ~9,475 líneas (nuevas features > refactor avance)
-5. 🔵 Solo quedan 3 módulos con duplicaciones activas (models-ui, skills-ui, agent-engine)
-6. 🔵 saveData/loadData siguen sin migrar a session.js
+### Window assignments agregados para módulos:
+- `window.mcpClient` — para que agent-engine.js use MCP tools
+- `window.getTaskState` — para performAutomaticValidation
+- `window.adminLog` — para performAutomaticValidation 
+- `window.checkAllProjectsHealth` — para loadData en session.js
+- `window.saveData` — desde session.js
