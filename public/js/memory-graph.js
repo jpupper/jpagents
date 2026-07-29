@@ -39,7 +39,8 @@ export function initMemoryGraph(containerId, svgId) {
   let height = container.clientHeight || 600;
 
   // ─── Elementos ───
-  const tooltip = document.getElementById('graph-tooltip');
+  // Buscar tooltip con el ID correcto según el contexto (matrix o modal)
+  const tooltip = document.getElementById('matrix-graph-tooltip') || document.getElementById('graph-tooltip');
 
   const defs = svg.append('defs');
 
@@ -114,9 +115,15 @@ export function initMemoryGraph(containerId, svgId) {
       tooltip.style.top = (event.clientY - rect.height - 15) + 'px';
     }
 
-    // Conexiones
-    const deps = currentData?.edges?.filter(e => e.source === d.id).length || 0;
-    const depBy = currentData?.edges?.filter(e => e.target === d.id).length || 0;
+    // Conexiones (source/target pueden ser objetos tras D3 force)
+    const deps = currentData?.edges?.filter(e => {
+      const sid = typeof e.source === 'object' ? e.source.id : e.source;
+      return sid === d.id;
+    }).length || 0;
+    const depBy = currentData?.edges?.filter(e => {
+      const tid = typeof e.target === 'object' ? e.target.id : e.target;
+      return tid === d.id;
+    }).length || 0;
     const sizeStr = d.size ? (d.size / 1024).toFixed(1) + 'KB' : '?';
 
     tooltip.innerHTML = `
@@ -169,10 +176,8 @@ export function initMemoryGraph(containerId, svgId) {
       edges = edges.filter(e => validIds.has(e.source) && validIds.has(e.target));
     }
 
-    // Limpiar
-    g.selectAll('.graph-links').remove();
-    g.selectAll('.graph-nodes').remove();
-    g.selectAll('.graph-labels').remove();
+    // Limpiar (incluye posible texto de loading)
+    g.selectAll('*').remove();
 
     // ─── Simulation ───
     if (simulation) simulation.stop();
@@ -250,10 +255,17 @@ export function initMemoryGraph(containerId, svgId) {
         })
         .on('end', (event, d) => {
           if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
+          // NO soltar el nodo — queda fijo donde lo dejó el usuario
+          // Para des-pinchar: doble click en el nodo
         })
       );
+
+    // ─── Double-click: unpin node ───
+    node.on('dblclick', (event, d) => {
+      d.fx = null;
+      d.fy = null;
+      if (simulation) simulation.alpha(0.3).restart();
+    });
 
     // ─── Labels (solo archivos grandes/conexiones) ───
     const labelNodes = nodes

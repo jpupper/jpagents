@@ -1,6 +1,6 @@
 import { state, syncWs, amIMaster, mySocketId, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
 import { initMatrix } from './matrix.js';
-import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachImgBtn, imageInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
+import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachFileBtn, fileInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
 if (editorCode) editorCode.contentEditable = true;
 import { stripAnsi, ansiToHtml, escapeHtml, createChat, isAgentActive, getDiffEngine, countLines, getLanguage, formatProgressLines, highlightGitDiff, formatMarkdown, pathJoin } from './modules/utils.js';
 import { API_BASE, OLLAMA_BASE, sessions, skills, hermes, agentsApi, execute, files, prompts, modelsApi, system, utils as apiUtils } from './modules/api.js';
@@ -14,9 +14,10 @@ window.renderProjectList = renderProjectList;
 import { renderMessages, showToast, playAgentCompleteSound, playAgentErrorSound, updateThinking } from './modules/chat-ui.js';
 import { refreshConsoleUI } from './modules/console-view.js';
 import { addImages, renderImagePreviews, clearImages, handleImageSelection, toBase64 } from './modules/image-upload.js';
-import { initPdfReader, clearPdfAttachment, getPdfText, getPdfName } from './modules/pdf-reader.js';
+import { initPdfReader, clearPdfAttachment, getCombinedAttachmentText, getAttachmentNames, handleFileSelection, syncAttachmentPreview } from './modules/pdf-reader.js';
 import { appendToTerminal, refreshTerminalUI, updateTerminalStatusUI, connectTerminalStream, runTerminalCommand, detectRunCommand , terminalEventSource } from './modules/terminal-ui.js';
 import './modules/task-board.js';   // Tablero de tareas — registra window.renderTaskBoard y handlers
+import { fetchModels, renderModelSelects, checkVisionCapability } from './modules/models-ui.js';
 
 // ── Mutable global vars (not imported from state.js — ES module imports are read-only) ──
 
@@ -108,23 +109,63 @@ let _matrixViewMode = 'agent-history';
 
 // Configure marked
 const renderer = new marked.Renderer();
+// Mapa extension → lenguaje highlight.js
+const EXT_TO_LANG = {
+    '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'javascript',
+    '.ts': 'typescript', '.tsx': 'typescript',
+    '.py': 'python', '.pyw': 'python',
+    '.rb': 'ruby',
+    '.go': 'go',
+    '.rs': 'rust',
+    '.java': 'java',
+    '.kt': 'kotlin',
+    '.swift': 'swift',
+    '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
+    '.cs': 'csharp',
+    '.php': 'php',
+    '.html': 'html', '.htm': 'html',
+    '.css': 'css', '.scss': 'scss', '.sass': 'sass', '.less': 'less',
+    '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
+    '.xml': 'xml', '.svg': 'xml',
+    '.md': 'markdown', '.mdx': 'markdown',
+    '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+    '.ps1': 'powershell',
+    '.sql': 'sql',
+    '.vue': 'vue',
+    '.svelte': 'svelte',
+    '.graphql': 'graphql', '.gql': 'graphql',
+    '.dockerfile': 'dockerfile', 'dockerfile': 'dockerfile',
+    '.txt': 'text', '.env': 'text',
+};
 renderer.code = function(code, language) {
     // Robustness: ensure language and code are strings
     const langStr = (typeof language === 'string') ? language : (typeof language === 'object' ? JSON.stringify(language) : '');
     const codeStr = (typeof code === 'string') ? code : (typeof code === 'object' ? JSON.stringify(code, null, 2) : String(code));
 
-    const filename = (langStr && langStr.includes('.')) ? langStr : '';
-    const displayLang = filename ? filename : (langStr || 'text');
     const escapedCode = escapeHtml(codeStr);
     
+    // Detectar si tiene nombre de archivo (contiene '.' o es 'Dockerfile')
+    const isFilename = langStr && (langStr.includes('.') || langStr.toLowerCase() === 'dockerfile');
+    // Extraer lenguaje del filename si aplica
+    let detectedLang = '';
+    if (isFilename) {
+        const ext = '.' + langStr.split('.').pop().toLowerCase();
+        detectedLang = EXT_TO_LANG[ext] || EXT_TO_LANG[langStr.toLowerCase()] || '';
+    }
+    const langClass = detectedLang ? `language-${detectedLang}` : (langStr && !isFilename ? langStr : '');
+    
+    let headerHtml = '';
+    if (isFilename) {
+        headerHtml = `<div class="code-header"><span class="code-filename">📄 ${escapeHtml(langStr)}</span></div>`;
+    } else if (langStr) {
+        headerHtml = `<div class="code-header"><span class="code-lang-badge">${escapeHtml(langStr)}</span></div>`;
+    }
+    
     return `
-        <details class="file-collapsible" ${filename ? '' : 'open'}>
-            <summary>
-                ${filename ? `<strong>${filename}</strong>` : `Código (${displayLang})`}
-                <span class="expand-icon">▶</span>
-            </summary>
-            <pre><code class="language-${displayLang}">${escapedCode}</code></pre>
-        </details>
+        <div class="code-block-wrapper">
+            ${headerHtml}
+            <pre><code${langClass ? ` class="${langClass}"` : ''}>${escapedCode}</code></pre>
+        </div>
     `;
 };
 
@@ -594,6 +635,7 @@ async function checkSystemHealth(externalData = null) {
     const updateDot = (id, live) => {
         const dot = document.getElementById(id);
         if (dot) {
+            dot.classList.remove('off');
             dot.classList.toggle('live', live);
             dot.classList.toggle('dead', !live);
         }
@@ -615,8 +657,24 @@ async function checkSystemHealth(externalData = null) {
         updateDot('ollama-status-dot', res.ok);
     } catch (e) { updateDot('ollama-status-dot', false); }
 
-    // 3. MCP Check removed as requested to avoid 404 console spam
-    // The MCP status will be updated by other means or remain in its last state.
+    // 3. Check Gateway
+    try {
+        const res = await fetch(`${API_BASE}/gateway/status`);
+        const data = await res.json();
+        const running = data.running === true;
+        updateDot('gateway-status-dot', running);
+        const runBtn = document.getElementById('gateway-run-btn');
+        const stopBtn = document.getElementById('gateway-stop-btn');
+        if (running) {
+            if (runBtn) runBtn.classList.add('hidden');
+            if (stopBtn) stopBtn.classList.remove('hidden');
+        } else {
+            if (stopBtn) stopBtn.classList.add('hidden');
+            if (runBtn) runBtn.classList.remove('hidden');
+        }
+    } catch (e) {
+        updateDot('gateway-status-dot', false);
+    }
 }
 
 async function performPeriodicSync() {
@@ -921,6 +979,82 @@ window.toggleSidebar = function() {
     saveData();
 };
 
+function initDragDropFiles() {
+    const chatTab = document.getElementById('chat-tab-content');
+    if (!chatTab) return;
+
+    // Prevenir comportamiento default del navegador en toda la ventana
+    document.addEventListener('dragover', (e) => { e.preventDefault(); });
+    document.addEventListener('drop', (e) => { e.preventDefault(); });
+
+    // Drag sobre el chat — mostrar feedback visual
+    chatTab.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer.types.includes('Files')) {
+            chatTab.classList.add('drag-over');
+        }
+    });
+
+    chatTab.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer.types.includes('Files')) {
+            chatTab.classList.add('drag-over');
+        }
+    });
+
+    chatTab.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Solo remover si salimos del chatTab (no a un hijo)
+        if (!chatTab.contains(e.relatedTarget)) {
+            chatTab.classList.remove('drag-over');
+        }
+    });
+
+    chatTab.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chatTab.classList.remove('drag-over');
+
+        const files = e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+
+        handleDroppedFiles(Array.from(files));
+    });
+}
+
+async function handleDroppedFiles(files) {
+    // Separar imágenes del resto de archivos
+    const images = files.filter(f => f.type.startsWith('image/'));
+    const documents = files.filter(f => !f.type.startsWith('image/'));
+
+    // Procesar imágenes con el sistema existente
+    if (images.length > 0) {
+        try {
+            const { addImages } = await import('./modules/image-upload.js');
+            addImages(images);
+        } catch (err) {
+            console.warn('[DRAG-DROP] Error importing image-upload:', err);
+        }
+    }
+
+    // Procesar documentos con el sistema de archivos
+    if (documents.length > 0) {
+        // Tomar el primer documento (solo uno a la vez como el botón)
+        const file = documents[0];
+        const fileInput = document.getElementById('file-input');
+        if (fileInput) {
+            // Asignar el archivo al input y disparar evento change
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+}
+
 function initPanelResize() {
     const sidebarHandle = document.getElementById('sidebar-resize-handle');
     const explorerHandle = document.getElementById('explorer-resize-handle');
@@ -975,6 +1109,49 @@ function initPanelResize() {
     applyPanelState();
 }
 
+function initInputResize() {
+    const handle = document.getElementById('input-resize-handle');
+    const textarea = document.getElementById('chat-input');
+    if (!handle || !textarea) return;
+
+    let startY, startHeight;
+
+    function onMouseDown(e) {
+        e.preventDefault();
+        startY = e.clientY;
+        startHeight = textarea.offsetHeight;
+        handle.classList.add('active');
+        document.body.classList.add('resizing');
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+        // Arriba = más grande, abajo = más chico (invertido porque el handle está en el borde superior)
+        const delta = startY - e.clientY;
+        let newHeight = Math.max(60, Math.min(window.innerHeight * 0.7, startHeight + delta));
+        textarea.style.height = newHeight + 'px';
+    }
+
+    function onMouseUp() {
+        handle.classList.remove('active');
+        document.body.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        // Persistir altura
+        if (state) {
+            state.chatInputHeight = textarea.offsetHeight;
+        }
+    }
+
+    handle.addEventListener('mousedown', onMouseDown);
+
+    // Restaurar altura guardada al iniciar
+    if (window.state && window.state.chatInputHeight) {
+        textarea.style.height = window.state.chatInputHeight + 'px';
+    }
+}
+
 // Initialize
 async function init() {
     // Cada await tiene su propio catch para que un fallo no detenga toda la inicialización
@@ -993,11 +1170,11 @@ async function init() {
                 if (c.isThinking) {
                     console.log(`[INIT] Limpiando isThinking trabado en chat "${c.name}" (${c.id.slice(-8)})`);
                     c.isThinking = false;
-                    // También finalizar progress messages huérfanos
+                    // También finalizar building messages huérfanos
                     for (const pm of c.messages || []) {
-                        if (pm.isProgress && !pm.finished) {
-                            pm.finished = true;
-                            pm.content += '\n⏹️ Sesión anterior interrumpida';
+                        if (pm._isBuilding && pm.role === 'assistant') {
+                            pm._isBuilding = false;
+                            pm.content += '\n\n⏹️ Sesión anterior interrumpida';
                         }
                     }
                 }
@@ -1012,7 +1189,9 @@ async function init() {
     setupSkillsEventListeners();
     setupTerminalEvents();
     initPdfReader();
+    initDragDropFiles();
     initPanelResize();
+    initInputResize();
     initModeToggles();
     
     // ─── Auto-transformación
@@ -1155,9 +1334,20 @@ async function init() {
     // Periodic sync para instrucciones externas (cada 2 min — no para polling de estado)
     const syncInterval = setInterval(performPeriodicSync, 120000);
     
-    // Limpiar el intervalo cuando la pestaña se oculta para evitar fugas
+    // Gateway status check cada 30s — detecta cambios cuando el gateway se inicia/detiene externamente
+    const gwInterval = setInterval(async () => {
+        try {
+            const res = await fetch(`${API_BASE}/gateway/status`);
+            await res.json();
+        } catch (_) {}
+    }, 30000);
+    
+    // Limpiar los intervalos cuando la pestaña se oculta para evitar fugas
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) clearInterval(syncInterval);
+        if (document.hidden) {
+            clearInterval(syncInterval);
+            clearInterval(gwInterval);
+        }
     });
 
     // Ollama health check: ya no es polling, se hace al conectar WS y al reconectar
@@ -1174,8 +1364,6 @@ async function loadData(shouldScan = true) {
         const data = await res.json();
 
         // ─── BUGFIX: No restaurar proyectos que están siendo eliminados ───
-        // Si hay un window.deleteProject en curso, state._isDeletingProjectIds contiene
-        // los IDs que NO deben restaurarse desde el servidor (evita race condition WS vs delete)
         const _skipDeleteIds = state._isDeletingProjectIds;
         const _filterDeleting = (p) => {
             if (_skipDeleteIds && _skipDeleteIds.size > 0) {
@@ -1187,44 +1375,25 @@ async function loadData(shouldScan = true) {
             return true;
         };
 
-        // ─── 🐛 BUGFIX: Preservar terminalLogs y chat messages runtime ───
-        // loadData() reemplaza state.projects con objetos nuevos del servidor.
-        // terminalLogs y messages recién agregados son runtime y se pierden al reemplazar.
-        // Esto causa que el mensaje final del agente desaparezca cuando loadData()
-        // se ejecuta antes de que saveData() complete su POST (race condition).
+        // ─── 🐛 BUGFIX: Preservar terminalLogs y chat messages de proyectos YA CARGADOS ───
         const _oldTerminalLogs = new Map();
-        const _oldChatMessages = new Map();
+        const _oldFullProjects = new Map(); // proyectos que ya tenían datos completos
         for (const old of state.projects) {
             if (Array.isArray(old.terminalLogs) && old.terminalLogs.length > 0) {
                 _oldTerminalLogs.set(old.id, old.terminalLogs);
             }
-            if (Array.isArray(old.chats)) {
-                for (const oldChat of old.chats) {
-                    if (Array.isArray(oldChat.messages) && oldChat.messages.length > 0) {
-                        _oldChatMessages.set(oldChat.id, oldChat.messages);
-                    }
-                }
+            if (old._loaded) {
+                // Preservar el proyecto completo si ya estaba cargado
+                _oldFullProjects.set(old.id, old);
             }
         }
 
+        let incomingProjects;
         if (Array.isArray(data)) {
-            state.projects = data.map(sanitizeProject).filter(_filterDeleting);
-            // Migration: old file-path activeTabId → 'editor' + activeFileId
-            for (const p of state.projects) {
-                if (p.activeTabId && p.openFiles && p.openFiles.some(f => f.path.replace(/\\/g, '/') === p.activeTabId)) {
-                    p.activeFileId = p.activeTabId;
-                    p.activeTabId = 'editor';
-                }
-            }
+            incomingProjects = data.map(sanitizeProjectLight).filter(_filterDeleting);
         } else if (data && typeof data === 'object') {
-            state.projects = (data.projects || []).map(sanitizeProject).filter(_filterDeleting);
-            // Migration: old file-path activeTabId → 'editor' + activeFileId
-            for (const p of state.projects) {
-                if (p.activeTabId && p.openFiles && p.openFiles.some(f => f.path.replace(/\\/g, '/') === p.activeTabId)) {
-                    p.activeFileId = p.activeTabId;
-                    p.activeTabId = 'editor';
-                }
-            }
+            incomingProjects = (data.projects || []).map(sanitizeProjectLight).filter(_filterDeleting);
+            // Preservar configuraciones globales
             state.userSystemPrompt = data.userSystemPrompt || DEFAULT_USER_SYSTEM_PROMPT;
             state.namingPrompt = data.namingPrompt || DEFAULT_NAMING_PROMPT;
             state.secondAgentConfig = data.secondAgentConfig || {
@@ -1256,17 +1425,14 @@ async function loadData(shouldScan = true) {
 
             // Load action buttons config
             if (data.actionButtons && Array.isArray(data.actionButtons)) {
-                // Merge: preserve any new buttons added in code, update prompts from saved data
                 const savedIds = new Set(data.actionButtons.map(b => b.id));
                 const existingIds = new Set((state.actionButtons || []).map(b => b.id));
-                // Update saved prompts
                 for (const savedBtn of data.actionButtons) {
                     const existing = (state.actionButtons || []).find(b => b.id === savedBtn.id);
                     if (existing) {
                         existing.prompt = savedBtn.prompt || '';
                     }
                 }
-                // Add any saved buttons that don't exist in code defaults (user-created in the future)
                 for (const savedBtn of data.actionButtons) {
                     if (!existingIds.has(savedBtn.id)) {
                         state.actionButtons.push({ ...savedBtn });
@@ -1290,35 +1456,46 @@ async function loadData(shouldScan = true) {
             }
         }
 
-        // ─── 🐛 BUGFIX: Restaurar terminalLogs y chat messages perdidos por loadData() ───
-        // Los proyectos nuevos del servidor no tienen terminalLogs (es runtime-only)
-        // y pueden tener mensajes stale (de una saveData anterior a que el agente terminara).
-        // Los preservamos antes de reemplazar y los restauramos ahora.
-        for (const p of state.projects) {
-            if (_oldTerminalLogs.has(p.id)) {
-                p.terminalLogs = _oldTerminalLogs.get(p.id);
-            }
-        }
-        for (const p of state.projects) {
-            if (Array.isArray(p.chats)) {
-                for (const chat of p.chats) {
-                    const oldMsgs = _oldChatMessages.get(chat.id);
-                    const oldLen = oldMsgs ? oldMsgs.length : 0;
-                    const newLen = chat.messages ? chat.messages.length : 0;
-                    if (oldMsgs && oldMsgs.length >= chat.messages.length) {
-                        if (oldMsgs.length > chat.messages.length) {
-                            console.log('[LOADDATA] 🐛 Restoring messages for chat', chat.id, 'old:', oldMsgs.length, 'new:', chat.messages.length);
-                        }
-                        chat.messages = oldMsgs;
-                    }
+        // ─── MERGE: Preservar proyectos full ya cargados, reemplazar los light ───
+        // Los proyectos del server vienen light (sin messages) o con metadata.
+        // Si ya teníamos una versión full (con _loaded=true), la preservamos.
+        const mergedProjects = incomingProjects.map(incoming => {
+            const existingFull = _oldFullProjects.get(incoming.id);
+            if (existingFull) {
+                // Mantener la versión completa que ya estaba en memoria
+                // pero actualizar metadata no-messages (nombre, folder, etc.)
+                existingFull.name = incoming.name;
+                existingFull.folder = incoming.folder;
+                existingFull.isCorrupted = incoming.isCorrupted;
+                existingFull.activeTabId = incoming.activeTabId;
+                // Restaurar terminalLogs si los tenía
+                if (_oldTerminalLogs.has(incoming.id)) {
+                    existingFull.terminalLogs = _oldTerminalLogs.get(incoming.id);
                 }
+                return existingFull;
+            }
+            // Proyecto nuevo o light: restaurar terminalLogs
+            if (_oldTerminalLogs.has(incoming.id)) {
+                incoming.terminalLogs = _oldTerminalLogs.get(incoming.id);
+            }
+            return incoming;
+        });
+
+        state.projects = mergedProjects;
+
+        // Migration: old file-path activeTabId → 'editor' + activeFileId
+        for (const p of state.projects) {
+            if (p.activeTabId && p.openFiles && p.openFiles.some(f => f.path.replace(/\\/g, '/') === p.activeTabId)) {
+                p.activeFileId = p.activeTabId;
+                p.activeTabId = 'editor';
             }
         }
 
+        // ─── Si tenemos un activeProjectId, asegurar que ese proyecto esté cargado ───
         if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
             console.log("📍 Restored active project:", state.activeProjectId);
         } else if (state.activeProjectId === 'admin') {
-            console.log(`📍 Restored ${state.activeProjectId} tab`);
+            console.log("📍 Restored admin tab");
         } else if (state.projects.length > 0) {
             state.activeProjectId = state.projects[0].id;
         } else {
@@ -1330,12 +1507,184 @@ async function loadData(shouldScan = true) {
 
         renderProjectList();
         const active = getActiveProject();
+        
+        // ─── Cargar el proyecto activo si no está cargado ───
+        if (active && !active._loaded) {
+            console.log(`[LAZY-LOAD] Cargando proyecto activo "${active.name}" bajo demanda...`);
+            await loadProjectFull(active.id);
+        }
+        
         if (shouldScan && active && active.folder) window.scanFolder(active.folder, active.id);
         renderTabs();
+        window.syncModeToggleUI?.();
     } catch (e) {
         console.error("Error loading data:", e);
-        // 🐛 BUGFIX: NO crear proyecto aqui (evita bucle infinito saveData->WS->loadData->error->createNewProject)
     }
+}
+
+/**
+ * Carga un proyecto COMPLETO (con todos sus mensajes) desde el servidor
+ * y lo inyecta en state.projects reemplazando la versión light.
+ * Muestra un spinner durante la carga.
+ * 
+ * NOTA: Ya NO carga los mensajes de todos los chats del proyecto.
+ * Los mensajes se cargan individualmente bajo demanda cuando se hace
+ * click en un chat específico (ver loadChatMessages).
+ * Este método solo actualiza la metadata y marca _loaded=true.
+ */
+async function loadProjectFull(projectId) {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    
+    // Ya está cargado — no hacer nada
+    if (project._loaded) return;
+    
+    // Mostrar indicador de carga en el sidebar
+    const sidebarItem = document.querySelector(`.chat-item[data-id="${projectId}"]`);
+    if (sidebarItem) {
+        sidebarItem.classList.add('loading');
+        // Agregar spinner si no existe
+        if (!sidebarItem.querySelector('.project-loading-spinner')) {
+            const spinner = document.createElement('span');
+            spinner.className = 'project-loading-spinner';
+            spinner.textContent = '⏳';
+            sidebarItem.querySelector('.name-row')?.appendChild(spinner);
+        }
+    }
+    
+    try {
+        const res = await fetchWithLog(`${API_BASE}/sessions/project/${projectId}`);
+        const fullProject = await res.json();
+        
+        if (!fullProject || fullProject.error) {
+            console.error('[LAZY-LOAD] Error cargando proyecto:', fullProject?.error);
+            project._loaded = true;
+            return;
+        }
+        
+        // Reemplazar el proyecto light con el full, PERO preservar messages vacíos
+        // (los mensajes se cargan individualmente bajo demanda por chat)
+        const terminalLogs = project.terminalLogs;
+        const idx = state.projects.indexOf(project);
+        
+        const sanitized = sanitizeProject(fullProject);
+        
+        // Limpiar los mensajes de todos los chats — se cargan bajo demanda
+        if (Array.isArray(sanitized.chats)) {
+            for (const chat of sanitized.chats) {
+                chat.messages = [];
+                chat._messagesLoaded = false;
+            }
+        }
+        
+        // Restaurar mensajes que ya estaban cargados en memoria (chats abiertos antes)
+        const oldProject = _oldFullProjects ? _oldFullProjects.get(projectId) : null;
+        if (oldProject?.chats) {
+            for (const oldChat of oldProject.chats) {
+                if (oldChat._messagesLoaded && oldChat.messages?.length > 0) {
+                    const newChat = sanitized.chats?.find(c => c.id === oldChat.id);
+                    if (newChat) {
+                        newChat.messages = oldChat.messages;
+                        newChat._messagesLoaded = true;
+                    }
+                }
+            }
+        }
+        
+        sanitized._loaded = true;
+        if (terminalLogs) sanitized.terminalLogs = terminalLogs;
+        
+        state.projects[idx] = sanitized;
+        
+        console.log(`[LAZY-LOAD] Proyecto "${sanitized.name}" cargado (metadata): ${sanitized.chats?.length || 0} chats (mensajes bajo demanda)`);
+    } catch (e) {
+        console.error('[LAZY-LOAD] Error:', e);
+        project._loaded = true;
+    } finally {
+        // Quitar spinner
+        const sidebarItem2 = document.querySelector(`.chat-item[data-id="${projectId}"]`);
+        if (sidebarItem2) {
+            sidebarItem2.classList.remove('loading');
+            const spinner = sidebarItem2.querySelector('.project-loading-spinner');
+            if (spinner) spinner.remove();
+        }
+    }
+}
+
+/**
+ * Carga SOLO los mensajes de un chat específico desde el servidor.
+ * Muestra un spinner en el área de mensajes durante la carga.
+ * Inyecta los mensajes en el chat correspondiente de state.projects.
+ */
+async function loadChatMessagesFront(projectId, chatId) {
+    const project = state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    const chat = project.chats?.find(c => c.id === chatId);
+    if (!chat) return;
+    
+    // Ya cargado
+    if (chat._messagesLoaded) return;
+    
+    // Mostrar spinner en el área de mensajes
+    const messagesContainer = document.getElementById('chat-messages');
+    if (messagesContainer) {
+        messagesContainer.innerHTML = `
+            <div class="chat-loading-overlay">
+                <div class="chat-loading-spinner"></div>
+                <div class="chat-loading-text">Cargando historial...</div>
+            </div>
+        `;
+    }
+    
+    try {
+        const res = await fetchWithLog(`${API_BASE}/sessions/chat/${projectId}/${chatId}/messages`);
+        const data = await res.json();
+        
+        if (data && Array.isArray(data.messages)) {
+            chat.messages = data.messages;
+            chat._messagesLoaded = true;
+            console.log(`[LAZY-LOAD] Chat "${chat.name}": ${data.messages.length} mensajes cargados`);
+        } else {
+            console.warn('[LAZY-LOAD] Respuesta sin mensajes:', data);
+            chat.messages = [];
+            chat._messagesLoaded = true;
+        }
+    } catch (e) {
+        console.error('[LAZY-LOAD] Error cargando mensajes del chat:', e);
+        chat.messages = [];
+        chat._messagesLoaded = true; // marcar para no reintentar
+    } finally {
+        // El spinner se quita al renderizar
+    }
+}
+
+/**
+ * Sanitize para proyecto LIGHT (sin messages) — versión minimalista
+ */
+function sanitizeProjectLight(p) {
+    const id = p.id || p.projectId || generateId();
+    return {
+        id: id,
+        name: p.name || 'Proyecto sin nombre',
+        folder: p.folder || '',
+        model: p.model || '',
+        _loaded: false, // No cargado aún — hay que pedir datos completos
+        chats: Array.isArray(p.chats) ? p.chats.map(c => ({
+            ...c,
+            isClosed: c.isClosed || false,
+            messages: [], // light — sin mensajes
+            _messagesLoaded: false // mensajes se cargan bajo demanda
+        })) : [],
+        openFiles: Array.isArray(p.openFiles) ? p.openFiles : [],
+        sessionChanges: p.sessionChanges || [],
+        activeTabId: p.activeTabId || (p.chats && p.chats.length > 0 ? p.chats[0].id : null),
+        currentFiles: Array.isArray(p.currentFiles) ? p.currentFiles : [],
+        projectPrompt: p.projectPrompt || '',
+        skills: Array.isArray(p.skills) ? p.skills : [],
+        tasks: Array.isArray(p.tasks) ? p.tasks : [],
+        isCorrupted: p.isCorrupted || false,
+        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
+    };
 }
 
 
@@ -1630,11 +1979,13 @@ async function saveData(skipSync = false) {
     try {
         // ─── 🚨 TRIM: Prevenir "request entity too large" (413) ───
         const MAX_MSGS = 50;
-        const MAX_MSG_LEN = 8000;
+        const MAX_MSG_LEN = 99999999; // sin límite efectivo
         const MAX_ADMIN = 50;
         const MAX_GOD = 50;
 
-        const trimmedProjects = (state.projects || []).map(p => {
+        const trimmedProjects = (state.projects || [])
+            .filter(p => p._loaded !== false) // Solo guardar proyectos cargados
+            .map(p => {
             const tp = { ...p };
             delete tp.currentFiles;
             if (Array.isArray(tp.chats)) {
@@ -2320,6 +2671,7 @@ async function createNewProject(customName = null) {
 
     renderProjectList();
     renderTabs();
+    window.syncModeToggleUI?.();
 
     if (folderPath) {
         window.scanFolder(folderPath);
@@ -2360,92 +2712,6 @@ async function checkAllProjectsHealth() {
     }
     // Single render after all health checks
     renderProjectList();
-}
-
-async function fetchModels() {
-    try {
-        const res = await fetchWithLog(`${API_BASE}/models`);
-        const data = await res.json();
-
-        // Local Ollama models
-        state.ollamaModels = data.models || [];
-        
-        renderModelSelects();
-    } catch (e) {
-        console.error("Error fetching Ollama models:", e);
-        renderModelSelects(); // Render even if Ollama fails (to show cloud models)
-    }
-}
-
-function renderModelSelects() {
-    const cloudModels = [
-        { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash ⚡', type: 'cloud', provider: 'deepseek' },
-        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro ✨', type: 'cloud', provider: 'deepseek' },
-        { id: 'deepseek-chat', name: 'DeepSeek Chat (V3) ☁️', type: 'cloud', provider: 'deepseek' },
-        { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner (R1) ☁️', type: 'cloud', provider: 'deepseek' },
-        { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet 🧠', type: 'cloud', provider: 'openrouter' },
-        { id: 'gpt-4o', name: 'GPT-4o ☁️', type: 'cloud', provider: 'openai' },
-        { id: 'gpt-4o-mini', name: 'GPT-4o Mini ☁️', type: 'cloud', provider: 'openai' }
-    ];
-
-    const localModels = (state.ollamaModels || []).map(m => ({
-        id: m.name,
-        name: `${m.name} 🏠`,
-        type: 'local',
-        vision: m.details?.families?.includes('clip')
-    }));
-
-    const createOptions = (models) => models.map(m => 
-        `<option value="${m.id}" data-type="${m.type}" data-vision="${m.vision || false}" class="model-opt-${m.type}">
-            ${m.name} ${m.vision ? '👁️' : ''}
-        </option>`
-    ).join('');
-
-    const html = `
-        <optgroup label="☁️ MODELOS CLOUD (API)">
-            ${createOptions(cloudModels)}
-        </optgroup>
-        <optgroup label="🏠 MODELOS LOCALES (Ollama)">
-            ${createOptions(localModels)}
-        </optgroup>
-    `;
-
-    modelSelect.innerHTML = html;
-
-    const projectModelSelect = document.getElementById('project-model-select');
-    if (projectModelSelect) {
-        projectModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
-    }
-
-    const projectModelHeaderSelect = document.getElementById('project-model-select-header');
-    if (projectModelHeaderSelect) {
-        projectModelHeaderSelect.innerHTML = '<option value="">Usar Global</option>' + html;
-    }
-
-    const agentModelSelect = document.getElementById('agent-model-select');
-    if (agentModelSelect) {
-        agentModelSelect.innerHTML = '<option value="">Default (Proyecto/Global)</option>' + html;
-    }
-
-    const adminModelSelect = document.getElementById('admin-model-select');
-    if (adminModelSelect) {
-        adminModelSelect.innerHTML = '<option value="">Usar Global</option>' + html;
-        if (state.selectedAdminModel) adminModelSelect.value = state.selectedAdminModel;
-    }
-
-    // Restore selected values if exist
-    if (state.selectedModel) {
-        modelSelect.value = state.selectedModel;
-    }
-
-    checkVisionCapability();
-}
-
-function checkVisionCapability() {
-    const selected = modelSelect.options[modelSelect.selectedIndex];
-    const isVision = selected && selected.dataset.vision === 'true';
-    // We keep it visible as requested, but maybe style it differently
-    attachImgBtn.classList.remove('hidden');
 }
 
 // ─── Second Agent helpers ───
@@ -2651,13 +2917,12 @@ window.stopAgent = (projectId, chatId) => {
             body: JSON.stringify({ projectId: projId, chatId: chId })
         }).catch(err => console.warn('Error calling hermes/stop:', err));
 
-        // Mark progress messages as finished/minimized
+        // Mark building messages as finished
         if (chat.messages) {
             chat.messages.forEach(m => {
-                if (m.isProgress && !m.finished) {
-                    m.finished = true;
-                    m.minimized = true;
-                    m.content += '\n🛑 Proceso detenido por el usuario.\n';
+                if (m._isBuilding && m.role === 'assistant') {
+                    m._isBuilding = false;
+                    m.content += '\n\n🛑 Proceso detenido por el usuario.\n';
                 }
             });
         }
@@ -2833,9 +3098,9 @@ function applyMatrixViewMode(projectId) {
             }).catch(err => {
                 console.error('[MATRIX-GRAPH] Error loading memory-graph:', err);
             });
-        } else {
-            if (projectId) _matrixGraphInstance.loadGraph(projectId);
         }
+        // Si ya está cargado, no re-ejecutar — mantener posiciones
+        // El usuario puede usar "🔄 Escanear" para refrescar
     } else {
         svgAgent.classList.remove('hidden');
         svgGraph.classList.add('hidden');
@@ -2930,10 +3195,22 @@ function applyMatrixViewMode(projectId) {
                 }
             }
 
+            // Sync chat header — badge del modelo
+            updateAgentModelBadge();
+
+            // Sync chat header — nombre del agente al lado de la ruedita
+            const agentNameBadge = document.getElementById('chat-agent-name-badge');
+            if (agentNameBadge) {
+                const displayName = chat.name || 'Agente';
+                agentNameBadge.textContent = displayName;
+                agentNameBadge.title = 'Agente: ' + displayName;
+            }
+
             // Sync toggle Hermes
             const hermesBtn = document.getElementById('hermes-toggle-btn');
             if (hermesBtn) {
-                if (chat.useHermes) {
+                // 🐛 BUGFIX: default a Hermes (true) si no está definido
+                if (chat.useHermes !== false) {
                     hermesBtn.classList.add('on');
                     hermesBtn.classList.remove('off');
                     hermesBtn.querySelector('.toggle-label').textContent = 'Hermes';
@@ -3098,11 +3375,10 @@ function updateTelegramBadge() {
 
 
 
-window.switchTab = (id) => {
+window.switchTab = async (id) => {
     console.log("Switching to tab:", id);
 
     if (id === 'admin') {
-        // ─── Guardar draft antes de salir ───
         saveChatDraft();
         state.activeProjectId = 'admin';
         renderTabs();
@@ -3112,12 +3388,30 @@ window.switchTab = (id) => {
 
     const p = getActiveProject();
     if (p) {
-        // ─── Guardar draft del chat actual ───
         saveChatDraft();
 
         p.activeTabId = id;
         renderTabs();
         window.syncModeToggleUI?.();
+        
+        // ─── Si el proyecto no está cargado y no es un tab de sistema, cargar ───
+        if (!p._loaded) {
+            console.log(`[LAZY-LOAD] Cargando proyecto "${p.name}" desde switchTab...`);
+            await loadProjectFull(p.id);
+            renderTabs();
+        }
+        
+        // ─── Si es un chat y sus mensajes no están cargados, cargarlos bajo demanda ───
+        const isChatTab = p.chats && p.chats.some(c => c.id === id);
+        if (isChatTab) {
+            const chat = p.chats.find(c => c.id === id);
+            if (chat && !chat._messagesLoaded) {
+                console.log(`[LAZY-LOAD] Cargando mensajes del chat "${chat.name}" bajo demanda...`);
+                await loadChatMessagesFront(p.id, chat.id);
+                renderTabs();
+            }
+        }
+        
         renderMessages(); // To refresh chat if switching to a chat tab
 
         // ─── Renderizar tab de agentes si es el seleccionado ───
@@ -3131,6 +3425,9 @@ window.switchTab = (id) => {
         // Reset git commit message context when switching agents
         if (gitCommitMsgInput) gitCommitMsgInput.value = '';
         p._lastTabId = id;
+
+        // Sincronizar preview de attachments al cambiar de chat
+        syncAttachmentPreview();
     }
 };
 
@@ -3211,20 +3508,34 @@ window.deleteChat = (id) => {
     saveData();
 };
 
-window.restoreAgent = (id) => {
+window.restoreAgent = async (id) => {
     const p = getActiveProject();
     if (!p) return;
+    // Si el proyecto no está cargado, cargarlo primero
+    if (!p._loaded) {
+        await loadProjectFull(p.id);
+        renderTabs();
+    }
     const chat = p.chats.find(c => c.id === id);
     if (chat) {
         chat.isClosed = false;
         delete chat.closedAt;
+        
+        // Resetear _messagesLoaded para que se recargue al hacer click en el tab
+        chat._messagesLoaded = false;
+        
         p.activeTabId = id;
         renderTabs();
         window.syncModeToggleUI?.();
         renderAgentsTab();
+        
+        // Cargar mensajes del chat bajo demanda
+        await loadChatMessagesFront(p.id, chat.id);
+        renderTabs();
         renderMessages();
         restoreChatDraft();
         saveData();
+        syncAttachmentPreview();
     }
 };
 
@@ -3234,42 +3545,47 @@ function renderAgentsTab() {
     const countEl = document.getElementById('agents-count');
     if (!listEl || !p) return;
 
-    const allAgents = p.chats || [];
-    const openCount = allAgents.filter(c => !c.isClosed).length;
-    if (countEl) countEl.textContent = allAgents.length + ' agentes';
+    const allChats = p.chats || [];
+    const activeAgents = allChats.filter(c => !c.isClosed);
+    const totalCount = allChats.length;
+    const activeCount = activeAgents.length;
+    if (countEl) countEl.textContent = totalCount + ' agente' + (totalCount === 1 ? '' : 's') + ' (' + activeCount + ' activo' + (activeCount === 1 ? '' : 's') + ')';
 
-    if (!allAgents.length) {
-        listEl.innerHTML = '<div class="agents-empty">No hay agentes en este proyecto. Creá uno con el botón + en la barra de tabs.</div>';
+    if (!allChats.length) {
+        listEl.innerHTML = '<div class="agents-empty">No hay agentes en este proyecto.</div>';
         return;
     }
 
-    listEl.innerHTML = allAgents.map(c => {
-        const status = c.isClosed
-            ? '<span class="agent-status closed">🔒 Cerrado</span>'
-            : (c.isThinking
-                ? '<span class="agent-status thinking">🟡 Pensando</span>'
-                : (c.isRunning
-                    ? '<span class="agent-status running">🔵 Corriendo</span>'
-                    : '<span class="agent-status idle">⚪ Inactivo</span>'));
+    listEl.innerHTML = allChats.map(c => {
+        const isClosed = !!c.isClosed;
+        let status;
+        if (isClosed) {
+            status = '<span class="agent-status closed">🔴 Cerrado</span>';
+        } else if (c.isThinking) {
+            status = '<span class="agent-status thinking">🟡 Pensando</span>';
+        } else if (c.isRunning) {
+            status = '<span class="agent-status running">🔵 Corriendo</span>';
+        } else {
+            status = '<span class="agent-status idle">⚪ Inactivo</span>';
+        }
         const modelStr = c.model ? escapeHtml(c.model) : '—';
         const msgCount = (c.messages || []).length;
-        const closedDate = c.closedAt ? new Date(c.closedAt).toLocaleString() : '';
+        const cardClass = isClosed ? 'agent-card closed' : 'agent-card';
 
         return `
-            <div class="agent-card ${c.isClosed ? 'closed' : ''}">
+            <div class="${cardClass}">
                 <div class="agent-card-info">
                     <div class="agent-card-name">🤖 ${escapeHtml(c.name)}</div>
                     <div class="agent-card-meta">
                         ${status}
                         <span>Modelo: ${modelStr}</span>
                         <span>Mensajes: ${msgCount}</span>
-                        ${closedDate ? '<span>Cerrado: ' + closedDate + '</span>' : ''}
                     </div>
                 </div>
                 <div class="agent-card-actions">
-                    ${c.isClosed
-                        ? `<button class="btn-agent-restore" onclick="window.restoreAgent('${c.id}')">🔄 Restaurar</button>`
-                        : `<button class="btn-agent-delete" onclick="window.deleteChat('${c.id}')">✕ Cerrar</button>`
+                    ${isClosed
+                        ? '<button class="btn-agent-restore" onclick="window.restoreAgent(\'' + c.id + '\')">↩ Reabrir</button>'
+                        : '<button class="btn-agent-delete" onclick="window.deleteChat(\'' + c.id + '\')">✕ Cerrar</button>'
                     }
                 </div>
             </div>
@@ -3279,12 +3595,11 @@ function renderAgentsTab() {
 
 ;
 
-window.switchProject = (id, event = null) => {
+window.switchProject = async (id, event = null) => {
     // Don't switch if we just finished a drag
     if (draggedProjectId) return;
     
     if (event) {
-        // If it's the active project and we clicked the name, let contenteditable work
         if (event.target.classList.contains('session-name') && id === state.activeProjectId) return;
         if (event.target.classList.contains('btn-delete')) return;
     }
@@ -3309,12 +3624,22 @@ window.switchProject = (id, event = null) => {
     renderProjectList();
     renderTabs();
 
-    // ─── Restaurar draft del chat activo (si no es chat, se limpia automáticamente) ───
+    // ─── Si el proyecto no está cargado, cargarlo bajo demanda ───
+    if (!project._loaded) {
+        console.log(`[LAZY-LOAD] Cargando proyecto "${project.name}" al hacer click...`);
+        await loadProjectFull(project.id);
+        renderProjectList();
+        renderTabs();
+    }
+
+    // ─── Sincronizar mode toggles con el chat activo del nuevo proyecto ───
+    window.syncModeToggleUI?.();
+
+    // ─── Restaurar draft del chat activo ───
     restoreChatDraft();
 
     if (project.folder) {
         console.log(`📂 Project has folder, scanning: ${project.folder}`);
-        // Pass the project ID to scanFolder to avoid race conditions
         window.scanFolder(project.folder, id);
     } else {
         console.log("📂 Project has no folder.");
@@ -3594,24 +3919,6 @@ window.clearAllArchivedProjects = async () => {
     }
 };
 
-// Función para toggle del progreso de Hermes
-window.toggleProgress = function(el) {
-    const container = el.closest('.hermes-progress');
-    const detail = container.querySelector('.hermes-progress-detail');
-    const arrow = el.querySelector('.progress-arrow');
-    if (detail.style.display === 'none') {
-        detail.style.display = 'block';
-        arrow.textContent = '▼';
-        el.classList.remove('minimized');
-        el.classList.add('maximized');
-    } else {
-        detail.style.display = 'none';
-        arrow.textContent = '▶';
-        el.classList.remove('maximized');
-        el.classList.add('minimized');
-    }
-};
-
 window.toggleActionGroup = (header) => {
     const group = header.closest('.action-group');
     if (group) {
@@ -3630,11 +3937,13 @@ async function sendMessage() {
     if (state.currentAttachedImages.length > 0) {
         userMsg.images = [...state.currentAttachedImages];
     }
-    // 🐛 BUGFIX: Incluir texto de PDF adjunto como contexto en el mensaje
-    if (state.currentPdfText && state.currentPdfText.length > 0) {
-        const pdfName = state.currentPdfName || 'documento.pdf';
-        const pdfContext = `\n\n[📄 CONTENIDO DEL PDF ADJUNTO: ${pdfName}]\n${state.currentPdfText}\n[/FIN DEL PDF]`;
-        userMsg.content += pdfContext;
+    // 🐛 BUGFIX: Incluir texto de archivos adjuntos como contexto en el mensaje
+    const chatForAttachments = getActiveChat();
+    if (chatForAttachments && chatForAttachments.attachments && chatForAttachments.attachments.length > 0) {
+        const attachmentText = getCombinedAttachmentText(chatForAttachments);
+        if (attachmentText) {
+            userMsg.content += '\n\n' + attachmentText;
+        }
     }
     chat.messages.push(userMsg);
 
@@ -3843,7 +4152,7 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 if (!exists) {
                     console.log('[HERMES] Auto-starting Hermes for chat:', chat.id);
                     const model = chat.model || project.model || '';
-                    await fetch(`${API_BASE}/hermes/start`, {
+                    const startRes = await fetch(`${API_BASE}/hermes/start`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -3854,10 +4163,29 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                             name: chat.name || 'Hermes Agent'
                         })
                     });
+                    // 🐛 BUGFIX: Verificar que el servidor creó la instancia correctamente.
+                    // Antes no se checkeaba res.ok, así que si el server devolvía 400/500
+                    // (ej: workdir no existe), el error se tragaba silenciosamente y después
+                    // triggerHermesLogic() → /api/hermes/message fallaba con
+                    // "No hay instancia Hermes activa para este agente".
+                    if (!startRes.ok) {
+                        const errData = await startRes.json().catch(() => ({ error: 'Error desconocido al iniciar Hermes' }));
+                        throw new Error(errData.error || `HTTP ${startRes.status}`);
+                    }
+                    console.log('[HERMES] ✅ Auto-start exitoso para chat:', chat.id);
                 }
             } catch(e) {
-                console.warn('[HERMES] Auto-start failed:', e.message);
-                // Continue anyway — triggerHermesLogic will show error
+                console.error('[HERMES] Auto-start failed:', e.message);
+                // 🐛 BUGFIX: Propagar el error al chat como mensaje visible.
+                // Antes se tragaba silenciosamente y triggerHermesLogic() intentaba
+                // usar una instancia que nunca se creó.
+                chat.messages.push({ role: 'assistant', content: `❌ Error al iniciar Hermes: ${e.message}`, timestamp: Date.now() });
+                chat.isThinking = false;
+                chat.isRunning = false;
+                chat.isStreaming = false;
+                renderMessages();
+                saveData(true);
+                return; // Salir — no llamar a triggerHermesLogic sin instancia
             }
         }
         return await triggerHermesLogic(project, chat, origin);
@@ -3872,23 +4200,16 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
     updateThinking(chat, true, "Esperando respuesta", "Procesando...");
     chat.isStopped = false;
 
-    // 🐛 BUGFIX V4: Crear progressMsg ANTES de marcar isThinking como true.
-    // updateThinking() NO se usa aquí porque llamaría a window.saveData()
-    // SIN skipSync, disparando WS broadcast → loadData() → reemplaza
-    // state.projects. El chat quedaría huérfano, y el progressWs (que captura
-    // chat por closure) pushearía la respuesta final al array de mensajes
-    // huérfano — no al que renderMessages() lee de state.projects.
-    // En vez de updateThinking(), seteamos flags y renderizamos directamente.
-    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const progressMsg = {
-        role: 'system',
-        id: progressMsgId,
-        content: '⚡ Invocando Hermes...\n',
+    // En vez de progressMsg (role:'system'), crear assistant message en construcción.
+    const buildingMsgId = 'building-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const buildingMsg = {
+        role: 'assistant',
+        id: buildingMsgId,
+        content: '⚡ Invocando agente...\n',
         timestamp: Date.now(),
-        isProgress: true,
-        minimized: false // mientras genera, maximizado
+        _isBuilding: true
     };
-    chat.messages.push(progressMsg);
+    chat.messages.push(buildingMsg);
     chat.isThinking = true;
     chat.isRunning = true;
     chat.isStreaming = true;
@@ -3996,8 +4317,22 @@ async function triggerAgentLogic(project, chat, origin = 'user') {
                 message: origin === 'system' ? chat.messages[chat.messages.length - 1].content : (lastUserMsg ? lastUserMsg.content : ""),
                 model: selectedModel,
                 systemPrompt: buildRefactoredSystemPrompt(taskState),
-                apiKey: selectedModel.includes('/') ? state.openrouterApiKey : (selectedModel.startsWith('deepseek') ? state.deepseekApiKey : (selectedModel.startsWith('gpt') ? state.openaiApiKey : null)),
-                baseUrl: selectedModel.includes('/') ? "https://openrouter.ai/api/v1" : (selectedModel.startsWith('deepseek') ? "https://api.deepseek.com" : (selectedModel.startsWith('gpt') ? null : state.customApiBase)),
+                apiKey: (() => {
+                    const prov = getModelProvider(selectedModel);
+                    if (prov === 'openrouter') return state.openrouterApiKey;
+                    if (prov === 'deepseek') return state.deepseekApiKey;
+                    if (prov === 'local') return null;
+                    if (selectedModel.startsWith('gpt')) return state.openaiApiKey;
+                    return null;
+                })(),
+                baseUrl: (() => {
+                    const prov = getModelProvider(selectedModel);
+                    if (prov === 'openrouter') return 'https://openrouter.ai/api/v1';
+                    if (prov === 'deepseek') return 'https://api.deepseek.com';
+                    if (prov === 'local') return null;
+                    if (selectedModel.startsWith('gpt')) return null;
+                    return state.customApiBase;
+                })(),
                 useThinking: state.deepseekThinking,
                 history: history
             })
@@ -6530,6 +6865,12 @@ ${rest}`;
 
     // ── Filter dropdown as user types ──
     chatInput.oninput = (e) => {
+        // Auto-resize textarea (solo si NO se redimensionó manualmente con el handle)
+        if (!state || !state.chatInputHeight) {
+            chatInput.style.height = 'auto';
+            chatInput.style.height = Math.min(chatInput.scrollHeight, 400) + 'px';
+        }
+        
         if (slashCommandsVisible) {
             const val = chatInput.value;
             if (val.startsWith('/')) {
@@ -6910,6 +7251,12 @@ ${rest}`;
                 if (window.renderProjectList) window.renderProjectList();
                 renderTabs();
                 renderAdminMonitor();
+                // Actualizar badge del nombre al lado de la ruedita
+                const agentNameBadge = document.getElementById('chat-agent-name-badge');
+                if (agentNameBadge) {
+                    agentNameBadge.textContent = chat.name;
+                    agentNameBadge.title = 'Agente: ' + chat.name;
+                }
             }
         });
         chatNameInput.addEventListener('blur', () => {
@@ -6993,6 +7340,25 @@ ${rest}`;
                 chat.model = e.target.value;
                 saveData();
             }
+            // Mostrar/ocultar toggle de thinking según el modelo activo
+            const val = e.target.value || state.selectedModel || '';
+                thinkingRow.style.display = val.startsWith('deepseek') ? '' : 'none';
+            }
+            // Actualizar badge del modelo
+            updateAgentModelBadge();
+        };
+    }
+
+    // Thinking toggle en el menu de la ruedita
+    const thinkingToggleAgent = document.getElementById('deepseek-thinking-toggle-agent');
+    if (thinkingToggleAgent) {
+        thinkingToggleAgent.checked = state.deepseekThinking;
+        thinkingToggleAgent.onchange = (e) => {
+            state.deepseekThinking = e.target.checked;
+            // Sync con el toggle del header
+            const headerToggle = document.getElementById('deepseek-thinking-toggle-chat');
+            if (headerToggle) headerToggle.checked = e.target.checked;
+            saveData();
         };
     }
 
@@ -7004,9 +7370,34 @@ ${rest}`;
         };
     }
 
-    // Image Attachment
-    attachImgBtn.onclick = () => imageInput.click();
-    imageInput.onchange = handleImageSelection;
+    // Unified File Attachment (📎) — maneja imágenes y documentos
+    attachFileBtn.onclick = () => {
+        console.log('[FILE] 📎 Clip clickeado — abriendo file picker');
+        // Usar referencia directa al DOM por si el import esta stale
+        const fi = document.getElementById('file-input') || fileInput;
+        fi.click();
+    };
+    fileInput.onchange = (e) => {
+        const files = Array.from(e.target.files);
+        console.log('[FILE] onchange disparado — files:', files.length, files.map(f => f.name));
+        if (files.length === 0) {
+            console.warn('[FILE] No files in event target');
+            return;
+        }
+
+        // Procesar cada archivo
+        for (const file of files) {
+            if (file.type.startsWith('image/')) {
+                console.log('[FILE] Es imagen — derivando a handleImageSelection');
+                // Las imágenes se manejan aparte, pasar el primero
+                handleImageSelection({ target: { files: [file] } });
+            } else {
+                console.log('[FILE] Es documento — derivando a handleFileSelection');
+                handleFileSelection(file);
+            }
+        }
+        fileInput.value = '';
+    };
     chatInput.onpaste = (e) => {
         const items = (e.clipboardData || e.originalEvent.clipboardData).items;
         for (const item of items) {
@@ -7311,6 +7702,76 @@ ${rest}`;
     editorCode.addEventListener('keyup', updateCursorInfo);
     editorCode.addEventListener('click', updateCursorInfo);
     editorCode.addEventListener('input', updateCursorInfo);
+
+// ─── Badge del modelo en el header ───
+function getModelProvider(modelId) {
+    if (!modelId) return null;
+    // 1. Buscar en agent-model-select (selector del agente activo) — ESTE ES EL QUE MANDA
+    const agentSelect = document.getElementById('agent-model-select');
+    if (agentSelect) {
+        // Primero ver si el option seleccionado actualmente tiene dataset.provider
+        const selOpt = agentSelect.options[agentSelect.selectedIndex];
+        if (selOpt && selOpt.value === modelId && selOpt.dataset.provider) {
+            return selOpt.dataset.provider;
+        }
+        // Si no, buscar por value
+        const opt = agentSelect.querySelector('option[value="' + CSS.escape(modelId) + '"]');
+        if (opt && opt.dataset.provider) return opt.dataset.provider;
+    }
+    // 2. Buscar en cualquier otro select
+    const allOpts = document.querySelectorAll('select option[value="' + CSS.escape(modelId) + '"]');
+    for (const opt of allOpts) {
+        if (opt.dataset.provider) return opt.dataset.provider;
+    }
+    // 3. Fallback: pattern matching para modelos que puedan no estar en selects
+    if (modelId.includes('/')) return 'openrouter';
+    if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3')) return 'openai';
+    if (modelId.startsWith('deepseek')) return 'deepseek';
+    if (modelId.startsWith('claude')) return 'openrouter';
+    if (modelId.startsWith('gemma') || modelId.startsWith('llama') || modelId.startsWith('mistral') || modelId.startsWith('phi')) return 'local';
+    // Si no coincide con ningún proveedor conocido, asumir deepseek (es el más común)
+    return 'deepseek';
+}
+
+function getModelDisplayName(modelId) {
+    if (!modelId) return null;
+    const allModelOpts = document.querySelectorAll('#agent-model-select option');
+    for (const opt of allModelOpts) {
+        if (opt.value === modelId) {
+            // Clean the display name: remove emoji icons at start
+            let name = opt.textContent.trim();
+            // Remove leading emoji/icons
+            name = name.replace(/^[^\wáéíóúñÑüÜ\s]*/, '').trim();
+            return name;
+        }
+    }
+    return modelId;
+}
+
+function updateAgentModelBadge() {
+    const badge = document.getElementById('chat-agent-model-badge');
+    if (!badge) return;
+    const chat = getActiveChat();
+    if (!chat) {
+        badge.classList.add('hidden');
+        return;
+    }
+    const project = getActiveProject();
+    const modelSelect = document.getElementById('model-select');
+    const modelId = chat.model || project?.model || modelSelect?.value || state.selectedModel || '';
+    if (!modelId) {
+        badge.classList.add('hidden');
+        return;
+    }
+    const provider = getModelProvider(modelId);
+    const displayName = getModelDisplayName(modelId) || modelId;
+    badge.textContent = displayName;
+    // Reset class
+    badge.className = 'agent-model-badge';
+    if (provider) {
+        badge.classList.add('type-' + provider);
+    }
+    badge.classList.remove('hidden');
 }
 
 function syncModeUI(mode) {
@@ -7618,6 +8079,60 @@ init();
     console.log('[HERMES-TAB] Módulo de pestaña Hermes cargado.');
 })();
 
+// ─── Gateway Start / Stop ───
+(function() {
+    const gwRunBtn = document.getElementById('gateway-run-btn');
+    const gwStopBtn = document.getElementById('gateway-stop-btn');
+
+    async function startGateway() {
+        if (!gwRunBtn) return;
+        gwRunBtn.textContent = '...';
+        try {
+            const res = await fetch(`${API_BASE}/gateway/start`, { method: 'POST' });
+            const data = await res.json();
+            if (data.running) {
+                const dot = document.getElementById('gateway-status-dot');
+                if (dot) { dot.classList.remove('dead'); dot.classList.add('live'); }
+                if (gwRunBtn) gwRunBtn.classList.add('hidden');
+                if (gwStopBtn) gwStopBtn.classList.remove('hidden');
+                showToast('Gateway iniciado correctamente', 'success');
+            } else {
+                showToast('No se pudo iniciar el Gateway: ' + (data.message || data.error), 'error');
+                if (gwRunBtn) gwRunBtn.textContent = '▶';
+            }
+        } catch (err) {
+            console.warn('[GATEWAY] Error al iniciar:', err);
+            if (gwRunBtn) gwRunBtn.textContent = '▶';
+            showToast('Error al iniciar Gateway', 'error');
+        }
+    }
+
+    async function stopGateway() {
+        if (!gwStopBtn) return;
+        gwStopBtn.textContent = '...';
+        try {
+            const res = await fetch(`${API_BASE}/gateway/stop`, { method: 'POST' });
+            const data = await res.json();
+            if (!data.running) {
+                const dot = document.getElementById('gateway-status-dot');
+                if (dot) { dot.classList.remove('live'); dot.classList.add('dead'); }
+                if (gwStopBtn) gwStopBtn.classList.add('hidden');
+                if (gwRunBtn) gwRunBtn.classList.remove('hidden');
+                showToast('Gateway detenido', 'info');
+            } else {
+                if (gwStopBtn) gwStopBtn.textContent = '⏹';
+            }
+        } catch (err) {
+            console.warn('[GATEWAY] Error al detener:', err);
+            if (gwStopBtn) gwStopBtn.textContent = '⏹';
+            showToast('Error al detener Gateway', 'error');
+        }
+    }
+
+    if (gwRunBtn) gwRunBtn.addEventListener('click', startGateway);
+    if (gwStopBtn) gwStopBtn.addEventListener('click', stopGateway);
+})();
+
 // ──────────────────────────────────────────────
 // MODE TOGGLES — Autocommit, VPS, FTP
 // ──────────────────────────────────────────────
@@ -7673,8 +8188,7 @@ function syncModeToggleUI() {
 function initModeToggles() {
     const autocommitBtn = document.getElementById('toggle-autocommit');
     const vpsBtn = document.getElementById('toggle-vps');
-    const ftpBtn = document.getElementById('toggle-ftp');
-    if (!autocommitBtn || !vpsBtn || !ftpBtn) return;
+    const ftpBtn = document.getElementById('toggle-ftp');    if (!autocommitBtn || !vpsBtn || !ftpBtn) return;
 
     // Función helper para toggle individual
     function toggleMode(btn, key) {
@@ -7745,14 +8259,11 @@ function buildModeTogglePrompts(chat) {
 // Exponer syncModeToggleUI para que switchTab y otros llamen directamente
 window.syncModeToggleUI = syncModeToggleUI;
 
-// ─── appendProgressToggle: Actualiza el progressMsg DIRECTAMENTE desde el código ───
-// Exactamente como funciona la thinking-bubble (updateThinking()), pero APPENDEANDO
-// líneas en vez de reemplazar. No depende del WebSocket handler, así que funciona
-// incluso si state.projects fue reemplazado por loadData() entre la creación del
-// progressMsg y la llegada de eventos WS.
+// ─── appendProgressToggle: Apendea acción al assistant message en construcción ───
+// En vez de usar un progressMsg separado, cada acción/tool call se apendea
+// directo al último assistant message, como si el agente lo estuviera escribiendo.
 window.appendProgressToggle = function(chatArg, projectArg, formattedLine) {
     if (!chatArg) return;
-    // Resolver LIVE desde state.projects (como V6)
     const projId = projectArg?.id || chatArg._projectId || '';
     const chatId = chatArg.id || '';
     let liveChat = null;
@@ -7760,44 +8271,35 @@ window.appendProgressToggle = function(chatArg, projectArg, formattedLine) {
         const liveProj = state.projects?.find(p => p.id === projId);
         if (liveProj) liveChat = liveProj.chats?.find(c => c.id === chatId);
     }
-    if (!liveChat) liveChat = chatArg; // fallback
-    
-    // Buscar progressMsg ACTIVO (no finished)
-    let pm = liveChat.messages?.find(m => m.isProgress && !m.finished);
-    // Si no hay activo, buscar el último finished (resucitar visualmente)
-    if (!pm) pm = liveChat.messages?.filter(m => m.isProgress).pop();
-    // 🐛 BUGFIX V7: Si NO existe ningún progressMsg, CREARLO bajo demanda
-    // (misma estrategia que el WS handler en V6). Así cubrimos el caso donde
-    // loadData() reemplazó el chat y el progressMsg original quedó en el chat
-    // huérfano, pero igual se necesita mostrar las herramientas.
-    if (!pm) {
-        pm = {
-            role: 'system',
-            id: 'progress-direct-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-            content: '⚡ Invocando Hermes...\n',
+    if (!liveChat) liveChat = chatArg;
+
+    // Buscar el último assistant message EN CONSTRUCCIÓN, o crear uno nuevo
+    let assistantMsg = liveChat.messages?.filter(m => m.role === 'assistant' && m._isBuilding).pop();
+    if (!assistantMsg) {
+        assistantMsg = {
+            role: 'assistant',
+            id: 'building-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+            content: formattedLine + '\n',
             timestamp: Date.now(),
-            isProgress: true,
-            minimized: false
+            _isBuilding: true
         };
-        liveChat.messages.push(pm);
-        console.log('[PROGRESS-DIRECT] ✅ progressMsg creado bajo demanda en', chatId);
-    }
-    
-    if (pm) {
-        pm.content += formattedLine + '\n';
-        // 🐛 BUGFIX V7: Límite generoso (2000 líneas) en vez de 120
-        const lineCount = pm.content.split('\n').length;
+        liveChat.messages.push(assistantMsg);
+    } else {
+        assistantMsg.content += formattedLine + '\n';
+        // Límite de líneas
+        const lineCount = assistantMsg.content.split('\n').length;
         if (lineCount > 2000) {
-            const linesArr = pm.content.split('\n');
-            pm.content = '⚡ Procesando...\n' + linesArr.slice(-1950).join('\n');
+            const linesArr = assistantMsg.content.split('\n');
+            assistantMsg.content = linesArr.slice(-1950).join('\n');
         }
-        // Renderizar SOLO si es el chat activo (como updateThinking)
-        const activeChat = getActiveChat();
-        if (activeChat && activeChat.id === liveChat.id) {
-            renderMessages(false);
-            const cm = document.getElementById('chat-messages');
-            if (cm) cm.scrollTop = cm.scrollHeight;
-        }
+    }
+
+    // Renderizar SOLO si es el chat activo
+    const activeChat = getActiveChat();
+    if (activeChat && activeChat.id === liveChat.id) {
+        renderMessages(false);
+        const cm = document.getElementById('chat-messages');
+        if (cm) cm.scrollTop = cm.scrollHeight;
     }
 };
 
@@ -7839,25 +8341,26 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     // NUEVO chat de state.projects SIN el progressMsg.
     // Al pushearlo ANTES, loadData() lo preserva via _oldChatMessages.
 
-    // 🐛 BUGFIX: Finalizar TODOS los progressMsgs activos de runs anteriores.
+    // 🐛 BUGFIX: Finalizar TODOS los buildingMsgs activos de runs anteriores.
     // Si no, se acumulan y renderMessages() muestra el primero (viejo y stale).
     for (const pm of chat.messages) {
-        if (pm.isProgress && !pm.finished) {
-            pm.finished = true;
-            pm.content += '\n⏹️ Interrumpido (nueva consulta iniciada)';
+        if (pm._isBuilding && pm.role === 'assistant') {
+            pm._isBuilding = false;
+            pm.content += '\n\n⏹️ Interrumpido (nueva consulta iniciada)';
         }
     }
 
-    const progressMsgId = 'progress-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const progressMsg = {
-        role: 'system',
-        id: progressMsgId,
-        content: '⚡ Invocando Hermes...\n',
+    // En vez de progressMsg (role:'system'), crear assistant message en construcción.
+    // appendProgressToggle() lo usa como target y el contenido final incluye la respuesta.
+    const buildingMsgId = 'building-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const buildingMsg = {
+        role: 'assistant',
+        id: buildingMsgId,
+        content: '',
         timestamp: Date.now(),
-        isProgress: true,
-        minimized: false // mientras genera, maximizado
+        _isBuilding: true
     };
-    chat.messages.push(progressMsg);
+    chat.messages.push(buildingMsg);
 
     // 🐛 BUGFIX: saveData(true) DEBE ir ANTES de updateThinking().
     // updateThinking llama a saveData() no-silent cuando prevThinking !== isThinking,
@@ -7916,7 +8419,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
     try {
         progressWs = new WebSocket(`ws://${window.location.hostname}:4699/ws/hermes`);
         chat._progressWs = progressWs;
-        console.log('[WS-PROGRESS] 🔌 WebSocket creado para instanceKey:', instanceKey, 'progressMsgId:', progressMsgId);
+        console.log('[WS-PROGRESS] 🔌 WebSocket creado para instanceKey:', instanceKey, 'buildingMsgId:', buildingMsgId);
         // Throttle para evitar re-renders excesivos durante progreso rápido
         let progressRenderTimer = null;
         progressWs.onopen = () => {
@@ -7926,70 +8429,25 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         progressWs.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                // Diagnostic: log ALL hermes:log events, not just matching
-                if (data.event === 'hermes:log') {
-                    if (data.instanceKey === instanceKey) {
-                        console.log('[WS-PROGRESS] ✅ MATCH instanceKey:', instanceKey, 'type:', data.type, 'text preview:', (data.text||'').slice(0,60));
-                    }
-                }
                 if (data.event === 'hermes:log' && data.instanceKey === instanceKey) {
                     if (data.type === 'progress' || data.type === 'stdout') {
-                        // 🐛 BUGFIX V6: Buscar EN VIVO el progressMsg en el proyecto/chat correcto.
-                        // getActiveChat() puede devolver un chat distinto al que se pusheó el
-                        // progressMsg si loadData() (sync:stateUpdate, visibilitychange,
-                        // BroadcastChannel) reemplazó state.projects entre la creación del
-                        // progressMsg y la llegada del primer evento WS.
-                        // En vez de fallar silenciosamente (el contenido NUNCA se actualiza y
-                        // las herramientas no aparecen), buscamos el progressMsg en TODOS los
-                        // chats del proyecto, y si no existe lo CREAMOS sobre la marcha.
-                        let resolvedChat = null;
-                        let progressChatMsg = null;
-                        // 1. Try active chat first (most common case, fastest path)
+                        // Resolver EN VIVO el chat correcto desde state.projects
+                        const [pkProjectId, pkChatId] = instanceKey.split(':');
                         const activeChat = getActiveChat();
-                        if (activeChat) {
-                            progressChatMsg = activeChat.messages?.find(m => m.id === progressMsgId);
-                            if (progressChatMsg) resolvedChat = activeChat;
-                        }
-                        // 2. If not found, search the project identified by instanceKey
-                        if (!progressChatMsg) {
-                            const [pkProjectId, pkChatId] = instanceKey.split(':');
+                        let resolvedChat = null;
+                        // Preferir el chat activo si coincide (fast path)
+                        if (activeChat && activeChat.id === pkChatId) {
+                            resolvedChat = activeChat;
+                        } else {
                             const targetProj = state.projects?.find(p => p.id === pkProjectId);
                             if (targetProj) {
-                                const targetChat = targetProj.chats?.find(c => c.id === pkChatId);
-                                if (targetChat) {
-                                    progressChatMsg = targetChat.messages?.find(m => m.id === progressMsgId);
-                                    if (progressChatMsg) resolvedChat = targetChat;
-                                }
+                                resolvedChat = targetProj.chats?.find(c => c.id === pkChatId);
                             }
                         }
-                        // 3. LAST RESORT: Create a new progressMsg on-the-fly in the correct chat
-                        if (!progressChatMsg) {
-                            console.warn('[WS-PROGRESS] ⚠️ progressMsg NOT FOUND — CREANDO nuevo en el chat destino');
-                            const [pkProjectId, pkChatId] = instanceKey.split(':');
-                            const targetProj = state.projects?.find(p => p.id === pkProjectId);
-                            if (targetProj) {
-                                const targetChat = targetProj.chats?.find(c => c.id === pkChatId);
-                                if (targetChat) {
-                                    progressChatMsg = {
-                                        role: 'system',
-                                        id: progressMsgId,
-                                        content: '⚡ Invocando Hermes...\n',
-                                        timestamp: Date.now(),
-                                        isProgress: true,
-                                        minimized: false
-                                    };
-                                    targetChat.messages.push(progressChatMsg);
-                                    resolvedChat = targetChat;
-                                    console.log('[WS-PROGRESS] ✅ NUEVO progressMsg creado en vuelo para:', progressMsgId);
-                                    // Force render if this is the active chat so the user sees it immediately
-                                    if (targetChat.id === getActiveChat()?.id) {
-                                        renderMessages(false);
-                                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                                    }
-                                }
-                            }
-                        }
-                        if (progressChatMsg) {
+                        if (!resolvedChat) return;
+                        // Buscar EN VIVO el assistant building message en vez de usar closure progressChatMsg
+                        const buildingChatMsg = resolvedChat.messages?.find(m => m._isBuilding && m.role === 'assistant');
+                        if (buildingChatMsg) {
                                 // Replace literal \n (backslash + n) with actual newlines for cleaner formatting of multiline arguments/diffs
                                 const processedText = data.text.replace(/\\n/g, '\n');
                                 // Strip full ANSI (not just SGR) — handle OSC, CSI, etc.
@@ -7999,7 +8457,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                     // Assistant streaming text: SSE deltas arrive as tiny character chunks.
                                     // Accumulate as continuous text — do NOT split into lines per WebSocket message,
                                     // or each character/syllable fragment becomes its own <pre> line.
-                                    progressChatMsg.content += rawText;
+                                    buildingChatMsg.content += rawText;
                                 } else {
                                     // Progress/status lines: each message is a semantic line (tool call, thinking, etc.)
                                     const lines = rawText.split('\n').filter(l => l.trim());
@@ -8067,16 +8525,16 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
                                                 formatted = line.length > maxLen ? line.slice(0, maxLen - 3) + '...' : line;
                                             }
                                             if (formatted) {
-                                                progressChatMsg.content += formatted + '\n';
+                                                buildingChatMsg.content += formatted + '\n';
                                             }
                                         }
                                     }
                                 }
-                            // Limitar líneas de progreso para no saturar
-                            const lineCount = progressChatMsg.content.split('\n').length;
+                            // Limitar líneas de building para no saturar
+                            const lineCount = buildingChatMsg.content.split('\n').length;
                             if (lineCount > 2000) {
-                                const lines_arr = progressChatMsg.content.split('\n');
-                                progressChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-1950).join('\n');
+                                const lines_arr = buildingChatMsg.content.split('\n');
+                                buildingChatMsg.content = '⚡ Procesando...\n' + lines_arr.slice(-1950).join('\n');
                             }
 
                             // --- THROTTLED RENDER: única fuente de verdad ---
@@ -8111,7 +8569,7 @@ async function triggerHermesLogic(project, chat, origin = 'user') {
         // Incluir historial de conversación para que Hermes mantenga contexto
         const historyMessages = chat.messages
             .filter(m => m.role === 'user' || m.role === 'assistant')
-            .filter(m => !m.isProgress || !m.finished)
+            .filter(m => !m._isBuilding)
             .slice(-20) // últimas 20 interacciones para no saturar
             .map(m => ({ role: m.role, content: m.content }));
 
@@ -8188,10 +8646,10 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             // BUGFIX V5: buscar progressMsg en LIVE state (chat puede estar stale)
             const _pjErr = state.projects?.find(p => p.id === project?.id);
             const _liveChatErr = _pjErr?.chats?.find(c => c.id === chat?.id) || chat;
-            const progressChatMsg = _liveChatErr?.messages?.find(m => m.id === progressMsgId);
-            if (progressChatMsg) {
-                progressChatMsg.content = '❌ Error: ' + (errData.error || res.statusText);
-                progressChatMsg.finished = true;
+            const buildingChatMsg = _liveChatErr?.messages?.find(m => m._isBuilding && m.role === 'assistant');
+            if (buildingChatMsg) {
+                buildingChatMsg.content = '❌ Error: ' + (errData.error || res.statusText);
+                buildingChatMsg._isBuilding = false;
             } else {
                 chat.messages.push({
                     role: 'assistant',
@@ -8233,24 +8691,22 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
         const backendChanges = data.changes || [];
         const tokenUsage = data.usage || null;
 
-        // ─── Actualizar progreso a estado finalizado pero visible ───
-        // BUGFIX V5: Buscar progressMsg en LIVE state (chat puede estar stale tras loadData)
+        // ─── Finalizar el assistant building message con metadata ───
+        // Buscar el building message EN VIVO
         const _pj2 = state.projects?.find(p => p.id === project?.id);
         const _liveChat2 = _pj2?.chats?.find(c => c.id === chat?.id) || chat;
-        const progressChatMsg = _liveChat2?.messages?.find(m => m.id === progressMsgId);
         window.appendProgressToggle(chat, project, '✅ Respuesta recibida del servidor');
-        if (progressChatMsg) {
-            // Marcar como finalizado pero NO oculto: queda minimizado y visible
-            progressChatMsg.finished = true;
-            progressChatMsg.minimized = true;
-            // Agregar línea de finalización al contenido del progreso
-            const doneTime = new Date().toLocaleTimeString();
-            progressChatMsg.content += '\n✅ Tarea completada — ' + doneTime;
+        // Buscar el building message por _isBuilding flag
+        const buildingChatMsg = _liveChat2?.messages?.find(m => m._isBuilding && m.role === 'assistant');
+        // Marcar como completado el building message (flip flag, append response)
+        if (buildingChatMsg) {
+            // Quitar flag de construcción — ya no se escribe más
+            buildingChatMsg._isBuilding = false;
 
             // 🔊 Notification sound on successful completion
             try { playAgentCompleteSound(); } catch(e) {}
 
-            // ─── Token counter ───
+            // Agregar metadata de tokens al building message
             if (tokenUsage && tokenUsage.total_tokens > 0) {
                 // Track cumulative tokens per chat
                 chat.totalTokens = (chat.totalTokens || 0) + tokenUsage.total_tokens;
@@ -8270,21 +8726,20 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
                 if (tokenUsage.estimated_cost_usd > 0) {
                     parts.push(`≈ $${tokenUsage.estimated_cost_usd.toFixed(4)}`);
                 }
-                progressChatMsg.content += ` | ${parts.join(' · ')}`;
+                buildingChatMsg.content += `\n\n---\n📊 ${parts.join(' · ')}`;
 
                 // Mostrar acumulado de la conversación
                 if (chat.totalTokens > tokenUsage.total_tokens) {
-                    progressChatMsg.content += `\n📊 Conversación acumulada: ${chat.totalTokens.toLocaleString()} tokens (${chat.totalApiCalls} llamadas API)`;
+                    buildingChatMsg.content += `\n📊 Conversación acumulada: ${chat.totalTokens.toLocaleString()} tokens (${chat.totalApiCalls} llamadas API)`;
                 }
             }
 
-            progressChatMsg.content += '\n';
             // Agregar info de archivos modificados con mini diff inline
             if (backendChanges.length > 0) {
-                progressChatMsg.content += '\n📂 Archivos modificados:\n';
+                buildingChatMsg.content += '\n\n📂 Archivos modificados:\n';
                 for (const c of backendChanges) {
                     const shortName = c.fileName.split(/[/\\]/).pop();
-                    progressChatMsg.content += `  📄 ${shortName} (+${c.added}/-${c.removed})\n`;
+                    buildingChatMsg.content += `  📄 ${shortName} (+${c.added}/-${c.removed})\n`;
                     // Mostrar mini preview del git diff (primeras líneas cambiadas)
                     if (c.diff && c.diff.trim()) {
                         const diffLines = c.diff.split('\n');
@@ -8298,34 +8753,49 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
                             const prefix = dl.charAt(0);
                             const content = dl.slice(1).substring(0, 100);
                             const icon = prefix === '+' ? '➕' : '➖';
-                            progressChatMsg.content += `    ${icon} ${content}\n`;
+                            buildingChatMsg.content += `    ${icon} ${content}\n`;
                         }
                         if (changedLines.length > 5) {
-                            progressChatMsg.content += `    ... y ${changedLines.length - 5} líneas más\n`;
+                            buildingChatMsg.content += `    ... y ${changedLines.length - 5} líneas más\n`;
                         }
                     }
                 }
                 if (backendChanges.some(c => c.diff)) {
-                    progressChatMsg.content += '\n🔍 El diff completo está en el panel "Cambios Realizados".\n';
+                    buildingChatMsg.content += '\n🔍 El diff completo está en el panel "Cambios Realizados".\n';
                 }
             }
-            // Agregar el mensaje de respuesta del asistente
-            chat.messages.push({
-                role: 'assistant',
-                content: response,
-                timestamp: Date.now()
-            });
+            // Apendar la respuesta del asistente al mismo building message
+            if (response && response.trim()) {
+                // Si el buildingMsg ya tiene contenido (tool calls), separar con separator
+                if (buildingChatMsg.content.trim()) {
+                    buildingChatMsg.content += '\n\n---\n\n';
+                }
+                buildingChatMsg.content += response;
+            }
         } else {
-            chat.messages.push({
-                role: 'assistant',
-                content: response,
-                timestamp: Date.now()
-            });
+            // No hay building message (caso borde) — crear assistant message normal
+            if (response && response.trim()) {
+                let combined = response;
+                if (tokenUsage && tokenUsage.total_tokens > 0) {
+                    combined += `\n\n📊 ${tokenUsage.total_tokens.toLocaleString()} tokens`;
+                }
+                chat.messages.push({
+                    role: 'assistant',
+                    content: combined,
+                    timestamp: Date.now()
+                });
+            }
         }
 
-        chat.isStreaming = false;
+        // 🐛 BUGFIX: Re-sincronizar con state.projects antes de updateThinking/saveData
+        // por si loadData() reemplazó los objetos via WS sync:stateUpdated mientras
+        // el HTTP response estaba en vuelo. Si usamos el chat stale, el cambio
+        // isThinking=false se pierde y el agente queda como "activo" para siempre.
+        const __liveProj = state.projects.find(p => p.id === project.id);
+        const __liveChat = __liveProj?.chats?.find(c => c.id === chat.id) || chat;
+        __liveChat.isStreaming = false;
         renderMessages();
-        updateThinking(chat, false);
+        updateThinking(__liveChat, false);
         saveData();
 
         // ─── Procesar cambios y actualizar UI solo si este proyecto está activo ───
@@ -8436,15 +8906,14 @@ REGLAS DE AUTO-TRANSFORMACIÓN:
             chat._progressWs = null;
             return;
         }
-        // BUGFIX V5: buscar progressMsg en LIVE state (chat puede estar stale)
+        // BUGFIX V5: buscar buildingMsg en LIVE state (chat puede estar stale)
         const _pjErr2 = state.projects?.find(p => p.id === project?.id);
         const _liveChatErr2 = _pjErr2?.chats?.find(c => c.id === chat?.id) || chat;
-        const progressChatMsg = _liveChatErr2?.messages?.find(m => m.id === progressMsgId);
-        if (progressChatMsg) {
+        const buildingChatMsg = _liveChatErr2?.messages?.find(m => m._isBuilding && m.role === 'assistant');
+        if (buildingChatMsg) {
             const errTime = new Date().toLocaleTimeString();
-            progressChatMsg.content += '\n❌ Error: ' + e.message + ' (' + errTime + ')\n';
-            progressChatMsg.finished = true;
-            progressChatMsg.minimized = false; // dejar visible para que se vea el error
+            buildingChatMsg.content += '\n❌ Error: ' + e.message + ' (' + errTime + ')\n';
+            buildingChatMsg._isBuilding = false;
         }
         // 🔊 Error notification sound
         try { playAgentErrorSound(); } catch(e) {}

@@ -600,7 +600,8 @@ const callModel = async (state, config) => {
     let systemPrompt = state.systemPrompt || "Eres un asistente de programación experto.";
     
     let model;
-    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+    const useOpenAI = state.baseUrl || state.apiKey || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek");
+    if (useOpenAI) {
         const url = state.baseUrl || (modelName.startsWith("deepseek") ? "https://api.deepseek.com" : undefined);
         console.log(`[GRAPH] Instantiating ChatOpenAI: Model=${modelName}, BaseURL=${url}, KeyLength=${state.apiKey ? state.apiKey.length : 0}`);
         
@@ -816,7 +817,8 @@ const runMegaValidator = async (state, config) => {
 
     const modelName = state.model || "llama3";
     let model;
-    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+    const useOpenAI = state.baseUrl || state.apiKey || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek");
+    if (useOpenAI) {
         const url = state.baseUrl || (modelName.startsWith("deepseek") ? "https://api.deepseek.com" : undefined);
         model = new ChatOpenAI({
             apiKey: state.apiKey,
@@ -944,7 +946,8 @@ const reflectOnError = async (state, config) => {
     SIEMPRE reporta el error al usuario si no puedes solucionarlo tras 2 intentos.`;
 
     let model;
-    if (state.baseUrl || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek")) {
+    const useOpenAI = state.baseUrl || state.apiKey || modelName.includes("/") || modelName.startsWith("gpt") || modelName.startsWith("deepseek");
+    if (useOpenAI) {
         model = new ChatOpenAI({
             apiKey: state.apiKey,
             configuration: {

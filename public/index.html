@@ -14,6 +14,7 @@
   <script src="lib/highlight.min.js"></script>
   <script src="lib/highlight-dos.min.js"></script>
   <script src="lib/pdf.min.js"></script>
+  <script src="lib/mammoth.min.js"></script>
   <!-- D3.js for Data Visualization -->
   <script src="lib/d3.min.js"></script>
   <!-- jsdiff for Diffing -->
@@ -33,7 +34,11 @@
               <button id="scan-folder-sidebar" class="btn-icon-sidebar"
                 title="Abrir Carpeta de Proyecto Existente">📁</button>
               <button id="clone-github-btn" class="btn-icon-sidebar"
-                title="Clonar Repositorio de GitHub">🐙</button>
+                title="Clonar Repositorio de GitHub">
+                <svg height="22" width="22" viewBox="0 0 16 16" fill="#ffffff">
+                  <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/>
+                </svg>
+              </button>
               <button onclick="window.handleDeleteAllClick(event)" class="btn-danger-outline btn-delete-all" title="Borrar todos los proyectos">🗑️
                 Todo</button>
             </div>
@@ -57,6 +62,12 @@
           </div>
           <div class="status-indicator">
             <span id="backend-status-dot" class="dot live"></span> Backend
+          </div>
+
+          <div class="status-indicator">
+            <span id="gateway-status-dot" class="dot off"></span> Gateway
+            <button id="gateway-run-btn" class="btn-gateway-run hidden" title="Iniciar Gateway Hermes">▶</button>
+            <button id="gateway-stop-btn" class="btn-gateway-stop hidden" title="Detener Gateway Hermes">⏹</button>
           </div>
       </div>
     </aside>
@@ -447,32 +458,54 @@
               </svg>
               REFRESCAR
             </button>
+            <button id="git-pull-btn" class="git-action-btn git-pull-btn" title="Git Pull — traer cambios del remoto" onclick="window.handleGitPull()">
+              <svg height="18" width="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="5" r="2"/>
+                <circle cx="5" cy="19" r="2"/>
+                <circle cx="19" cy="19" r="2"/>
+                <line x1="12" y1="7" x2="12" y2="15"/>
+                <polyline points="9 12 12 15 15 12"/>
+              </svg>
+              PULL
+            </button>
           </div>
 
-          <!-- Git Process Terminal — muestra el proceso paso a paso -->
-          <div id="git-process-terminal" class="git-process-terminal hidden">
-            <div class="git-process-header">
-              <span class="git-process-title">🖥️ Proceso Git</span>
-              <span id="git-process-status" class="git-process-status running">Ejecutando...</span>
+          <!-- Sub-tabs: Grafo / Acciones -->
+            <div class="git-sub-tabs">
+              <div class="git-sub-tab active" data-git-subtab="grafo" onclick="window.switchGitSubTab('grafo')">📊 Grafo</div>
+              <div class="git-sub-tab" data-git-subtab="acciones" onclick="window.switchGitSubTab('acciones')">📋 Acciones</div>
             </div>
-            <div id="git-process-progress" class="git-process-progress"></div>
-            <div id="git-process-output" class="git-process-output">
-            </div>
-          </div>
 
-          <!-- Commit Tree View — fills entire remaining space -->
-          <div class="git-tree-container">
-            <div class="git-zoom-controls git-tree-container hidden" id="git-zoom-controls">
-              <button class="git-zoom-btn" onclick="window.gitZoomIn()" title="Zoom In">＋</button>
-              <span class="git-zoom-level" id="git-zoom-level">100%</span>
-              <button class="git-zoom-btn" onclick="window.gitZoomOut()" title="Zoom Out">－</button>
-              <button class="git-zoom-btn git-zoom-reset" onclick="window.gitZoomReset()" title="Reset Zoom">↺</button>
+            <!-- Sub-tab: Grafo (Commit Tree View) -->
+            <div class="git-subtab-content active" id="git-subtab-grafo">
+              <div class="git-tree-container">
+                <div class="git-zoom-controls hidden" id="git-zoom-controls">
+                  <button class="git-zoom-btn" onclick="window.gitZoomIn()" title="Zoom In">＋</button>
+                  <span class="git-zoom-level" id="git-zoom-level">100%</span>
+                  <button class="git-zoom-btn" onclick="window.gitZoomOut()" title="Zoom Out">－</button>
+                  <button class="git-zoom-btn git-zoom-reset" onclick="window.gitZoomReset()" title="Reset Zoom">↺</button>
+                </div>
+                <div class="git-graph-wrapper" id="git-graph-wrapper">
+                <div id="git-branch-graph" class="git-branch-graph-container"><div class="git-empty-state">Cargando historial de commits...</div></div>
+                </div>
+                <div class="git-legend hidden" id="git-legend"></div>
+              </div>
             </div>
-            <div class="git-graph-wrapper" id="git-graph-wrapper">
-            <div id="git-branch-graph" class="git-branch-graph-container"><div class="git-empty-state">Cargando historial de commits...</div></div>
+
+            <!-- Sub-tab: Acciones (Process Terminal) -->
+            <div class="git-subtab-content" id="git-subtab-acciones">
+              <div id="git-process-terminal" class="git-process-terminal">
+                <div class="git-process-header">
+                  <span class="git-process-title">🖥️ Proceso Git</span>
+                  <span id="git-process-status" class="git-process-status running">Inactivo</span>
+                  <button class="git-process-close-btn" onclick="window.switchGitSubTab('grafo')" title="Cerrar">&times;</button>
+                </div>
+                <div id="git-process-progress" class="git-process-progress"></div>
+                <div id="git-process-output" class="git-process-output">
+                  <div class="git-process-line dim">Sin acciones aún. Hacé un commit, pull o reset para ver el resultado aquí.</div>
+                </div>
+              </div>
             </div>
-            <div class="git-legend hidden" id="git-legend"></div>
-          </div>
 
           <!-- Commit Detail Panel (shown on double-click) -->
           <div id="git-detail-panel" class="git-detail-panel hidden">
@@ -577,6 +610,7 @@
                       <span class="mode-icon">📂</span>
                       <span class="mode-label">FTP</span>
                     </button>
+
                   </div>
                   <!-- Action Buttons Bar -->
                   <div class="action-buttons" id="action-buttons">
@@ -585,6 +619,8 @@
                       <span class="action-label">Reload Server</span>
                     </button>
                   </div>
+                  <!-- Modelo activo al lado de la ruedita -->
+                  <span id="chat-agent-model-badge" class="agent-model-badge hidden"></span>
                   <!-- Config dropdown compacto: Modelo + Skill en ruedita -->
                   <div id="agent-config-dropdown" class="agent-config-dropdown">
                     <button id="agent-config-trigger" class="btn-gear-config" title="Configuración del Agente">⚙️</button>
@@ -601,6 +637,12 @@
                           <option value="">Cargar Skill...</option>
                         </select>
                       </div>
+                      <div class="config-menu-row">
+                        <div class="thinking-toggle-chat" title="Activa el razonamiento profundo (solo modelos DeepSeek)">
+                          <input type="checkbox" id="deepseek-thinking-toggle-agent" checked />
+                          <label for="deepseek-thinking-toggle-agent">🧠 Thinking</label>
+                        </div>
+                      </div>
                     </div>
                   </div>
               </div>
@@ -616,24 +658,23 @@
 
           <div id="session-summary-container" class="session-summary-container hidden"></div>
           <div class="input-area">
+            <div id="input-resize-handle" class="input-resize-handle" title="Arrastrar para redimensionar"></div>
             <div id="image-preview-container" class="image-preview-container hidden"></div>
             <div class="input-wrapper">
               <div class="input-actions-left">
-                <button id="attach-img" class="btn-icon-subtle" title="Adjuntar imagen">📷</button>
-                <button id="attach-pdf" class="btn-icon-subtle" title="Adjuntar PDF para leer su contenido">📄</button>
+                <button id="attach-file-btn" class="btn-icon-subtle" title="Adjuntar archivo (PDF, Word, TXT, imagen, código, etc.)">📎</button>
                 <button id="improve-chat-prompt-btn" class="btn-icon-subtle" title="Mejorar Prompt con IA">✨</button>
                 <button id="mic-btn" class="btn-icon-subtle" title="Grabar mensaje de voz (Web Speech)">🎤</button>
-                <input type="file" id="image-input" accept="image/*" class="hidden" />
-                <input type="file" id="pdf-input" accept=".pdf" class="hidden" />
+                <input type="file" id="file-input" class="file-input-hidden" multiple />
               </div>
               <textarea id="chat-input" placeholder="Escribe una instrucción para el agente..." rows="2"></textarea>
               <div id="pdf-preview-container" class="pdf-preview-container hidden">
                 <div class="pdf-preview-header">
-                  <span class="pdf-preview-icon">📄</span>
-                  <span class="pdf-preview-name"></span>
-                  <button id="clear-pdf-btn" class="btn-icon-subtle pdf-clear-btn" title="Quitar PDF">✕</button>
+                  <span class="pdf-preview-icon">📎</span>
+                  <span class="pdf-preview-label">Archivos adjuntos</span>
+                  <button id="clear-pdf-btn" class="btn-icon-subtle pdf-clear-btn" title="Quitar todos los archivos">✕</button>
                 </div>
-                <div class="pdf-preview-pages"></div>
+                <div class="pdf-preview-pills"></div>
               </div>
               <div class="mode-switch-container">
                 <div id="mode-switch-toggle" class="mode-switch auto" title="Alternar Modo: Auto / Supervisado">
@@ -671,6 +712,7 @@
               <button id="reject-change" class="btn-danger">Rechazar ✕</button>
             </div>
             <button class="btn-primary ml-auto" id="save-file-btn">Guardar 💾</button>
+            <button class="btn-danger-sm" id="delete-file-btn" title="Eliminar archivo" onclick="window.deleteCurrentFile()">🗑️</button>
           </div>
           <div class="editor-container">
             <div id="editor-gutter" class="editor-gutter"></div>

@@ -90,10 +90,15 @@ async function _doGitPush(message, p, msgInput, btnEl, filesPreview) {
 
     if (!terminal || !outputEl) return;
 
-    // Show terminal
-    terminal.classList.remove('hidden');
-    // Auto-scroll terminal into view with smooth animation
-    setTimeout(() => terminal.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+    // Show terminal — switch to Acciones sub-tab
+    if (typeof window.switchGitSubTab === 'function') {
+        window.switchGitSubTab('acciones');
+    }
+    // Auto-scroll actions tab into view with smooth animation
+    setTimeout(() => {
+        const accionesPane = document.getElementById('git-subtab-acciones');
+        if (accionesPane) accionesPane.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
 
     // ── Progress indicator ──
     const progressEl = document.getElementById('git-process-progress');
@@ -1074,6 +1079,78 @@ window.handleGitCheckout = (hash) => {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GIT PULL
+// ═══════════════════════════════════════════════════════════════
+
+window.handleGitPull = async () => {
+    const p = window.getActiveProject();
+    const btnEl = document.getElementById('git-pull-btn');
+
+    if (!p || !p.folder) {
+        showGitFeedback('No hay proyecto activo', 'error');
+        return;
+    }
+
+    // ── Show mini terminal ──
+    const terminal = document.getElementById('git-process-terminal');
+    const outputEl = document.getElementById('git-process-output');
+    const statusEl = document.getElementById('git-process-status');
+
+    if (!terminal || !outputEl) return;
+
+    // Switch to Acciones sub-tab
+    if (typeof window.switchGitSubTab === 'function') {
+        window.switchGitSubTab('acciones');
+    }
+    setTimeout(() => {
+        const accionesPane = document.getElementById('git-subtab-acciones');
+        if (accionesPane) accionesPane.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+
+    const progressEl = document.getElementById('git-process-progress');
+    if (progressEl) {
+        progressEl.innerHTML = '<span class="git-progress-step pending">⬇️ pull ○</span>';
+    }
+    if (statusEl) { statusEl.textContent = 'Trayendo cambios...'; statusEl.className = 'git-process-status running'; }
+
+    outputEl.innerHTML = `<div class="git-process-line">⬇️ <strong>Git Pull</strong></div><div class="git-process-separator"></div>`;
+
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⬇ PULLEANDO...'; }
+
+    try {
+        const res = await fetch(`${window.API_BASE}/utils/git-pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: p.folder })
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            if (progressEl) progressEl.innerHTML = '<span class="git-progress-step done">⬇️ pull ✓</span>';
+            if (statusEl) { statusEl.textContent = 'Pull exitoso'; statusEl.className = 'git-process-status done'; }
+            outputEl.innerHTML += `<div class="git-process-line success">✅ Pull completado</div>`;
+            if (data.output) {
+                outputEl.innerHTML += `<pre class="git-process-line dim" style="white-space:pre-wrap;margin-top:6px">${escapeHtml(data.output)}</pre>`;
+            }
+        } else {
+            throw new Error(data.error || 'Error desconocido');
+        }
+    } catch (error) {
+        if (progressEl) progressEl.innerHTML = '<span class="git-progress-step error">⬇️ pull ✗</span>';
+        if (statusEl) { statusEl.textContent = 'Error'; statusEl.className = 'git-process-status error'; }
+        outputEl.innerHTML += `<div class="git-process-line error">❌ ${escapeHtml(error.message)}</div>`;
+    }
+
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '⬇ PULL'; }
+
+    // Refresh log automáticamente
+    setTimeout(() => {
+        if (typeof window.refreshGitTab === 'function') window.refreshGitTab();
+    }, 500);
+};
+
 // Reset hard to origin
 window.handleGitResetOrigin = async () => {
     const project = window.getActiveProject();
@@ -1149,6 +1226,21 @@ async function doGitResetOrigin(project) {
         showGitFeedback('Error de conexión o remoto no disponible', 'error');
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// SUB-TAB SWITCHING (Grafo / Acciones)
+// ═══════════════════════════════════════════════════════════════
+
+window.switchGitSubTab = (tabName) => {
+    // Update tab buttons
+    document.querySelectorAll('.git-sub-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.gitSubtab === tabName);
+    });
+    // Update tab content panes
+    document.querySelectorAll('.git-subtab-content').forEach(pane => {
+        pane.classList.toggle('active', pane.id === `git-subtab-${tabName}`);
+    });
+};
 
 // ═══════════════════════════════════════════════════════════════
 // NAMESPACED API (acceso programático)

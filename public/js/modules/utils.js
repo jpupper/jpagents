@@ -97,9 +97,11 @@ export function createChat(project, opts = {}) {
         id: 'chat-' + (Date.now().toString(36) + Math.random().toString(36).substr(2)),
         name: chatName, messages: [], isThinking: false, isRunning: false, isStreaming: false, isStopped: false,
         mode, lastProgress: Date.now(), model: model || project?.model || 'deepseek-v4-flash', useHermes, isNew: true,
+        _messagesLoaded: true, // chat nuevo — ya está cargado (0 mensajes)
         skills: skills || (project?.skills ? [...project.skills] : []),
         toggleStates: { autocommit: false, vps: false, ftp: false },
-        totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalApiCalls: 0
+        totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalApiCalls: 0,
+        attachments: []
     };
 }
 

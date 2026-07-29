@@ -3,12 +3,12 @@
  */
 import { state } from './state.js';
 import { escapeHtml } from './utils.js';
-import { imagePreviewContainer, imageInput } from './dom-refs.js';
+import { imagePreviewContainer } from './dom-refs.js';
 
 export function handleImageSelection(e) {
+    console.log('[IMAGE] handleImageSelection llamado — files:', e.target.files?.length);
     const files = Array.from(e.target.files);
     addImages(files);
-    if (imageInput) imageInput.value = '';
 }
 
 export async function addImages(files) {

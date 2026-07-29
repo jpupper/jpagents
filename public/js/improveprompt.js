@@ -67,16 +67,23 @@ async function improvePrompt(targetElementId, e) {
         }
         
         // Detectar API según el modelo (misma lógica que en agent chat)
-        // Si el modelo está vacío, forzar Ollama local
+        // Usar data-provider del option del select si está disponible
         if (selectedModel) {
-            if (selectedModel.includes('/')) {
+            const modelOpt = document.querySelector('select option[value="' + CSS.escape(selectedModel) + '"]');
+            const providerFromOpt = modelOpt ? modelOpt.dataset.provider : null;
+            
+            if (providerFromOpt === 'openrouter' || selectedModel.includes('/')) {
                 apiKey = state.openrouterApiKey;
                 baseUrl = "https://openrouter.ai/api/v1";
-            } else if (selectedModel.startsWith('deepseek')) {
+            } else if (providerFromOpt === 'deepseek' || selectedModel.startsWith('deepseek')) {
                 apiKey = state.deepseekApiKey;
                 baseUrl = "https://api.deepseek.com";
-            } else if (selectedModel.startsWith('gpt') || selectedModel.startsWith('o1') || selectedModel.startsWith('o3')) {
+            } else if (providerFromOpt === 'openai' || selectedModel.startsWith('gpt') || selectedModel.startsWith('o1') || selectedModel.startsWith('o3')) {
                 apiKey = state.openaiApiKey;
+            } else if (providerFromOpt === 'local' || !providerFromOpt) {
+                // Ollama local
+                apiKey = null;
+                baseUrl = null;
             } else if (state.customApiBase) {
                 baseUrl = state.customApiBase;
             }

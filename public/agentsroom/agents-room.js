@@ -34,6 +34,7 @@ const orbitSlider = document.getElementById('orbit-radius-slider');
 const orbitVal = document.getElementById('orbit-radius-val');
 const calibReset = document.getElementById('calib-reset');
 const ghostToggle = document.getElementById('ghost-toggle');
+const offlineToggle = document.getElementById('offline-toggle');
 
 calibBtn.addEventListener('click', () => {
   S.setCalibPanelOpen(!S.calibPanelOpen);
@@ -61,11 +62,18 @@ ghostToggle.addEventListener('change', () => {
   refreshAgents(true);
 });
 
+offlineToggle.addEventListener('change', () => {
+  S.calibState.showOfflineAgents = offlineToggle.checked;
+  refreshAgents(true);
+});
+
 calibReset.addEventListener('click', () => {
   polarSlider.value = S.CALIB_DEFAULTS.polarRadius;
   orbitSlider.value = S.CALIB_DEFAULTS.orbitRadius;
   ghostToggle.checked = S.CALIB_DEFAULTS.showGhosts;
+  offlineToggle.checked = S.CALIB_DEFAULTS.showOfflineAgents;
   S.calibState.showGhosts = S.CALIB_DEFAULTS.showGhosts;
+  S.calibState.showOfflineAgents = S.CALIB_DEFAULTS.showOfflineAgents;
   applyCalibration();
   refreshAgents(true);
 });

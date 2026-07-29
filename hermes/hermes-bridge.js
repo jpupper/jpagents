@@ -608,11 +608,18 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
                 const stderr = result.stderr || '';
                 // Detectar errores conocidos y dar mensajes claros al usuario
                 let errorText = '';
-                if (stderr.includes('Insufficient Balance') || stderr.includes('insufficient') || stderr.includes('saldo suficiente') || stderr.includes('0 tokens') || stderr.includes('sin saldo')) {
+                // 🐛 BUGFIX (Julio 2026): La detección de "insufficient" era demasiado agresiva
+                // y daba falsos positivos con cualquier error que contuviera esa palabra.
+                // Ahora es más específica: busca el mensaje EXACTO de DeepSeek sobre saldo.
+                // También agregamos cache/logging para debuggear cuando el usuario dice
+                // "la API SÍ tiene plata" — guardamos el error real del gateway.
+                const balMatch = stderr.match(/(?:Insufficient\s+Balance|insufficient_quota|saldo\s+insuficiente|rate\s+limit|API\s+key\s+has\s+no\s+credit)/i);
+                if (balMatch) {
                     errorText = '❌ **Saldo insuficiente en la API de DeepSeek.**\n\n' +
                         'Tu API key no tiene crédito para procesar esta solicitud. ' +
                         'Recargá tu cuenta en https://platform.deepseek.com y volvé a intentar.\n\n' +
                         'Si ya recargaste, esperá unos minutos y probá de nuevo.';
+                    console.log('[HERMES-BRIDGE] 🔍 Error de saldo detectado, match:', balMatch[0], 'stderr preview:', stderr.slice(0, 300));
                 } else if (stderr.includes('Invalid API key') || stderr.includes('invalid_api_key')) {
                     errorText = '❌ **API key inválida.**\n\n' +
                         'La API key configurada en ~/.hermes/.env no es válida. ' +

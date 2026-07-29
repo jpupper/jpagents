@@ -14,6 +14,7 @@ export function sanitizeProject(p) {
         name: p.name || 'Proyecto sin nombre',
         folder: p.folder || '',
         model: p.model || '',
+        _loaded: true, // Proyectos creados localmente o cargados completos
         chats: Array.isArray(p.chats) ? p.chats.map(c => ({
             ...c,
             mode: c.mode || 'auto',

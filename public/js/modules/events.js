@@ -61,6 +61,22 @@ function connectGlobalWS() {
                     refreshConsoleUI();
                     if (window.refreshHermesInstances) window.refreshHermesInstances();
                     if (window.__updateHermesUI) window.__updateHermesUI();
+                } else if (data.event === 'gateway:status') {
+                    const dot = document.getElementById('gateway-status-dot');
+                    if (dot) {
+                        dot.classList.remove('off');
+                        dot.classList.toggle('live', data.running === true);
+                        dot.classList.toggle('dead', data.running !== true);
+                    }
+                    const runBtn = document.getElementById('gateway-run-btn');
+                    const stopBtn = document.getElementById('gateway-stop-btn');
+                    if (data.running) {
+                        if (runBtn) runBtn.classList.add('hidden');
+                        if (stopBtn) stopBtn.classList.remove('hidden');
+                    } else {
+                        if (stopBtn) stopBtn.classList.add('hidden');
+                        if (runBtn) runBtn.classList.remove('hidden');
+                    }
                 }
                 // ─── TELEGRAM MONITOR EVENTS ───
                 if (data.event === 'telegram:incoming') {

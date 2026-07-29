@@ -15,6 +15,21 @@
   display: none !important;
 }
 
+/* File input oculto visualmente pero accesible para .click() */
+.file-input-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -109,14 +124,53 @@ body {
     margin-left: 0;
 }
 
+/* Gateway Start/Stop Buttons */
+.btn-gateway-run,
+.btn-gateway-stop {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.65rem;
+    transition: all 0.2s;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.btn-gateway-run:hover {
+    background: #4caf50;
+    border-color: #4caf50;
+    color: white;
+}
+.btn-gateway-stop:hover {
+    background: #f44336;
+    border-color: #f44336;
+    color: white;
+}
+.btn-gateway-run.hidden,
+.btn-gateway-stop.hidden {
+    display: none !important;
+}
+
 .header-actions {
   display: flex;
   gap: 8px;
   margin-bottom: 1.5rem;
 }
 
+.header-actions > * {
+  height: 44px;
+  border-radius: 10px !important;
+}
+
 .btn-primary {
-  flex: 1;
+  width: 44px;
   padding: 0.8rem;
   border-radius: 12px;
   border: none;
@@ -125,6 +179,9 @@ body {
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.2s, opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .btn-danger-outline {
@@ -224,6 +281,53 @@ body {
 }
 
 @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+
+/* ─── Spinner de carga para proyectos lazy-load ─── */
+.chat-item.loading .project-loading-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+  margin-left: 6px;
+  font-size: 14px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* ─── Loading overlay para carga de mensajes de chat ─── */
+.chat-loading-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 16px;
+}
+
+.chat-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(124, 77, 255, 0.2);
+  border-top: 3px solid var(--accent-color, #7c4dff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.chat-loading-text {
+  color: var(--text-secondary, #888);
+  font-size: 14px;
+  font-style: italic;
+}
+
+.chat-item.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.chat-item.loading .session-name {
+  pointer-events: none;
+}
 
 /* Main Content area */
 /* =============================================
@@ -673,6 +777,25 @@ optgroup {
   position: relative;
 }
 
+/* Drag & drop visual feedback */
+#chat-tab-content.drag-over::after {
+  content: '📄 Suelta el archivo aquí';
+  position: absolute;
+  inset: 0;
+  background: rgba(124, 77, 255, 0.15);
+  border: 3px dashed var(--accent-color, #7c4dff);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--accent-color, #7c4dff);
+  z-index: 100;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
 /* CHAT MESSAGES SCROLL AREA */
 .chat-messages {
   flex: 1;
@@ -705,6 +828,46 @@ optgroup {
     display: flex;
     align-items: center;
     gap: 15px;
+}
+
+.agent-model-badge {
+    font-size: 0.75rem;
+    background: var(--accent-color);
+    color: #fff;
+    padding: 2px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
+    font-weight: 500;
+    opacity: 0.9;
+    transition: opacity 0.2s;
+}
+
+.agent-model-badge.hidden {
+    display: none;
+}
+
+.agent-model-badge.type-deepseek {
+    background: #0ea5e9;
+}
+
+.agent-model-badge.type-openrouter {
+    background: #f59e0b;
+}
+
+.agent-model-badge.type-local {
+    background: #22c55e;
+}
+
+.agent-model-badge.type-cloud {
+    background: #6366f1;
+}
+
+/* Badge al lado de la ruedita en chat-header-actions */
+.chat-header-actions .agent-model-badge {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    margin-right: 4px;
+    align-self: center;
 }
 
 #chat-agent-name {
@@ -767,140 +930,72 @@ optgroup {
 
 
 .message.user { align-self: flex-end; background: var(--accent-gradient); color: white; }
-.message.agent { align-self: flex-start; background: var(--card-bg); border: 1px solid var(--border-color); }
+.message.agent { align-self: flex-start; background: var(--card-bg); border: 1px solid var(--border-color); contain: content; }
+/* CSS reset interno para respuestas del agente — evitar que el HTML del agente filtre estilos */
+.message.agent .agent-content { }
+.message.agent .agent-content p { margin-bottom: 0.8rem; color: var(--text-primary); }
+.message.agent .agent-content p:last-child { margin-bottom: 0; }
+.message.agent .agent-content strong { color: #fff; font-weight: 600; }
+.message.agent .agent-content ul, .message.agent .agent-content ol { margin-left: 1.2rem; margin-bottom: 0.8rem; }
+.message.agent .agent-content li { margin-bottom: 0.3rem; }
+.message.agent .agent-content a { color: var(--accent-color); text-decoration: underline; }
+.message.agent .agent-content h1, .message.agent .agent-content h2, .message.agent .agent-content h3, 
+.message.agent .agent-content h4, .message.agent .agent-content h5, .message.agent .agent-content h6 { 
+  color: var(--text-primary); margin: 1rem 0 0.5rem; font-weight: 600; 
+}
+.message.agent .agent-content blockquote {
+  border-left: 3px solid var(--border-color); padding-left: 1rem; color: var(--text-secondary); margin: 0.8rem 0;
+}
+.message.agent .agent-content table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
+.message.agent .agent-content th, .message.agent .agent-content td { 
+  border: 1px solid var(--border-color); padding: 0.5rem; text-align: left; 
+}
+.message.agent .agent-content th { background: var(--card-bg); font-weight: 600; }
+/* Code block wrapper (replaces file-collapsible) */
+.code-block-wrapper {
+  margin: 1rem 0;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-color);
+}
+.code-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border-color);
+}
+.code-filename {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-color);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+.code-lang-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 10px;
+  border-radius: 4px;
+}
+.code-block-wrapper pre {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  overflow-x: auto;
+}
+.code-block-wrapper pre code {
+  padding: 1rem !important;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
 .message.system { align-self: center; background: rgba(255, 255, 255, 0.03); color: var(--text-secondary); border: 1px solid var(--border-color); font-size: 0.85rem; padding: 0.6rem 1.2rem; border-radius: 12px; text-align: center; max-width: 90%; margin: 0.5rem 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
 
-/* Hermes Progress — consola en vivo estilo terminal */
-.message.system.hermes-progress {
-    align-self: stretch;
-    max-width: 100%;
-    width: 100%;
-    text-align: left;
-    padding: 0;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    margin: 0.25rem 0;
-    border-radius: 0;
-    overflow: hidden;
-    min-height: 32px; /* Evita colapso en flexbox column con overflow:hidden */
-}
-.hermes-progress-toggle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    background: rgba(0, 229, 255, 0.04);
-    border: 1px solid rgba(0, 229, 255, 0.12);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    user-select: none;
-}
-.hermes-progress-toggle:hover {
-    background: rgba(0, 229, 255, 0.08);
-    border-color: rgba(0, 229, 255, 0.25);
-}
-.hermes-progress-toggle .progress-arrow {
-    font-size: 0.6rem;
-    color: rgba(0, 229, 255, 0.5);
-    flex-shrink: 0;
-    transition: transform 0.2s ease;
-}
-.hermes-progress-toggle.maximized .progress-arrow {
-    transform: rotate(0deg);
-}
-.hermes-progress-toggle .progress-summary {
-    font-size: 0.75rem;
-    color: rgba(0, 229, 255, 0.85);
-    font-weight: 500;
-    line-height: 1.3;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.hermes-progress-detail {
-    margin-top: 4px;
-    background: #0d1117;
-    border: 1px solid rgba(48, 54, 61, 0.5);
-    border-radius: 8px;
-    padding: 10px 14px;
-    max-height: 260px;
-    overflow-y: auto;
-    font-family: 'SF Mono', 'Consolas', 'Cascadia Code', 'JetBrains Mono', monospace;
-}
-.hermes-progress-detail pre {
-    margin: 0;
-    font-size: 0.8rem;
-    color: #8b949e;
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: break-word;
-    font-family: inherit;
-    line-height: 1.5;
-    width: 100%;
-    max-width: 100%;
-}
-.hermes-progress-detail pre .tool-line {
-    color: #58a6ff;
-}
-.hermes-progress-detail pre .tool-icon {
-    color: #d2a8ff;
-}
-.hermes-progress-detail pre .status-ok {
-    color: #3fb950;
-}
-.hermes-progress-detail pre .status-err {
-    color: #f85149;
-}
-.hermes-progress-detail pre .diff-add {
-    color: #3fb950;
-    background-color: rgba(56, 139, 60, 0.15);
-    display: block;
-    padding: 0 4px;
-}
-.hermes-progress-detail pre .diff-del {
-    color: #f85149;
-    background-color: rgba(248, 81, 73, 0.15);
-    display: block;
-    padding: 0 4px;
-}
-.hermes-progress-detail pre .thinking-line {
-    color: #ffca28;
-    font-style: italic;
-}
-.hermes-progress-detail::-webkit-scrollbar { width: 4px; }
-.hermes-progress-detail::-webkit-scrollbar-thumb { background: rgba(48,54,61,0.8); border-radius: 4px; }
-
-/* Finished progress — show minimized with muted indicator */
-.message.hermes-progress.completed {
-    opacity: 0.75;
-}
-.message.hermes-progress.completed .hermes-progress-toggle {
-    background: rgba(48, 219, 91, 0.04);
-    border-color: rgba(48, 219, 91, 0.1);
-}
-.message.hermes-progress.completed .hermes-progress-toggle:hover {
-    background: rgba(48, 219, 91, 0.08);
-    border-color: rgba(48, 219, 91, 0.2);
-}
-.message.hermes-progress.completed .progress-summary {
-    color: rgba(48, 219, 91, 0.6);
-}
-.message.hermes-progress.errored {
-    opacity: 0.85;
-}
-.message.hermes-progress.errored .hermes-progress-toggle {
-    background: rgba(248, 81, 73, 0.04);
-    border-color: rgba(248, 81, 73, 0.12);
-}
-.message.hermes-progress.errored .hermes-progress-toggle:hover {
-    background: rgba(248, 81, 73, 0.08);
-    border-color: rgba(248, 81, 73, 0.25);
-}
-.message.hermes-progress.errored .progress-summary {
-    color: rgba(248, 81, 73, 0.7);
-}
+/* ─── Done: hermes-progress styles removed — tool calls stream into assistant message ─── */
 
 /* ─── Hermes Tab Console ─── */
 #hermes-tab-content {
@@ -1032,13 +1127,9 @@ optgroup {
     cursor: not-allowed;
 }
 
-.message.agent p { margin-bottom: 0.8rem; }
-.message.agent p:last-child { margin-bottom: 0; }
-.message.agent strong { color: #fff; font-weight: 600; }
-.message.agent ul, .message.agent ol { margin-left: 1.2rem; margin-bottom: 0.8rem; }
-.message.agent li { margin-bottom: 0.3rem; }
 /* Diff highlighting inside code blocks in agent messages */
-.message.agent pre code .code-diff-add {
+.message.agent pre code .code-diff-add,
+.message.agent .code-block-wrapper pre code .code-diff-add {
     color: #3fb950;
     background-color: rgba(63, 185, 80, 0.12);
     display: block;
@@ -1046,7 +1137,8 @@ optgroup {
     margin: 0 -8px;
     border-left: 3px solid #3fb950;
 }
-.message.agent pre code .code-diff-del {
+.message.agent pre code .code-diff-del,
+.message.agent .code-block-wrapper pre code .code-diff-del {
     color: #f85149;
     background-color: rgba(248, 81, 73, 0.12);
     display: block;
@@ -1054,7 +1146,8 @@ optgroup {
     margin: 0 -8px;
     border-left: 3px solid #f85149;
 }
-.message.agent pre code .code-diff-hunk {
+.message.agent pre code .code-diff-hunk,
+.message.agent .code-block-wrapper pre code .code-diff-hunk {
     color: #79c0ff;
     font-weight: 600;
     display: block;
@@ -1213,6 +1306,24 @@ optgroup {
   filter: brightness(1.1);
 }
 
+.btn-danger-sm {
+  background: linear-gradient(135deg, #dc3545, #c82333);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, filter 0.2s;
+  margin-left: 6px;
+}
+
+.btn-danger-sm:hover {
+  opacity: 0.9;
+  filter: brightness(1.2);
+}
+
 /* INPUT AREA FIXED AT BOTTOM */
 .input-area {
   padding: 1rem 0;
@@ -1225,12 +1336,41 @@ textarea {
   background: none;
   border: none;
   color: var(--text-primary);
-  resize: vertical; /* Permitir resize manual si se desea */
+  resize: none;
   font-family: inherit;
   font-size: 1rem;
   outline: none;
   min-height: 60px;
-  max-height: 200px;
+}
+.input-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 2rem;
+  right: 2rem;
+  height: 5px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.2s;
+  z-index: 20;
+}
+.input-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  pointer-events: none;
+}
+.input-resize-handle:hover,
+.input-resize-handle.active {
+  background: var(--accent-color);
+  box-shadow: 0 0 12px rgba(124, 77, 255, 0.4);
+}
+
+/* Input-area wrapper grows with textarea */
+.input-wrapper {
+  align-items: flex-start;
 }
 
 /* Multimodal & Input Area Enhancements */
@@ -1242,6 +1382,12 @@ textarea {
   display: flex;
   align-items: center; /* Alineado al centro para inputs de una línea, pero el textarea crece */
   gap: 1rem;
+}
+
+#chat-input {
+  background: #141418;
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
 }
 
 .input-actions-left, .input-actions-right {
@@ -1332,11 +1478,11 @@ textarea {
     transform: translateY(-2px);
 }
 
-.btn-icon-subtle#attach-img {
+.btn-icon-subtle#attach-file-btn {
     color: var(--text-secondary);
 }
 
-.btn-icon-subtle#attach-img:hover {
+.btn-icon-subtle#attach-file-btn:hover {
     color: white;
 }
 
@@ -1412,14 +1558,14 @@ textarea {
   justify-content: center;
 }
 
-/* ─── PDF Preview ─── */
+/* ─── File Attachments (pills) ─── */
 .pdf-preview-container {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 8px 12px;
-  background: rgba(255, 200, 50, 0.08);
-  border: 1px solid rgba(255, 200, 50, 0.25);
+  background: rgba(100, 200, 255, 0.06);
+  border: 1px solid rgba(100, 200, 255, 0.15);
   border-radius: 10px;
   margin-bottom: 8px;
   max-width: 100%;
@@ -1428,29 +1574,28 @@ textarea {
 .pdf-preview-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pdf-preview-icon {
-  font-size: 16px;
+  font-size: 14px;
   flex-shrink: 0;
 }
 
-.pdf-preview-name {
+.pdf-preview-label {
   flex: 1;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-color, #e0e0e0);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .pdf-clear-btn {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  font-size: 12px;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
   border-radius: 50%;
   background: rgba(255, 68, 68, 0.15);
   color: var(--danger-color, #ff4444);
@@ -1465,38 +1610,68 @@ textarea {
   background: rgba(255, 68, 68, 0.35);
 }
 
-.pdf-preview-pages {
+.pdf-preview-pills {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.pdf-preview-info {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted, #999);
-}
-
-.pdf-preview-pages-count,
-.pdf-preview-chars {
+.attachment-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  padding: 3px 8px;
+  background: rgba(100, 200, 255, 0.1);
+  border: 1px solid rgba(100, 200, 255, 0.2);
+  border-radius: 16px;
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 100%;
+  transition: background 0.15s;
+}
+.attachment-pill:hover {
+  background: rgba(100, 200, 255, 0.18);
 }
 
-.pdf-preview-text {
-  font-size: 12px;
+.attachment-pill-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.attachment-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  color: var(--text-color, #e0e0e0);
+  font-weight: 500;
+}
+
+.attachment-pill-size {
+  font-size: 10px;
+  color: var(--text-muted, #777);
+  flex-shrink: 0;
+}
+
+.attachment-pill-remove {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 50%;
+  background: transparent;
   color: var(--text-muted, #999);
-  line-height: 1.5;
-  max-height: 80px;
-  overflow-y: auto;
-  background: rgba(0,0,0,0.15);
-  border-radius: 6px;
-  padding: 6px 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: 'Courier New', monospace;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+.attachment-pill-remove:hover {
+  background: rgba(255, 68, 68, 0.3);
+  color: #ff4444;
 }
 
 .send-btn {
@@ -2387,7 +2562,6 @@ pre code.hljs {
     color: var(--text-primary);
     background: rgba(124, 77, 255, 0.05);
 }
-
 /* Dashboard Console Styling */
 .dashboard-console {
     margin-top: 2rem;
@@ -3672,6 +3846,20 @@ pre code.hljs {
 }
 
 
+
+.agent-name-badge {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: rgba(124, 77, 255, 0.15);
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: 1px solid rgba(124, 77, 255, 0.2);
+}
 
 .chat-header-actions {
     display: flex;
@@ -5433,6 +5621,49 @@ pre code.hljs {
   position: relative;
 }
 
+/* ── Git sub-tabs (Grafo / Acciones) ── */
+.git-sub-tabs {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0;
+  margin: 0;
+  border-bottom: 1px solid #30363d;
+  background: transparent;
+}
+.git-sub-tab {
+  padding: 8px 16px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #8b949e;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  user-select: none;
+  letter-spacing: 0.02em;
+}
+.git-sub-tab:hover {
+  color: #c9d1d9;
+  background: rgba(255,255,255,0.03);
+}
+.git-sub-tab.active {
+  color: #f0f6fc;
+  border-bottom-color: #58a6ff;
+  font-weight: 600;
+}
+
+/* ── Sub-tab content panes ── */
+.git-subtab-content {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.git-subtab-content.active {
+  display: flex;
+}
+
 .git-commit-group {
   display: flex;
   flex-direction: row;
@@ -5501,6 +5732,12 @@ pre code.hljs {
   color: #58a6ff;
   border-color: #58a6ff;
   background: rgba(88, 166, 255, 0.1);
+}
+
+.git-pull-btn:hover {
+  color: #d2a8ff;
+  border-color: #d2a8ff;
+  background: rgba(210, 168, 255, 0.1);
 }
 
 /* ═══════════════════════════════════════════════════
@@ -6188,13 +6425,15 @@ pre code.hljs {
    ═══════════════════════════════════════════════════ */
 
 .git-process-terminal {
-  margin: 0 0 12px 0;
+  margin: 0;
   background: #0d1117;
   border: 1px solid #30363d;
   border-radius: 10px;
   overflow: hidden;
   animation: terminalSlideIn 0.3s ease-out;
-  max-height: 500px;
+  max-height: none;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(63, 185, 80, 0.08);
@@ -6212,9 +6451,26 @@ pre code.hljs {
   background: #161b22;
   border-bottom: 1px solid #21262d;
   font-size: 0.72rem;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
   transition: background 0.15s;
+}
+
+.git-process-close-btn {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+  line-height: 1;
+  transition: all 0.15s;
+  margin-left: auto;
+}
+.git-process-close-btn:hover {
+  color: #f0f6fc;
+  background: rgba(255,255,255,0.08);
 }
 
 .git-process-header:hover {
@@ -6297,8 +6553,9 @@ pre code.hljs {
   line-height: 1.55;
   color: #c9d1d9;
   overflow-y: auto;
-  max-height: 350px;
+  max-height: none;
   flex: 1;
+  min-height: 0;
 }
 
 .git-process-line {

@@ -29,9 +29,10 @@ S.calibState = {
   polarRadius: 180,
   orbitRadius: 42,
   showGhosts: true,
+  showOfflineAgents: false,
 };
 S.calibPanelOpen = false;
-S.CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42, showGhosts: true };
+S.CALIB_DEFAULTS = { polarRadius: 180, orbitRadius: 42, showGhosts: true, showOfflineAgents: false };
 S.cleanupFrameCounter = 0;
 
 // ─── GEOMETRY POOL ───

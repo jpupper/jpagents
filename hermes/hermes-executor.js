@@ -50,7 +50,7 @@ const DEFAULT_TIMEOUT = 600000; // 10 minutos
 const DEFAULT_HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
 const MAX_QUERY_BYTES = 20000;   // Safety por ENAMETOOLONG en Windows (32K CLI limit)
 const MAX_HISTORY_MSGS = 10;
-const MAX_MSG_LENGTH = 2000;
+const MAX_MSG_LENGTH = 99999999; // sin límite efectivo
 const THINKING_INTERVAL = 3000;  // 3 segundos entre updates de pensamiento
 const MAX_TOTAL_CMD_LINE = 29000; // Hard cap: Windows CreateProcess limit es 32,767. Usamos 29K para margen de quoting/especiales.
                                   // Este límite se verifica JUSTO antes del spawn, calculando

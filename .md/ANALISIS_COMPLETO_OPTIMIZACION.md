@@ -1,6 +1,6 @@
-# ANÁLISIS COMPLETO DE OPTIMIZACIÓN — JP Agents (ACTUALIZADO 11-Jun-2026)
+# ANÁLISIS COMPLETO DE OPTIMIZACIÓN — JP Agents (ACTUALIZADO 29-Jul-2026)
 
-> ⚠️ **ESTE ANÁLISIS FUE ACTUALIZADO** respecto a la versión anterior (20-Jun-2026).
+> ⚠️ **ESTE ANÁLISIS FUE ACTUALIZADO** respecto a la versión anterior (11-Jun-2026).
 > El análisis original asumía que los módulos no estaban creados. En realidad:
 > - TODOS los módulos existen en `public/js/modules/`
 > - TODOS están importados en main.js
@@ -8,7 +8,7 @@
 
 ---
 
-## ✅ COMPLETAMENTE HECHO (sin duplicados)
+## ✅ COMPLETAMENTE HECHO (sin duplicados en main.js)
 
 | Módulo | Estado | Notas |
 |--------|--------|-------|
@@ -18,74 +18,57 @@
 | **api.js** | ✅ 0 duplicados | ~50 endpoints unificados |
 | **search-filter.js** | ✅ 0 duplicados | Único módulo sin duplicación en main.js |
 | **drag-drop.js** | ✅ 0 duplicados | Solo expone window.* functions |
+| **admin-engine.js** | ✅ SIN duplicados | `renderAdminMessages`, `renderGodMessages`, `renderTelegramMessages` solo en módulo |
+| **agent-table.js** | ✅ SIN duplicados | `renderAdminMonitor`, `updateAgentBadge` solo en módulo |
+| **chat-ui.js** | ✅ SIN duplicados | `renderMessages`, `showToast`, `updateThinking`, etc. solo en módulo |
+| **console-view.js** | ✅ SIN duplicados | `refreshConsoleUI` solo en módulo |
+| **file-editor.js** | ✅ SIN duplicados | `handleFileClick` solo en módulo |
+| **image-upload.js** | ✅ SIN duplicados | `addImages`, `renderImagePreviews`, `clearImages` solo en módulo |
+| **hermes-engine.js** | ✅ SIN duplicados | `triggerHermesLogic`, `handleHermesStatus` solo en módulo |
+| **terminal-ui.js** | ✅ SIN duplicados | `appendToTerminal`, `connectTerminalStream`, `runTerminalCommand` solo en módulo |
+| **project-ui.js** | ✅ SIN duplicados | `renderProjectList`, `renderTabs` solo en módulo |
 
 ---
 
-## 🔶 PARCIALMENTE HECHO (función existe EN AMBOS lados)
+## 🔶 PARCIALMENTE HECHO (función existe EN AMBOS lados — main.js + módulo)
 
-Cada módulo tiene `export function` Y la misma función sigue definida en `main.js`.
+Estos son los módulos que **TODAVÍA** tienen funciones duplicadas en `main.js`.
 **El trabajo restante**: importar desde el módulo, eliminar la copia de main.js,
 y asegurar que las versiones del módulo tengan la misma funcionalidad.
 
-### 1. admin-engine.js
-- ✅ `renderAdminMessages`, `renderGodMessages` exportados **Y** en main.js (duplicados)
-- ❌ **`renderTelegramMessages` NO existe en admin-engine.js** — solo en main.js (línea 4357)
-- ❌ **events.js importa `renderTelegramMessages` desde admin-engine.js (línea 47) → ESTO ESTÁ ROTO**
-- ✅ `window.clearAdminChat` en admin-engine.js
+### 1. models-ui.js — 3 funciones duplicadas en main.js
+| Función | main.js (línea) | Módulo exporta |
+|---------|----------------|----------------|
+| `fetchModels` | 2716 | ✅ |
+| `renderModelSelects` | 2733 | ✅ |
+| `checkVisionCapability` | 2813 | ✅ |
 
-### 2. agent-engine.js
-- ✅ `triggerAgentLogic`, `processAgentActions`, `performWrite`, `autoRetry`, `performAutomaticValidation` exportados
-- ⚠️ Las versiones del módulo son **simplificadas** vs main.js (pierden funcionalidad)
+⚠️ **Problema:** Las versiones de main.js son MÁS COMPLETAS que las del módulo.
 
-### 3. agent-table.js
-- ✅ `renderAdminMonitor`, `updateAgentBadge` exportados **Y** en main.js (duplicados)
+### 2. skills-ui.js — 5 funciones duplicadas en main.js
+| Función | main.js (línea) | Módulo exporta |
+|---------|----------------|----------------|
+| `loadSkills` | 2134 | ✅ (más simple — no cachea skills Hermes ni filtra categorías ocultas) |
+| `renderSkillsList` | 2179 | ✅ (más simple — sin icons, badges ni categorías) |
+| `updateSkillSelects` | 2267 | ✅ |
+| `renderAgentSkills` | 2475 | ✅ |
+| `renderProjectSkills` | 2513 | ✅ |
 
-### 4. chat-ui.js
-- ✅ `renderMessages`, `showToast`, `updateThinking`, `playAgentCompleteSound`, `playAgentErrorSound` exportados
-- ✅ `updateThinking` agregado (mencionado en análisis anterior como pendiente)
+### 3. agent-engine.js — 2 funciones duplicadas en main.js
+| Función | main.js (línea) | Módulo exporta |
+|---------|----------------|----------------|
+| `triggerAgentLogic` | ~4236 | ✅ (simplificada — versión ~500 líneas menos) |
+| `performAutomaticValidation` | ~4148 | ✅ |
 
-### 5. console-view.js
-- ✅ `refreshConsoleUI` exportado **Y** en main.js (duplicado)
-- ⚠️ **Versiones diferentes**: main.js usa fetch directo, módulo usa `api.clientLogs()`
+⚠️ `triggerAgentLogic` es la **función más compleja de todo main.js** (~500+ líneas)
 
-### 6. file-editor.js
-- ✅ `handleFileClick` exportado **Y** en main.js (duplicado)
-
-### 7. image-upload.js
-- ✅ `addImages`, `renderImagePreviews`, `clearImages` exportados **Y** en main.js (duplicados)
-
-### 8. models-ui.js
-- ✅ `fetchModels`, `renderModelSelects`, `checkVisionCapability` exportados **Y** en main.js (duplicados)
-
-### 9. project-ui.js
-- ✅ `renderProjectList`, `renderTabs` exportados **Y** en main.js (usa window.* desde los módulos)
-
-### 10. session.js
-- ✅ `sanitizeProject`, `isTabBusy`, `getActiveProject`, `getActiveChat`, `saveChatDraft`, `restoreChatDraft` exportados
-- ⚠️ `saveData()` y `loadData()` **NO** están en session.js — siguen en main.js
-
-### 11. skills-ui.js
-- ✅ `loadSkills`, `renderSkillsList`, `updateSkillSelects`, `renderAgentSkills`, `renderProjectSkills` exportados
-- ⚠️ **TODAS DUPLICADAS** en main.js (versiones más completas)
-- ⚠️ `loadSkills` en módulo es más simple (no cachea skills Hermes, no filtra categorías ocultas)
-- ⚠️ `renderSkillsList` en módulo no tiene icons, badges ni categories
-
-### 12. terminal-ui.js
-- ✅ `appendToTerminal`, `connectTerminalStream`, `runTerminalCommand` exportados
-- ⚠️ **TODAS DUPLICADAS** en main.js
-- ⚠️ Versión del módulo más simple: no guarda terminalLogs, no maneja límite 1000 líneas
-- ⚠️ `runTerminalCommand` en módulo usa `window.__jpState` (no estándar)
-
-### 13. hermes-engine.js
-- ✅ `triggerHermesLogic`, `handleHermesStatus` exportados
-- ⚠️ `triggerHermesLogic` duplicada en main.js
-- ⚠️ Versión del módulo más simple (no maneja todos los casos de WS events)
-
-### 14. events.js
-- ✅ `setupWebSocket` exportado
-- ❌ **NUNCA se llama** desde main.js — main.js tiene su PROPIO `connectGlobalWS()` inline
-- ❌ **DOS implementaciones de WebSocket compitiendo**
-- ❌ Importa `renderTelegramMessages` de admin-engine.js pero **no existe allí**
+### 4. session.js — saveData/loadData NO extraídas
+| Función | main.js (línea) | Módulo exporta |
+|---------|----------------|----------------|
+| `saveData()` | ~1964 | ❌ |
+| `loadData()` | ~1359 | ❌ |
+| `sanitizeProject` | — | ✅ ya en módulo |
+| `isTabBusy` | — | ✅ ya en módulo |
 
 ---
 
@@ -94,84 +77,110 @@ y asegurar que las versiones del módulo tengan la misma funcionalidad.
 ### Funciones grandes en main.js que nunca se extrajeron:
 | Función | Línea en main.js | Impacto |
 |---------|------------------|--------|
-| `setupEventListeners()` | 5751 | ~1000+ líneas de event listeners |
-| `triggerAdminAgentLogic()` | 4442 | Núcleo del admin/orchestrator |
-| `loadData()` | 1171 | Persistencia core |
-| `saveData()` | 1546 | Persistencia core |
-| `init()` | 864 | Inicialización completa |
-| `MCPClient` class | ~293 | Cliente MCP completo |
-| Mic standalone IIFE | ~620 | Lógica de voz |
-| `createNewProject()` | 2205 | Creación de proyectos |
-| `checkSystemHealth()` | 487 | Health checks |
-| `fetchWithLog()` | 417 | API fetch con retry |
-| `performPeriodicSync()` | 534 | Sincronización periódica |
+| `setupEventListeners()` | ~5751 | ~1000+ líneas de event listeners |
+| `triggerAdminAgentLogic()` | ~4442 | Núcleo del admin/orchestrator |
+| `loadData()` | 1359 | Persistencia core |
+| `saveData()` | 1964 | Persistencia core |
+| `init()` | 1155 | Inicialización completa |
+| `MCPClient` class | ~526 | Cliente MCP completo |
+| Mic standalone IIFE | ~620 | Lógica de voz (ya reemplazada por mic.js) |
+| `createNewProject()` | 2600 | Creación de proyectos |
+| `checkSystemHealth()` | 633 | Health checks |
+| `fetchWithLog()` | 563 | API fetch con retry |
+| `performPeriodicSync()` | 679 | Sincronización periódica |
 
-### Gateway Hermes (adición RECIENTE):
+### Gateway Hermes:
 - `lib/hermes-gateway-client.js` — cliente HTTP para gateway Hermes
 - `run.bat` — verificación/arranque del gateway compartido
 - `hermes-bridge.js` — bridge de eventos Hermes
 - `hermes-executor.js` — ejecutor de Hermes CLI
 - `hermes-god-worker.js` — worker Telegram standalone
-- El run.bat v6 ahora NO arranca el gateway (usa tarea programada de Windows)
-
-### Otros archivos backend no analizados:
-- `lib/sse-parser.js` — parser de Server-Sent Events
-- `lib/tool-progress-formatter.js` — formateo de progreso de tools
-- `lib/markdown-v2.js` — formateo MarkdownV2 para Telegram
-- `lib/hermes-gateway-client.js` — cliente API Hermes Gateway
 
 ---
 
-## 🔴 PROBLEMAS CRÍTICOS DETECTADOS
+## ✅ LOGROS DESDE EL ÚLTIMO ANÁLISIS (11-Jun → 29-Jul)
 
-1. **renderTelegramMessages no existe en admin-engine.js** → events.js lo importa de ahí y va a romper en runtime
-2. **Dos implementaciones de WebSocket** — events.js (importado, no usado) vs main.js (inline, sí usado). Si alguien llama a `setupWebSocket()`, habrá 2 conexiones WS paralelas
-3. **Las versiones de los módulos son más simples** que las originales de main.js → eliminar duplicados sin migrar funcionalidad rompería features
-4. **skills-ui.js pierde features** — la versión del módulo no cachea Hermes skills ni categorías ocultas
-5. **server.js y mcp_server.js corruptos silenciosamente** — el puerto 2998 del MCP a veces ya está ocupado, y el error EADDRINUSE se traga sin process.exit, dejando al server.js funcionando sin MCP
+| Issue | Antes (11-Jun) | Ahora (29-Jul) |
+|-------|----------------|----------------|
+| `renderTelegramMessages` en admin-engine.js | ❌ No existía → roto | ✅ Existe y funciona |
+| `setupWebSocket()` llamado desde main.js | ❌ No se llamaba | ✅ Se llama (main.js:1241) |
+| main.js tamaño | ~9,300 líneas | **~9,475 líneas** |
+| Módulos importados en main.js | 18 de 20 | **18 de 20** |
+| Funciones duplicadas | **~30+** | **~10 funciones** (models-ui 3 + skills-ui 5 + agent-engine 2 ≈ 10) |
 
----
-
-## 📊 MÉTRICA ACTUALIZADA
-
-| Métrica | Valor anterior | Valor actual |
-|---------|---------------|-------------|
-| main.js tamaño | ~8,550 líneas | ~363,000 chars / ~9,300+ líneas |
-| Módulos creados | 0 de 16 | **20 de 20** (todos existen) |
-| Módulos importados en main.js | 0 de 16 | **18 de 20** (agent-engine.js no tiene import, events.js no se llama) |
-| Funciones duplicadas | N/A | **~30+ funciones** en ambos lados |
-| window.X asignaciones | ~57 | ~70+ (creció con Hermes) |
+> 📉 **Progreso:** Se pasó de ~30 funciones duplicadas a solo ~10. Muchas ya se limpiaron.
+> Las restantes son las más complejas (`triggerAgentLogic`, `fetchModels`, skills-ui completas).
 
 ---
 
-## 📋 PLAN DE ACCIÓN RECOMENDADO
+## 📊 MÉTRICA ACTUAL
 
-### Fase 1 — Arreglos críticos (inmediato)
-- [ ] Agregar `renderTelegramMessages` a admin-engine.js
-- [ ] Decidir: ¿usar events.js o mantener connectGlobalWS en main.js? (eliminar la otra)
+| Métrica | Valor (29-Jul-2026) |
+|---------|--------------------|
+| main.js tamaño | **9,475 líneas** (~425 KB) |
+| Módulos totales | **23 módulos** en `public/js/modules/` |
+| Módulos sin duplicados en main.js | **17 de 20** (sin contar task-board, pdf-reader, drag-drop) |
+| Módulos con duplicados activos | **3** (models-ui, skills-ui, agent-engine) + session.js (saveData/loadData) |
+| Funciones duplicadas activas | **~10 funciones** |
+| window.X asignaciones en main.js | **~218** |
+| `export function` en módulos | **~60+ funciones** |
 
-### Fase 2 — Migración de duplicados (uno por uno)
-Para cada módulo duplicado:
-1. Comparar versión del módulo vs main.js
-2. Migrar funcionalidades faltantes de main.js al módulo
-3. Eliminar la función duplicada de main.js
-4. Verificar que el import ya existe
+---
 
-Orden recomendado (de más fácil a más complejo):
-- [ ] console-view.js, image-upload.js, file-editor.js (fáciles)
-- [ ] models-ui.js, agent-table.js (medios)
-- [ ] terminal-ui.js, admin-engine.js (medios)
-- [ ] hermes-engine.js, skills-ui.js (complejos)
-- [ ] agent-engine.js (el más complejo, lógica de ~2200 líneas)
-- [ ] events.js (requiere decidir arquitectura WS)
+## 📋 PLAN DE ACCIÓN RECOMENDADO (ACTUALIZADO)
 
-### Fase 3 — Extracción de funciones core
-- [ ] Extraer `saveData()` / `loadData()` a session.js
-- [ ] Extraer `setupEventListeners()` a un nuevo módulo (o dividir en varios)
-- [ ] Extraer `MCPClient` a un módulo propio
-- [ ] Extraer mic standalone a un módulo
-- [ ] Extraer `createNewProject()` a project-ui.js
+### 🟢 Fase 0 — Bajito (1 hora, riesgo bajo)
+Eliminar funciones duplicadas de main.js que YA EXISTEN en los módulos.
+**Orden recomendado:**
+- [ ] **models-ui.js**: eliminar `fetchModels`, `renderModelSelects`, `checkVisionCapability` de main.js y usar imports
+- [ ] **skills-ui.js**: eliminar `loadSkills`, `renderSkillsList`, `updateSkillSelects`, `renderAgentSkills`, `renderProjectSkills` de main.js y usar imports
 
-### Fase 4 — Gateway Hermes
-- [ ] Agregar al análisis como componente permanente
-- [ ] Documentar integración run.bat ↔ gateway
+### 🟡 Fase 1 — Medio (2-3 horas, riesgo medio)
+- [ ] **session.js**: Migrar `saveData()` y `loadData()` de main.js al módulo
+- [ ] **agent-engine.js**: Reemplazar `triggerAgentLogic` de main.js por la versión del módulo (o viceversa — migrar funcionalidad faltante)
+
+### 🔴 Fase 2 — Grande (4-6 horas, riesgo alto)
+- [ ] Extraer `setupEventListeners()` (~1000+ líneas) → dividir en eventos por dominio
+- [ ] Extraer `MCPClient` → módulo propio `mcp-client.js`
+- [ ] Extraer `createNewProject()` → `project-ui.js`
+- [ ] Extraer `triggerAdminAgentLogic()` → `admin-engine.js`
+- [ ] Extraer `init()` → limpiar dejando solo lo mínimo indispensable
+- [ ] Extraer mic standalone → opcional (mic.js ya lo reemplaza parcialmente)
+
+### Fase 3 — Arquitectónico
+- [ ] Consolidar eventos: events.js + setupEventListeners
+- [ ] Reducir window.X assignments (~218 → ~100)
+- [ ] Dividir utils.js en sub-módulos si crece mucho (ya tiene 14 exports)
+
+---
+
+## NOTAS ADICIONALES
+
+### `setupWebSocket` ya funciona correctamente
+La importación de `events.js` se hace en main.js línea 8, y se llama en línea 1241.
+`events.js` a su vez llama a `connectGlobalWS()` interna y exporta `setupWebSocket`.
+No hay dos implementaciones compitiendo — la de events.js **es** la que se usa.
+
+### `renderTelegramMessages` ya está en admin-engine.js
+Ya no hay import roto. events.js puede importarla sin problemas desde admin-engine.js.
+
+### Skills UI: el módulo es más simple
+Si se eliminan las versiones de main.js, se pierden features (cache de Hermes,
+icons, badges, categorías ocultas). **Opción A**: migrar features al módulo.
+**Opción B**: mantener main.js como fuente de verdad para skills. La recomendación
+es migrar al módulo (Opción A).
+
+### `triggerAgentLogic`: el elefante en la habitación
+~500+ líneas en main.js. La versión del módulo es mucho más simple. Requiere
+comparación línea por línea para no perder funcionalidad.
+
+---
+
+## CAMBIOS DESDE LA VERSIÓN ANTERIOR (11-Jun → 29-Jul)
+
+1. ✅ `renderTelegramMessages` ahora existe en admin-engine.js — bug corregido
+2. ✅ `setupWebSocket` ahora se llama desde main.js — no hay implementaciones competidoras
+3. ✅ Se eliminaron ~20 funciones duplicadas del análisis anterior (chat-ui, admin-engine, terminal-ui, hermes-engine, console-view, image-upload, file-editor, agent-table, project-ui)
+4. 📉 main.js creció de ~9,300 a ~9,475 líneas (nuevas features > refactor avance)
+5. 🔵 Solo quedan 3 módulos con duplicaciones activas (models-ui, skills-ui, agent-engine)
+6. 🔵 saveData/loadData siguen sin migrar a session.js

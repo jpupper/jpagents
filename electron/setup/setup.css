@@ -1,0 +1,506 @@
+/* ─── JP Agents Setup Wizard Styles ───────────────────── */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #0f1117;
+  color: #e1e4e8;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.container {
+  width: 100%;
+  max-width: 640px;
+}
+
+/* ─── Header ─────────────────────────────────────────── */
+.header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.logo h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #00BFA5;
+}
+
+.subtitle {
+  color: #8b949e;
+  font-size: 14px;
+}
+
+/* ─── Steps Indicator ────────────────────────────────── */
+.steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 32px;
+  gap: 0;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.step.active .step-num {
+  background: #00BFA5;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(0, 191, 165, 0.4);
+}
+
+.step.completed .step-num {
+  background: #2ea043;
+  color: #fff;
+}
+
+.step-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  background: #21262d;
+  color: #8b949e;
+  transition: all 0.2s;
+}
+
+.step-label {
+  font-size: 13px;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+.step.active .step-label {
+  color: #e1e4e8;
+}
+
+.step-connector {
+  width: 32px;
+  height: 2px;
+  background: #21262d;
+  margin: 0 4px;
+}
+
+/* ─── Step Content ───────────────────────────────────── */
+.step-content {
+  display: none;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 28px;
+}
+
+.step-content.active {
+  display: block;
+  animation: fadeIn 0.25s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.step-content h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #f0f6fc;
+}
+
+.step-desc {
+  color: #8b949e;
+  font-size: 14px;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+/* ─── Form Elements ──────────────────────────────────── */
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #c9d1d9;
+  margin-bottom: 6px;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"] {
+  width: 100%;
+  padding: 10px 14px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #e1e4e8;
+  font-size: 14px;
+  transition: border-color 0.2s;
+  outline: none;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus {
+  border-color: #00BFA5;
+  box-shadow: 0 0 0 3px rgba(0, 191, 165, 0.15);
+}
+
+input[readonly] {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.input-wrapper input {
+  padding-right: 80px;
+}
+
+.toggle-pw {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  padding: 6px 12px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toggle-pw:hover {
+  background: #30363d;
+  color: #e1e4e8;
+}
+
+small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: #00BFA5;
+}
+
+/* ─── Provider Cards ─────────────────────────────────── */
+.provider-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.provider-card {
+  background: #0d1117;
+  border: 2px solid #21262d;
+  border-radius: 10px;
+  padding: 20px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.provider-card:hover {
+  border-color: #30363d;
+  transform: translateY(-2px);
+}
+
+.provider-card.selected {
+  border-color: #00BFA5;
+  background: rgba(0, 191, 165, 0.08);
+  box-shadow: 0 0 12px rgba(0, 191, 165, 0.15);
+}
+
+.provider-icon {
+  margin-bottom: 10px;
+}
+
+.provider-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e1e4e8;
+  margin-bottom: 4px;
+}
+
+.provider-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #21262d;
+  color: #8b949e;
+}
+
+.provider-card.selected .provider-badge {
+  background: rgba(0, 191, 165, 0.15);
+  color: #00BFA5;
+}
+
+/* ─── Buttons ────────────────────────────────────────── */
+.nav-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 24px;
+  gap: 12px;
+}
+
+.btn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: #00BFA5;
+  color: #0d1117;
+}
+
+.btn-primary:hover {
+  background: #00a88f;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: #21262d;
+  color: #e1e4e8;
+}
+
+.btn-secondary:hover {
+  background: #30363d;
+}
+
+.btn-large {
+  padding: 12px 32px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* ─── Status Cards (Gateway Step) ────────────────────── */
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.status-card.success {
+  border-color: #2ea043;
+  background: rgba(46, 160, 67, 0.08);
+}
+
+.status-card.warning {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.08);
+}
+
+.status-card.error {
+  border-color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+
+.status-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.status-icon.pending { color: #8b949e; }
+.status-icon.success { color: #2ea043; }
+.status-icon.warning { color: #d29922; }
+.status-icon.error { color: #f85149; }
+
+.status-info {
+  flex: 1;
+}
+
+.status-info strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.status-info span {
+  font-size: 12px;
+  color: #8b949e;
+  word-break: break-all;
+}
+
+.info-box {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.info-box code {
+  background: #21262d;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #f0f6fc;
+}
+
+.info-warning {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.06);
+}
+
+/* ─── Summary Card ───────────────────────────────────── */
+.summary-card {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.summary-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #21262d;
+  font-size: 14px;
+}
+
+.summary-item:last-child {
+  border-bottom: none;
+}
+
+.summary-label {
+  color: #8b949e;
+}
+
+.summary-value {
+  color: #f0f6fc;
+  font-weight: 500;
+}
+
+/* ─── Custom checkbox label spacing ──────────────────── */
+.form-group label input[type="checkbox"] ~ * {
+  vertical-align: middle;
+}
+
+/* ─── Progress Bar ──────────────────────────────────── */
+.progress-bar-wrapper {
+  width: 100%;
+  height: 8px;
+  background: #21262d;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #00BFA5, #00e6c7);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 13px;
+  color: #8b949e;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+/* ─── Accent Button ─────────────────────────────────── */
+.btn-accent {
+  background: #00BFA5;
+  color: #0d1117;
+  font-weight: 600;
+}
+
+.btn-accent:hover {
+  background: #00d4b7;
+  transform: translateY(-1px);
+  box-shadow: 0 0 16px rgba(0, 191, 165, 0.3);
+}
+
+.btn-accent:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ─── Error Info Box ────────────────────────────────── */
+.info-error {
+  border-color: #f85149;
+  background: rgba(248, 81, 73, 0.06);
+}
+
+.info-error strong {
+  color: #f85149;
+}
+
+.info-error p {
+  color: #e1e4e8;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ─── Install Actions ───────────────────────────────── */
+.install-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}

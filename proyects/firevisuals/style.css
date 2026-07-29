@@ -1,9 +1,0 @@
-body {
-    margin: 0;
-    overflow: hidden;
-    background-color: #000000;
-}
-/* Asegura que p5.js cree el canvas cubriendo toda la pantalla */
-canvas {
-    display: block;
-}

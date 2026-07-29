@@ -504,13 +504,47 @@ app.post('/api/utils/client-logs/clear', async (req, res) => {
     }
 });
 
-import { loadSessions, saveSessions, updateSessions } from './utils/session.js';
+import { loadSessions, loadSessionsLight, loadProjectById, saveSessions, updateSessions, loadChatMessages } from './utils/session.js';
 
 // Routes
 app.get('/api/sessions', async (req, res) => {
     try {
-        const sessions = await loadSessions();
-        res.json(sessions);
+        // Light mode: devuelve solo metadatos (sin messages) para carga rápida
+        // Si el query param ?full=true está presente, devuelve todo (compatibilidad)
+        if (req.query.full === 'true') {
+            const sessions = await loadSessions();
+            res.json(sessions);
+        } else {
+            const sessions = await loadSessionsLight();
+            res.json(sessions);
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Cargar un proyecto COMPLETO (con todos sus mensajes)
+app.get('/api/sessions/project/:id', async (req, res) => {
+    try {
+        const project = await loadProjectById(req.params.id);
+        if (!project) {
+            return res.status(404).json({ error: 'Proyecto no encontrado' });
+        }
+        res.json(project);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * Carga SOLO los mensajes de un chat específico (lazy-loading).
+ * Mucho más liviano que cargar el proyecto entero.
+ */
+app.get('/api/sessions/chat/:projectId/:chatId/messages', async (req, res) => {
+    try {
+        const { projectId, chatId } = req.params;
+        const messages = await loadChatMessages(projectId, chatId);
+        res.json({ messages });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1148,14 +1182,190 @@ app.post('/api/utils/git-clone', async (req, res) => {
 
 app.get('/api/models', async (req, res) => {
     try {
-        // Timeout de 3 segundos: si Ollama no responde rápido, devolvemos lista vacía
-        // en lugar de colgar la UI. Ollama es solo para agentes secundarios.
-        const response = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
-        const data = await response.json();
-        res.json(data);
+        // 1. Consultar modelos de Ollama (si está corriendo)
+        let ollamaModels = [];
+        try {
+            const ollamaRes = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(2000) });
+            if (ollamaRes.ok) {
+                const data = await ollamaRes.json();
+                ollamaModels = data.models || [];
+            }
+        } catch (_) {
+            // Ollama no está corriendo — ok
+        }
+
+        res.json({ 
+            models: ollamaModels
+        });
     } catch (error) {
-        // Si Ollama no está corriendo, devolvemos lista vacía — la UI debe seguir funcionando
         res.json({ models: [] });
+    }
+});
+
+
+
+// ─── Helper: Restart Hermes Gateway ───
+// Busca el proceso del Gateway en puerto 8642, lo mata, y lo reinicia.
+// Esto es necesario porque el Gateway lee OPENAI_BASE_URL del .env al arrancar.
+async function restartHermesGateway() {
+    try {
+        const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+        console.log('[GATEWAY-RESTART] Buscando proceso del Gateway...');
+
+        // Encontrar el PID del proceso escuchando en puerto 8642
+        let pid = null;
+        try {
+            const netstat = execSync('netstat -ano | findstr ":8642 "', { timeout: 5000 }).toString();
+            for (const line of netstat.split('\n')) {
+                if (line.includes('LISTENING') || line.includes('ESTABLISHED')) {
+                    const parts = line.trim().split(/\s+/);
+                    const foundPid = parts[parts.length - 1];
+                    if (foundPid && foundPid.match(/^\d+$/)) {
+                        pid = foundPid;
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('[GATEWAY-RESTART] No se encontró proceso en puerto 8642 (netstat)');
+        }
+
+        if (pid) {
+            console.log(`[GATEWAY-RESTART] Matando Gateway (PID ${pid})...`);
+            try {
+                execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 });
+            } catch (e) {
+                console.warn('[GATEWAY-RESTART] Error al matar proceso:', e.message);
+            }
+            // Esperar que libere el puerto
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        // Iniciar nuevo Gateway como proceso hijo
+        console.log('[GATEWAY-RESTART] Iniciando nuevo Gateway...');
+        const hermesExe = path.join(hermesHome, 'hermes-agent', 'venv', 'Scripts', 'hermes');
+        const gatewayProc = spawn(hermesExe, ['gateway', 'run', '--accept-hooks'], {
+            cwd: process.cwd(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: false,
+            shell: true,
+            env: {
+                ...process.env,
+                HERMES_HOME: hermesHome,
+                HERMES_ACCEPT_HOOKS: '1',
+            }
+        });
+
+        gatewayProc.stdout.on('data', (d) => {
+            const t = d.toString().trim();
+            if (t) console.log(`[GATEWAY-RESTART] ${t}`);
+        });
+        gatewayProc.stderr.on('data', (d) => {
+            const t = d.toString().trim();
+            if (t) console.log(`[GATEWAY-RESTART] ${t}`);
+        });
+        gatewayProc.on('error', (err) => {
+            console.error('[GATEWAY-RESTART] Error:', err.message);
+        });
+
+        // Esperar que arranque
+        for (let i = 0; i < 10; i++) {
+            try {
+                const hc = await fetch('http://127.0.0.1:8642/health', { signal: AbortSignal.timeout(1000) });
+                if (hc.ok) {
+                    console.log('[GATEWAY-RESTART] Gateway reiniciado correctamente');
+                    return true;
+                }
+            } catch (_) {}
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        console.warn('[GATEWAY-RESTART] Gateway no respondió después de 10s — puede estar arrancando todavía');
+        return false;
+    } catch (error) {
+        console.error('[GATEWAY-RESTART] Error:', error.message);
+        return false;
+    }
+}
+
+// ─── Gateway Status / Start / Stop ───
+
+// GET /api/gateway/status - Check if Hermes Gateway is running on port 8642
+app.get('/api/gateway/status', async (req, res) => {
+    try {
+        const response = await fetch('http://127.0.0.1:8642/health', { signal: AbortSignal.timeout(3000) });
+        if (response.ok) {
+            try { hermesBridge.broadcastToAll('gateway:status', { running: true }); } catch (_) {}
+            return res.json({ running: true });
+        }
+        try { hermesBridge.broadcastToAll('gateway:status', { running: false }); } catch (_) {}
+        return res.json({ running: false });
+    } catch (error) {
+        try { hermesBridge.broadcastToAll('gateway:status', { running: false }); } catch (_) {}
+        return res.json({ running: false, error: error.message });
+    }
+});
+
+// POST /api/gateway/start - Start the Hermes Gateway
+app.post('/api/gateway/start', async (req, res) => {
+    try {
+        const success = await restartHermesGateway();
+        if (success) {
+            try { hermesBridge.broadcastToAll('gateway:status', { running: true }); } catch (_) {}
+            return res.json({ running: true, message: 'Gateway iniciado correctamente' });
+        }
+        // Gateway might still be starting, check again
+        for (let i = 0; i < 5; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            try {
+                const hc = await fetch('http://127.0.0.1:8642/health', { signal: AbortSignal.timeout(1000) });
+                if (hc.ok) {
+                    try { hermesBridge.broadcastToAll('gateway:status', { running: true }); } catch (_) {}
+                    return res.json({ running: true, message: 'Gateway iniciado correctamente' });
+                }
+            } catch (_) {}
+        }
+        return res.status(500).json({ running: false, message: 'Gateway no pudo iniciar' });
+    } catch (error) {
+        console.error('[GATEWAY] Error al iniciar:', error.message);
+        res.status(500).json({ running: false, error: error.message });
+    }
+});
+
+// POST /api/gateway/stop - Stop the Hermes Gateway
+app.post('/api/gateway/stop', async (req, res) => {
+    try {
+        // Find the PID listening on port 8642 and kill it
+        let pid = null;
+        try {
+            const netstat = execSync('netstat -ano | findstr ":8642 "', { timeout: 5000 }).toString();
+            for (const line of netstat.split('\n')) {
+                if (line.includes('LISTENING') || line.includes('ESTABLISHED')) {
+                    const parts = line.trim().split(/\s+/);
+                    const foundPid = parts[parts.length - 1];
+                    if (foundPid && foundPid.match(/^\d+$/)) {
+                        pid = foundPid;
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('[GATEWAY] No se encontró proceso en puerto 8642');
+        }
+
+        if (pid) {
+            try {
+                execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 });
+                console.log(`[GATEWAY] Proceso ${pid} detenido`);
+            } catch (e) {
+                console.warn('[GATEWAY] Error al detener proceso:', e.message);
+            }
+        }
+
+        try { hermesBridge.broadcastToAll('gateway:status', { running: false }); } catch (_) {}
+        res.json({ running: false, message: 'Gateway detenido' });
+    } catch (error) {
+        console.error('[GATEWAY] Error al detener:', error.message);
+        res.status(500).json({ running: false, error: error.message });
     }
 });
 
@@ -1423,6 +1633,24 @@ app.post('/api/files/rename', async (req, res) => {
         res.json({ success: true });
     } catch (error) {
         console.error(`[FILE] Error al renombrar ${oldPath}:`, error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ─── DELETE FILE ───
+app.post('/api/files/delete', async (req, res) => {
+    const { filePath } = req.body;
+    if (!filePath) {
+        return res.status(400).json({ error: 'Falta filePath' });
+    }
+
+    try {
+        const resolvedPath = path.resolve(filePath);
+        await fs.unlink(resolvedPath);
+        console.log(`[FILE] Eliminado: ${resolvedPath}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error(`[FILE] Error al eliminar ${filePath}:`, error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1954,6 +2182,21 @@ app.post('/api/utils/git-reset', async (req, res) => {
     }
 });
 
+app.post('/api/utils/git-pull', async (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
+
+    console.log(`[SERVER] Git Pull en: ${folderPath}`);
+
+    try {
+        const { stdout: fetchOut } = await execAsync('git pull', { cwd: folderPath });
+        res.json({ success: true, output: fetchOut });
+    } catch (error) {
+        console.error('[SERVER] Git Pull Error:', error.message);
+        res.status(500).json({ error: error.message, stdout: error.stdout, stderr: error.stderr });
+    }
+});
+
 app.post('/api/utils/git-status', async (req, res) => {
     const { folderPath } = req.body;
     if (!folderPath) return res.status(400).json({ error: 'Missing folderPath' });
@@ -2244,7 +2487,8 @@ app.get('/api/admin/agents', async (req, res) => {
         if (sessions.projects) {
             for (const project of sessions.projects) {
                 if (project.chats) {
-                    for (const chat of project.chats) {
+                    const openChats = project.chats.filter(c => !c.isClosed);
+                    for (const chat of openChats) {
                         const lastMsg = chat.messages && chat.messages.length > 0
                             ? chat.messages[chat.messages.length - 1]
                             : null;
@@ -2537,8 +2781,9 @@ app.get('/api/admin/projects', async (req, res) => {
                 let activeAgents = 0;
                 let totalAgents = 0;
                 if (project.chats) {
-                    totalAgents = project.chats.length;
-                    for (const chat of project.chats) {
+                    const openChats = project.chats.filter(c => !c.isClosed);
+                    totalAgents = openChats.length;
+                    for (const chat of openChats) {
                         if (chat.isThinking || chat.isRunning) {
                             activeAgents++;
                         }
@@ -4733,6 +4978,8 @@ async function gracefulShutdown(signal) {
             try { pd.proc.kill(); } catch {}
         }
     }
+
+
 
     // Cerrar Hermes Bridge
     if (typeof hermesBridge?.destroy === 'function') {

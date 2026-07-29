@@ -45,3 +45,12 @@ db/checkpoints.db
 db/checkpoints.db-shm
 db/checkpoints.db-wal
 logs/
+
+# Electron build artifacts
+electron/node_modules/
+electron/dist/
+electron/assets/icon.ico
+
+# Compiled desktop installer
+compiled/
+electron/assets/icon.png

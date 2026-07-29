@@ -3,7 +3,7 @@
  */
 import { chatMessages, sendBtn, chatInput } from './dom-refs.js';
 import { state } from './state.js';
-import { escapeHtml, ansiToHtml, formatMarkdown, formatProgressLines } from './utils.js';
+import { escapeHtml, ansiToHtml, formatMarkdown } from './utils.js';
 import { getActiveChat, getActiveProject, saveChatDraft } from './session.js';
 import { renderProjectList, renderTabs } from './project-ui.js';
 import { renderAdminMonitor, updateAgentBadge } from './agent-table.js';
@@ -60,13 +60,17 @@ export function renderMessages(shouldRenderLayout = false) {
                 imageHtml = `<div class="message-images">${m.images.map(img => `<img src="data:image/jpeg;base64,${img}" class="chat-inline-img" />`).join('')}</div>`;
             }
 
-            if (m.isProgress) {
-                // Progress messages se renderizan en el bloque dedicado abajo
-                // No renderizarlos aca evita crear elementos DOM que se eliminan inmediatamente
-                return;
+            // Wrap agent content in .agent-content para aislamiento CSS
+            if (m.role === 'assistant' || m.role === 'agent') {
+                let formatted = formatMarkdown(m.content);
+                // Sanitize: quitar etiquetas peligrosas que afectan el CSS global
+                formatted = formatted.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+                formatted = formatted.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+                formatted = formatted.replace(/<link[^>]*>/gi, '');
+                div.innerHTML = imageHtml + `<div class="agent-content">${formatted}</div>`;
+            } else {
+                div.innerHTML = imageHtml + formatMarkdown(m.content);
             }
-
-            div.innerHTML = imageHtml + formatMarkdown(m.content);
 
             if (m.role === 'assistant' && m.fileChanges && m.fileChanges.length > 0) {
                 const changesDiv = document.createElement('div');
@@ -81,82 +85,7 @@ export function renderMessages(shouldRenderLayout = false) {
         });
     }
 
-    // 🐛 BUGFIX V2: El contenedor Hermes-progress SIEMPRE visible.
-    // Estrategia corregida:
-    //   - El forEach ahora SKIPEA progress messages (antes los renderizaba y los removia).
-    //   - Creamos UN unico bloque con el estado actual del agente.
-    //   - La race condition original (saveData → sync:stateUpdate → loadData)
-    //     se previno con saveData(true) en triggerHermesLogic, que omite el
-    //     broadcast WS durante el setup inicial.
-    // Limpiar cualquier progress residual del DOM (renders anteriores)
-    chatMessages.querySelectorAll('.hermes-progress').forEach(el => el.remove());
-
-    const statusDiv = document.createElement('div');
-    statusDiv.className = 'message system hermes-progress';
-    // Buscar el ÚLTIMO progressMsg activo (no finished), no el primero.
-    // Con el fix de limpieza en triggerHermesLogic solo debería haber uno,
-    // pero si por alguna razón hay múltiples, mostrar el más reciente.
-    const allActive = chat.messages?.filter(m => m.isProgress && !m.finished) || [];
-    const activeProgress = allActive.length > 0 ? allActive[allActive.length - 1] : null;
-    const lastFinishedProgress = !activeProgress ? chat.messages?.filter(m => m.isProgress && m.finished).pop() : null;
-
-    if (activeProgress) {
-        // Hermes ejecutándose con progressMsg vivo
-        statusDiv.id = activeProgress.id;
-        const progressLines = (activeProgress.content || '').split('\n').filter(l => l.trim());
-        const summary = progressLines[0] || '⚡ Invocando Hermes...';
-        statusDiv.innerHTML = `
-            <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
-                <span class="progress-arrow">▼</span>
-                <span class="progress-summary">${escapeHtml(summary)}</span>
-            </div>
-            <div class="hermes-progress-detail" style="display: block">
-                <pre>${formatProgressLines(activeProgress.content || '')}</pre>
-            </div>
-        `;
-    } else if (lastFinishedProgress) {
-        // Hermes completó — mostrar resultado final con file changes
-        statusDiv.id = lastFinishedProgress.id;
-        const progressLines = (lastFinishedProgress.content || '').split('\n').filter(l => l.trim());
-        const summary = progressLines.find(l => l.includes('✅ Tarea completada')) || progressLines[0] || '✅ Tarea completada';
-        const hasErrors = progressLines.some(l => l.includes('❌ Error'));
-        const stateClass = hasErrors ? 'errored' : 'completed';
-        statusDiv.className = `message system hermes-progress ${stateClass}`;
-        statusDiv.innerHTML = `
-            <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
-                <span class="progress-arrow">▶</span>
-                <span class="progress-summary">${escapeHtml(summary)}</span>
-            </div>
-            <div class="hermes-progress-detail" style="display: none">
-                <pre>${formatProgressLines(lastFinishedProgress.content || '')}</pre>
-            </div>
-        `;
-    } else if (chat.isThinking) {
-        // Hermes corriendo sin progressMsg (stale chat, etc.)
-        statusDiv.innerHTML = `
-            <div class="hermes-progress-toggle maximized" onclick="window.toggleProgress(this)">
-                <span class="progress-arrow">▼</span>
-                <span class="progress-summary">⚡ Invocando Hermes...</span>
-            </div>
-            <div class="hermes-progress-detail" style="display: block">
-                <pre>${formatProgressLines(chat.thinkingSubtext || 'Procesando...')}</pre>
-            </div>
-        `;
-    } else {
-        // Hermes inactivo — SIEMPRE visible
-        statusDiv.innerHTML = `
-            <div class="hermes-progress-toggle minimized" onclick="window.toggleProgress(this)">
-                <span class="progress-arrow">▶</span>
-                <span class="progress-summary">⏸️ Hermes inactivo</span>
-            </div>
-            <div class="hermes-progress-detail" style="display: none">
-                <pre>Hermes no está ejecutándose actualmente. Enviá un mensaje para iniciar una consulta.</pre>
-            </div>
-        `;
-    }
-    chatMessages.appendChild(statusDiv);
-
-    // Si no hay mensajes, mostrar welcome screen (después del contenedor Hermes)
+    // Si no hay mensajes, mostrar welcome screen
     if (!chat.messages || chat.messages.length === 0) {
         const welcomeDiv = document.createElement('div');
         welcomeDiv.className = 'welcome-screen';

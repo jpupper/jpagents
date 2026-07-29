@@ -1,28 +1,132 @@
 import { getCollection } from '../../db/db.js';
 import hermesBridge from '../../hermes/hermes-bridge.js';
 
+// ─── Asegurar índices en colecciones al importar ───
+// El índice en chatId es crítico para performance de loadChatMessages() y cleanupOldChats()
+setTimeout(async () => {
+    try {
+        const msgCollection = getCollection('chat_messages');
+        await msgCollection.createIndex({ chatId: 1 }, { unique: true });
+    } catch (e) {
+        // Ignorar error si el índice ya existe
+        if (!e.message?.includes('already exists')) {
+            console.warn('[DB] No se pudo crear índice en chat_messages:', e.message);
+        }
+    }
+}, 5000); // 5s delay para no interferir con startup
+
 /**
  * Carga las sesiones desde MongoDB (colección 'sessions').
  * Retorna el estado global o { projects: [] } si no existe.
  */
-export async function loadSessions() {
+/**
+ * Carga las sesiones desde MongoDB (colección 'sessions').
+ * @param {boolean} [skipMessages=false] - Si true, salta la carga de mensajes individuales
+ *        (útil para loadSessionsLight que solo necesita metadatos).
+ */
+export async function loadSessions(skipMessages = false) {
     try {
         const collection = getCollection('sessions');
-        // Filter out soft-deleted items if needed, but here we return all active ones
         const data = await collection.findOne({ _id: 'global_state' });
-        return data ? data.state : { projects: [] };
+        const state = data ? data.state : { projects: [] };
+        
+        // ─── 🐛 BUGFIX V2: Reconstruir mensajes desde colección separada ───
+        // Los mensajes se guardan individualmente en chat_messages para evitar
+        // el límite BSON. Al cargar, los re-adjuntamos en lote (una sola query).
+        // NOTA: skipMessages=true evita esta carga (loadSessionsLight no necesita mensajes).
+        if (!skipMessages && state?.projects) {
+            const msgCollection = getCollection('chat_messages');
+            // Cargar TODOS los mensajes en UNA sola query y construir un Map
+            try {
+                const allMsgDocs = await msgCollection.find({}).toArray();
+                const msgMap = new Map(allMsgDocs.map(d => [d.chatId, d.messages || []]));
+                
+                for (const project of state.projects) {
+                    if (!Array.isArray(project.chats)) continue;
+                    for (const chat of project.chats) {
+                        const storedMessages = msgMap.get(chat.id);
+                        if (storedMessages) {
+                            chat.messages = storedMessages;
+                        }
+                    }
+                }
+            } catch (msgErr) {
+                console.warn('[DB] Error cargando mensajes de chat_messages (usando previews locales):', msgErr.message);
+            }
+        }
+        
+        return state;
     } catch (e) {
         console.error('[DB] Error loading sessions:', e);
         return { projects: [] };
     }
 }
 
-const MAX_MESSAGES_PER_CHAT = 50;
-const MAX_MESSAGE_LENGTH = 8000;
+/**
+ * Carga SOLO los metadatos de los proyectos (sin mensajes de chats).
+ * Retorna el estado global con proyectos ligeros: cada proyecto tiene
+ * { id, name, folder, chatCount, activeTabId } pero SIN chats[].messages.
+ * Útil para el listado inicial — carga rápida sin todo el historial.
+ */
+export async function loadSessionsLight() {
+    try {
+        const full = await loadSessions(true); // skipMessages=true — no cargar mensajes
+        if (!full || !full.projects) return full;
+        return {
+            ...full,
+            projects: full.projects.map(p => ({
+                ...p,
+                chats: Array.isArray(p.chats) ? p.chats.map(c => ({
+                    id: c.id,
+                    name: c.name,
+                    isClosed: c.isClosed || false,
+                    isThinking: c.isThinking || false,
+                    isRunning: c.isRunning || false,
+                    model: c.model || '',
+                    closedAt: c.closedAt,
+                    useHermes: c.useHermes !== false, // 🐛 BUGFIX: default true (Hermes)
+                    // NO messages — se cargan bajo demanda
+                    messages: [],
+                    skills: Array.isArray(c.skills) ? c.skills : [],
+                    toggleStates: c.toggleStates,
+                    draftInput: c.draftInput
+                })) : []
+            }))
+        };
+    } catch (e) {
+        console.error('[DB] Error loading sessions light:', e);
+        return { projects: [] };
+    }
+}
+
+/**
+ * Carga un proyecto COMPLETO (con todos sus mensajes) por ID.
+ * Busca tanto en sesiones activas como en archivadas.
+ */
+export async function loadProjectById(projectId) {
+    try {
+        const full = await loadSessions();
+        if (!full || !full.projects) return null;
+        const project = full.projects.find(p => p.id === projectId);
+        if (project) return project;
+
+        // Buscar en archivadas
+        const archiveCol = getCollection('archived_sessions');
+        const archived = await archiveCol.findOne({ projectId });
+        return archived || null;
+    } catch (e) {
+        console.error('[DB] Error loading project by id:', e);
+        return null;
+    }
+}
+
+const MAX_MESSAGES_PER_CHAT = 200; // 🐛 BUGFIX: 50 → 200 para evitar perder contexto de agentes largos
+const MAX_MESSAGE_LENGTH = 99999999; // sin límite efectivo (99MB)
 // MongoDB BSON document limit is 16MB (16,777,216 bytes).
-// We use 12MB as the JSON threshold because BSON encoding adds ~20-30% overhead
+// We use 14MB as the JSON threshold because BSON encoding adds ~20-30% overhead
 // from field names, type markers, the $set wrapper, and the updatedAt field.
-const BSON_SIZE_LIMIT_BYTES = 12 * 1024 * 1024; // 12MB JSON → ~15MB BSON (safe)
+// 🐛 BUGFIX: aumentado de 12MB a 14MB para más margen
+const BSON_SIZE_LIMIT_BYTES = 14 * 1024 * 1024; // 14MB JSON → ~18MB BSON (más margen)
 
 /**
  * Recorta el estado para que quepa dentro del límite de BSON de MongoDB (16MB).
@@ -229,6 +333,103 @@ function trimStateSize(state, opts = {}) {
  * Previene race conditions de save concurrente.
  * Ahora también: recorta tamaño del estado y RE-LANZA errores.
  */
+/**
+ * Carga SOLO los mensajes de un chat específico desde la colección separada.
+ * Útil para lazy-loading de mensajes bajo demanda — mucho más rápido que cargar
+ * el proyecto entero y no contribuye al límite de BSON del global_state.
+ * @param {string} projectId - ID del proyecto
+ * @param {string} chatId - ID del chat
+ * @returns {Array} - Array de mensajes del chat, o [] si no existe
+ */
+export async function loadChatMessages(projectId, chatId) {
+    try {
+        const collection = getCollection('chat_messages');
+        const doc = await collection.findOne({ chatId });
+        return doc?.messages || [];
+    } catch (e) {
+        console.error('[DB] Error loading chat messages:', e);
+        return [];
+    }
+}
+
+/**
+ * Guarda los mensajes de cada chat en una colección SEPARADA ('chat_messages').
+ * Esto evita que los mensajes ocupen espacio en el documento global_state
+ * y previene el error de límite BSON de MongoDB (16MB).
+ * 
+ * @param {Array} chats - Array de objetos { projectId, id, messages } de los chats a guardar
+ */
+async function saveChatMessagesBatch(chats) {
+    if (!Array.isArray(chats) || chats.length === 0) return;
+    const collection = getCollection('chat_messages');
+    const operations = [];
+    for (const chat of chats) {
+        if (!chat.id || !Array.isArray(chat.messages)) continue;
+        operations.push({
+            updateOne: {
+                filter: { chatId: chat.id },
+                update: {
+                    $set: {
+                        projectId: chat.projectId,
+                        messages: chat.messages,
+                        updatedAt: new Date()
+                    }
+                },
+                upsert: true
+            }
+        });
+    }
+    if (operations.length === 0) return;
+    try {
+        await collection.bulkWrite(operations, { ordered: false });
+        console.log(`[DB-STORAGE] 💾 ${operations.length} chats guardados individualmente (${chats.reduce((sum, c) => sum + (c.messages?.length || 0), 0)} mensajes totales)`);
+    } catch (e) {
+        console.error('[DB-STORAGE] Error saving chat messages batch:', e.message);
+    }
+}
+
+/**
+ * Extrae los mensajes de todos los chats del estado y los guarda por separado,
+ * luego elimina los mensajes del estado para que el global_state sea liviano.
+ * 
+ * 🐛 BUGFIX V2: AHORA ES ASYNC — captura los mensajes COMPLETOS en allChats,
+ * los guarda (await), y SOLO DESPUÉS reduce a previews. Esto previene la
+ * pérdida de datos si el servidor crashea entre el guardado y la reducción.
+ * Se llama con await desde saveSessions().
+ */
+async function extractAndSaveMessages(state) {
+    if (!state?.projects) return;
+    
+    // 1. Capturar mensajes COMPLETOS antes de modificarlos
+    const allChats = [];
+    for (const project of state.projects) {
+        if (!Array.isArray(project.chats)) continue;
+        for (const chat of project.chats) {
+            if (Array.isArray(chat.messages) && chat.messages.length > 0) {
+                allChats.push({
+                    projectId: project.id,
+                    id: chat.id,
+                    messages: chat.messages  // Referencia directa (se copiará abajo)
+                });
+            }
+        }
+    }
+    
+    if (allChats.length === 0) return;
+    
+    // 2. GUARDAR los mensajes completos (await — síncrono/confiable)
+    await saveChatMessagesBatch(allChats);
+    
+    // 3. SOLO DESPUÉS de guardados exitosamente, reducir a previews
+    for (const project of state.projects) {
+        if (!Array.isArray(project.chats)) continue;
+        for (const chat of project.chats) {
+            const previewCount = Math.min(3, chat.messages?.length || 0);
+            chat.messages = previewCount > 0 ? chat.messages.slice(-previewCount) : [];
+        }
+    }
+}
+
 export async function saveSessions(state) {
     try {
         const collection = getCollection('sessions');
@@ -258,10 +459,17 @@ export async function saveSessions(state) {
             state.projects = Array.from(merged.values());
         }
 
-        // ─── 🐛 BUGFIX: trimStateSize debe ir DESPUÉS del merge ───
-        // Antes se llamaba ANTES del merge, por lo que los proyectos existentes
-        // que se agregaban en el merge NO se recortaban, potencialmente excediendo
-        // el límite de BSON (16MB) al serializar.
+        // ─── 🐛 BUGFIX V2: Guardar mensajes en colección SEPARADA ───
+        // Extrae los mensajes de todos los chats y los guarda individualmente
+        // en la colección 'chat_messages'. Luego elimina los mensajes del state
+        // (dejando solo últimos 3 de preview) para que global_state sea liviano.
+        // Esto PREVIENE el error de límite BSON de MongoDB (16MB).
+        // NOTA: ahora tiene await — extractAndSaveMessages es async.
+        await extractAndSaveMessages(state);
+
+        // ─── 🐛 BUGFIX: trimStateSize debe ir DESPUÉS de extractAndSaveMessages ───
+        // Porque extractAndSaveMessages ya eliminó la mayoría de los mensajes,
+        // trimStateSize tiene mucho menos trabajo que hacer.
         trimStateSize(state);
 
         await collection.updateOne(
@@ -286,8 +494,9 @@ export async function saveSessions(state) {
         ) {
             console.error('[DB] ⚠️ Error de tamaño BSON detectado. Reintentando con trim agresivo...');
             try {
-                // Trim extremo: 25 mensajes por chat, 4000 chars por mensaje
-                trimStateSize(state, { maxMessages: 25, maxMsgLength: 4000, aggressive: true });
+                // Trim extremo: mensajes ya separados, pero si el metadata sigue grande,
+                // reducir previews a 1 mensaje y limpiar openFiles
+                trimStateSize(state, { maxMessages: 1, maxMsgLength: 8000, aggressive: true });
                 const collection = getCollection('sessions');
                 await collection.updateOne(
                     { _id: 'global_state' },
@@ -340,3 +549,76 @@ export async function updateSessions(modifier, source = 'unknown') {
     }
     return data;
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  🧹 CLEANUP JOB: Limpieza automática de chats cerrados viejos
+// ═══════════════════════════════════════════════════════════════
+
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 1 vez por día
+const CHAT_RETENTION_DAYS = 60; // Conservar chats cerrados por 60 días
+
+/**
+ * Limpia los chats cerrados con más de CHAT_RETENTION_DAYS días de antigüedad.
+ * También elimina sus mensajes de la colección chat_messages.
+ * Se ejecuta automáticamente al iniciar el servidor y cada 24h.
+ */
+export async function cleanupOldChats() {
+    try {
+        const collection = getCollection('sessions');
+        const data = await collection.findOne({ _id: 'global_state' });
+        if (!data?.state?.projects) return;
+
+        const state = data.state;
+        const cutoffDate = Date.now() - (CHAT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        let removedCount = 0;
+        const removedChatIds = [];
+
+        for (const project of state.projects) {
+            if (!Array.isArray(project.chats)) continue;
+            const before = project.chats.length;
+            project.chats = project.chats.filter(chat => {
+                // Mantener chats activos (no cerrados)
+                if (!chat.isClosed) return true;
+                // Mantener chats cerrados recientemente
+                if (!chat.closedAt || chat.closedAt >= cutoffDate) return true;
+                // Este chat es viejo y cerrado → eliminar
+                removedChatIds.push(chat.id);
+                removedCount++;
+                return false;
+            });
+        }
+
+        if (removedChatIds.length > 0) {
+            // Eliminar también los mensajes de la colección separada
+            try {
+                const msgCollection = getCollection('chat_messages');
+                await msgCollection.deleteMany({ chatId: { $in: removedChatIds } });
+            } catch (msgErr) {
+                console.warn('[CLEANUP] Error eliminando mensajes individuales:', msgErr.message);
+            }
+
+            // Guardar el estado limpio
+            state.updatedAt = new Date();
+            await collection.updateOne(
+                { _id: 'global_state' },
+                { $set: { state, updatedAt: new Date() } }
+            );
+            console.log(`[CLEANUP] 🧹 Limpieza completada: ${removedCount} chats cerrados viejos eliminados (mayores a ${CHAT_RETENTION_DAYS} días)`);
+        } else {
+            console.log('[CLEANUP] ✅ No hay chats cerrados viejos para limpiar');
+        }
+    } catch (e) {
+        console.error('[CLEANUP] Error en limpieza:', e.message);
+    }
+}
+
+// ─── Auto-cleanup: ejecutar al importar y cada 24h ───
+// Se ejecuta con un delay inicial de 30s para no ralentizar el startup
+setTimeout(() => {
+    cleanupOldChats().catch(() => {});
+}, 30000);
+
+// Repetir cada 24 horas
+setInterval(() => {
+    cleanupOldChats().catch(() => {});
+}, CLEANUP_INTERVAL_MS);

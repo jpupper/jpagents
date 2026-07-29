@@ -1,0 +1,96 @@
+{
+  "name": "jp-agents-desktop",
+  "version": "1.0.0",
+  "description": "JP Agents - Desktop App",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder build --win",
+    "build:dir": "electron-builder build --win --dir"
+  },
+  "build": {
+    "appId": "com.jpagents.desktop",
+    "productName": "JP Agents",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "setup/**/*",
+      "make-icon.js",
+      "build.bat"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "jpagents",
+        "filter": [
+          "**/*",
+          "!electron/**",
+          "!node_modules/**",
+          "!.git/**",
+          "!.hermes/**",
+          "!.agents/**",
+          "!.md/**",
+          "!db/**",
+          "!db/",
+          "!compiled/**",
+          "!compiled/",
+          "!dist/**",
+          "!dist/",
+          "!logs/**",
+          "!projects/**",
+          "!proyects/**",
+          "!vector_store/**",
+          "!rag_uploads/**",
+          "!temp_images/**",
+          "!temp/",
+          "!*.log",
+          "!checkpoints.db*",
+          "!crash.log",
+          "!mcp-crash.log",
+          "!exit.log",
+          "!agent_traces.json",
+          "!npm_ver.txt",
+          "!test_*.bat",
+          "!*-lock.json",
+          "!yarn.lock"
+        ]
+      }
+    ],
+    "afterPack": "afterPack.js",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "JP Agents",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "license": null,
+      "runAfterFinish": true,
+      "installerSidebar": null
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0"
+  }
+}

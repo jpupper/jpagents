@@ -243,7 +243,11 @@ export async function refreshAgents(forceRebuild = false) {
     const data = await res.json();
     const newAgents = data.agents || [];
 
-    S.setAgents(S.calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal));
+    let filteredAgents = S.calibState.showGhosts ? newAgents : newAgents.filter(a => !a.isExternal);
+    if (!S.calibState.showOfflineAgents) {
+      filteredAgents = filteredAgents.filter(a => a.status !== 'off');
+    }
+    S.setAgents(filteredAgents);
     S.setAllAgentsWithData([...S.agents]);
 
     const dataKey = JSON.stringify(S.agents.map(a => ({ id: a.id, pid: a.pid, status: a.status, name: a.name, sessionTitle: a.sessionTitle, isExternal: a.isExternal, projectId: a.projectId })));

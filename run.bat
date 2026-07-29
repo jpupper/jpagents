@@ -4,10 +4,11 @@ cd /d D:\Programacion\jpagents
 setlocal enabledelayedexpansion
 
 :: ══════════════════════════════════════════════════════════════
-::   JP AGENTS — RUN v6 (Definitivo)
+::   JP AGENTS — RUN v7 (Electron Ready)
 ::   Arranca: MCP + Server + Frontend
 ::   Gateway Hermes (8642): tarea programada de Windows
 ::   Funciona con o sin Hermes Desktop/ONE abierto
+::   Modo Electron: run.bat --electron
 :: ══════════════════════════════════════════════════════════════
 
 :: ─── UTF-8 ───
@@ -130,18 +131,26 @@ if !PUERTOS_OCUPADOS! equ 1 (
     echo        ⚠  Tiempo agotado, forzando...
 ) else (echo        ✓  Puertos libres)
 
-:: ─── 4) INICIAR JP AGENTS ───
+:: ─── 5) LANZAR ───
 echo.
-echo  [4/5] Iniciando JP Agents...
-echo.
-echo  ╔══════════════════════════════════════════════════════════╗
-echo  ║  Server    → http://localhost:4699                       ║
-echo  ║  MCP       → http://localhost:2998                       ║
-echo  ║  Frontend  → http://localhost:4699 (integrado)           ║
-echo  ║  Gateway   → http://localhost:8642 (Hermes compartido)   ║
-echo  ╚══════════════════════════════════════════════════════════╝
-echo.
+echo  [5/5] Iniciando...
 
+:: Modo Electron
+if /i "%1"=="--electron" goto :launch_electron
+goto :launch_normal
+
+:launch_electron
+echo.
+echo  ╔══════════════════════════════════════════════════╗
+echo  ║  Iniciando JP Agents Desktop (Electron)...      ║
+echo  ╚══════════════════════════════════════════════════╝
+echo.
+cd electron
+start "JP Agents Desktop" cmd /k "title JP Agents Desktop && npx electron . --dev"
+cd ..
+exit /b 0
+
+:launch_normal
 start "JP Agents" cmd /k "title JP Agents && cd /d D:\Programacion\jpagents && npm run dev"
 echo  ✓  JP Agents iniciado en ventana separada.
 echo.
@@ -153,3 +162,4 @@ echo    Arranca automaticamente al iniciar sesion.
 echo    Compatible con Hermes ONE/Desktop y JP Agents.
 echo  ────────────────────────────────────────────────────────────
 timeout /t 10 /nobreak >nul
+exit /b 0

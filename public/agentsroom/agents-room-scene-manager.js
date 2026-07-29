@@ -264,7 +264,10 @@ export function rebuildScene() {
 
   cleanupScene();
 
-  const visibleAgents = S.calibState.showGhosts ? S.agents : S.agents.filter(a => !a.isExternal);
+  let visibleAgents = S.calibState.showGhosts ? S.agents : S.agents.filter(a => !a.isExternal);
+  if (!S.calibState.showOfflineAgents) {
+    visibleAgents = visibleAgents.filter(a => a.status !== 'off');
+  }
   S.setAllAgentsWithData([...visibleAgents]);
 
   if (visibleAgents.length === 0) {

@@ -352,6 +352,35 @@ window.closeFileTab = function (path) {
     window.saveData();
 };
 
+// ─── DELETE CURRENT FILE ───
+window.deleteCurrentFile = async function () {
+    const p = window.getActiveProject();
+    if (!p || !p.activeFileId) return;
+    const filePath = p.activeFileId;
+
+    // Confirmar
+    if (!confirm(`¿Eliminar permanentemente este archivo?\n\n${filePath}`)) return;
+
+    try {
+        const res = await fetch(`${window.API_BASE}/files/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Error al eliminar');
+
+        // Cerrar el tab del archivo
+        window.closeFileTab(filePath);
+        // Refrescar file explorer
+        if (typeof window.renderFileList === 'function') window.renderFileList();
+        console.log(`[FILE] Archivo eliminado: ${filePath}`);
+    } catch (e) {
+        console.error('[FILE] Error al eliminar:', e);
+        alert('Error al eliminar archivo: ' + e.message);
+    }
+};
+
 window.saveActiveFile = async function () {
     const p = window.getActiveProject();
     if (!p || !p.activeFileId) return;
