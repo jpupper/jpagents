@@ -47,7 +47,12 @@ const execFileAsync = promisify(execFile);
 
 // ─── CONSTANTES ───────────────────────────────────────────────
 const DEFAULT_TIMEOUT = 600000; // 10 minutos
-const DEFAULT_HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
+// Ruta de hermes derivada de forma portable (sin hardcodear una máquina específica):
+// Windows → %LOCALAPPDATA%\hermes\hermes-agent\.venv\Scripts\hermes.exe
+// Unix   → ~/.hermes/hermes-agent/.venv/bin/hermes
+const DEFAULT_HERMES_PATH = process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'hermes', 'hermes-agent', '.venv', 'Scripts', 'hermes.exe')
+    : path.join(os.homedir(), '.hermes', 'hermes-agent', '.venv', 'bin', 'hermes');
 const MAX_QUERY_BYTES = 20000;   // Safety por ENAMETOOLONG en Windows (32K CLI limit)
 const MAX_HISTORY_MSGS = 10;
 const MAX_MSG_LENGTH = 99999999; // sin límite efectivo
@@ -62,18 +67,43 @@ const MAX_TOTAL_CMD_LINE = 29000; // Hard cap: Windows CreateProcess limit es 32
  */
 async function findHermesPath(workdir) {
     const fsp = await import('fs/promises');
-    const safeWorkdir = workdir || process.cwd() || 'D:/Programacion/jpagents';
+    const safeWorkdir = workdir || process.cwd() || '.';
+
+    // Orden de búsqueda:
+    //   1. HERMES_PATH (env) — configurable desde .env
+    //   2. Rutas hardcodeadas (compat con la máquina original)
+    //   3. .venv del workdir
+    //   4. Instalación estándar en %LOCALAPPDATA%\hermes\hermes-agent
+    //   5. hermes en el PATH (where/which)
     const possiblePaths = [
+        process.env.HERMES_PATH,
         DEFAULT_HERMES_PATH,
         path.join(safeWorkdir, '.venv', 'Scripts', 'hermes.exe'),
         path.join(safeWorkdir, 'venv', 'Scripts', 'hermes.exe'),
-    ];
+        ...(process.env.LOCALAPPDATA ? [
+            path.join(process.env.LOCALAPPDATA, 'hermes', 'hermes-agent', 'venv', 'Scripts', 'hermes.exe'),
+            path.join(process.env.LOCALAPPDATA, 'hermes', 'hermes-agent', '.venv', 'Scripts', 'hermes.exe'),
+        ] : []),
+    ].filter(Boolean);
+
     for (const p of possiblePaths) {
         try {
             await fsp.access(p);
             return p;
         } catch {}
     }
+
+    // Fallback: hermes en el PATH del sistema
+    try {
+        const { execFileSync } = await import('child_process');
+        const finder = process.platform === 'win32' ? 'where' : 'which';
+        const out = execFileSync(finder, ['hermes'], { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+        const candidates = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        // Preferir .exe: spawn() con shell:false no puede ejecutar .cmd/.bat en Windows
+        const exe = candidates.find(c => /\.exe$/i.test(c)) || candidates[0];
+        if (exe) return exe;
+    } catch {}
+
     return DEFAULT_HERMES_PATH;
 }
 

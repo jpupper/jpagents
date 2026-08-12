@@ -498,10 +498,10 @@ function createMCPServer() {
   const validatePath = async (requestedPath) => {
     const resolvedPath = path.resolve(requestedPath);
     
-    // Directorios permitidos por defecto (incluimos tu raíz de programación para mayor comodidad)
+    // Directorios permitidos por defecto: raíz de la app y raíz de proyectos configurable
     const allowedRoots = [
         path.resolve(process.cwd()),
-        path.resolve("D:/Programacion") 
+        path.resolve(process.env.JPAGENTS_PROJECTS_ROOT || path.join(process.cwd(), "proyects"))
     ];
 
     // Cargar dinámicamente las carpetas de los proyectos registrados en jpagents

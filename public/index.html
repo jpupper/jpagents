@@ -782,6 +782,9 @@
               <button class="modal-side-tab" data-modal-tab="project-history">
                 <span>📜 Historial de Proyectos</span>
               </button>
+              <button class="modal-side-tab" data-modal-tab="routes">
+                <span>🗺️ Rutas</span>
+              </button>
             </aside>
 
           <!-- Main Content Area -->
@@ -1055,6 +1058,43 @@
                 <div id="history-list" class="history-list-container">
                   <!-- Archived projects will appear here -->
                   <p class="empty-state">Cargando historial...</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rutas Tab -->
+            <div id="modal-tab-routes" class="modal-tab-content hidden">
+              <div class="modal-body-content">
+                <h3 class="m-0">🗺️ Rutas / Carpetas</h3>
+                <p class="field-help">Acá se configuran las rutas de archivos. Si movés la app a otra computadora, las rutas absolutas viejas se migran automáticamente a la raíz de proyectos de esta máquina.</p>
+
+                <div class="config-field">
+                  <label>Raíz de la aplicación (solo lectura)</label>
+                  <input type="text" id="routes-app-root" class="config-input" readonly placeholder="Cargando..." />
+                </div>
+
+                <div class="config-field">
+                  <label>Carpeta raíz de proyectos</label>
+                  <p class="field-help">Todos los proyectos nuevos se crean acá. Cuando una carpeta guardada de otra máquina no existe, se remapea a esta raíz automáticamente. <strong>El cambio se aplica al reiniciar el server</strong> (botón Reload Server de la barra).</p>
+                  <div class="routes-path-row">
+                    <input type="text" id="routes-projects-root" class="config-input" placeholder="Cargando..." />
+                    <button class="btn-primary-sm" id="routes-pick-folder-btn" title="Elegir carpeta con el selector nativo">📁 Elegir...</button>
+                    <button class="btn-primary-sm" id="routes-default-btn" title="Restaurar la carpeta por defecto (proyects junto a la app)">↺ Por defecto</button>
+                  </div>
+                </div>
+
+                <div class="config-field">
+                  <label>Migrar carpetas de otra máquina</label>
+                  <p class="field-help">Analiza los proyectos guardados y remapea los que apuntan a rutas que no existen en esta PC, creando la carpeta en la raíz configurada.</p>
+                  <button class="btn-primary" id="routes-migrate-btn">🔁 Migrar carpetas ahora</button>
+                  <span id="routes-migrate-result" class="routes-result"></span>
+                </div>
+
+                <div class="config-field">
+                  <label>Estado de carpetas de proyectos</label>
+                  <div id="routes-projects-list" class="routes-projects-list">
+                    <p class="empty-state">Cargando proyectos...</p>
+                  </div>
                 </div>
               </div>
             </div>

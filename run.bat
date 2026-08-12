@@ -1,6 +1,6 @@
 @echo off
 title JP Agents — Run (Central)
-cd /d D:\Programacion\jpagents
+cd /d "%~dp0"
 setlocal enabledelayedexpansion
 
 :: ══════════════════════════════════════════════════════════════
@@ -55,11 +55,21 @@ if errorlevel 1 (
 
     :: Opcion B: Inicio manual
     :try_manual_gw
-    set HERMES_PATH=D:\Programacion\hermes\hermes-agent\.venv\Scripts\hermes.exe
+    set "HERMES_PATH="
+    if exist "%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\hermes.exe" set HERMES_PATH=%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\hermes.exe
+    if exist "%USERPROFILE%\.hermes\hermes-agent\.venv\Scripts\hermes.exe" set HERMES_PATH=%USERPROFILE%\.hermes\hermes-agent\.venv\Scripts\hermes.exe
+    if exist "%LOCALAPPDATA%\hermes\hermes-agent\.venv\Scripts\hermes.exe" set HERMES_PATH=%LOCALAPPDATA%\hermes\hermes-agent\.venv\Scripts\hermes.exe
+    if exist "%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe" set HERMES_PATH=%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe
     if not exist "!HERMES_PATH!" (
         if exist "%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\hermes.exe" set HERMES_PATH=%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\hermes.exe
         if exist "%USERPROFILE%\.hermes\hermes-agent\.venv\Scripts\hermes.exe" set HERMES_PATH=%USERPROFILE%\.hermes\hermes-agent\.venv\Scripts\hermes.exe
         if exist "%LOCALAPPDATA%\hermes\hermes-agent\.venv\Scripts\hermes.exe" set HERMES_PATH=%LOCALAPPDATA%\hermes\hermes-agent\.venv\Scripts\hermes.exe
+        if exist "%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe" set HERMES_PATH=%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe
+    )
+    if not exist "!HERMES_PATH!" (
+        for /f "delims=" %%h in ('where hermes 2^>nul') do (
+            if not exist "!HERMES_PATH!" set "HERMES_PATH=%%h"
+        )
     )
     if exist "!HERMES_PATH!" (
         :: Limpiar lock files stale antes de arrancar
@@ -151,7 +161,7 @@ cd ..
 exit /b 0
 
 :launch_normal
-start "JP Agents" cmd /k "title JP Agents && cd /d D:\Programacion\jpagents && npm run dev"
+start "JP Agents" cmd /k "title JP Agents && npm run dev"
 echo  ✓  JP Agents iniciado en ventana separada.
 echo.
 echo  [5/5] Todo listo — ventana se cierra en 10 segundos...

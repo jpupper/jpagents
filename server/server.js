@@ -25,7 +25,7 @@ import hermesBridge from '../hermes/hermes-bridge.js';
 import { createHermesClient } from '../lib/hermes-gateway-client.js';
 import { createSseParser } from '../lib/sse-parser.js';
 import { stripAnsi } from '../shared/ansi-utils.js';
-import { execAsync, execFileAsync, __filename, __dirname, port, MAX_START_RETRIES, OLLAMA_URL, SESSIONS_FILE, CLIENT_LOGS_FILE, TASK_STATE_FILE, slog } from './config.js';
+import { execAsync, execFileAsync, __filename, __dirname, port, MAX_START_RETRIES, OLLAMA_URL, SESSIONS_FILE, CLIENT_LOGS_FILE, TASK_STATE_FILE, slog, PROJECTS_ROOT, ROUTING_FILE, defaultProjectFolder, sanitizeFolderName } from './config.js';
 import { writeCrashLog } from './utils/crash-log.js';
 import app from './app.js';
 
@@ -504,7 +504,7 @@ app.post('/api/utils/client-logs/clear', async (req, res) => {
     }
 });
 
-import { loadSessions, loadSessionsLight, loadProjectById, saveSessions, updateSessions, loadChatMessages } from './utils/session.js';
+import { loadSessions, loadSessionsLight, loadProjectById, saveSessions, updateSessions, loadChatMessages, migrateProjectFolders, getProjectsRoutingInfo } from './utils/session.js';
 
 // Routes
 app.get('/api/sessions', async (req, res) => {
@@ -557,7 +557,13 @@ app.post('/api/sessions/save', async (req, res) => {
         await saveSessions(req.body);
         
         // ─── WS Broadcast: state updated (agents/projects changed) ───
-        hermesBridge.broadcastToAll('sync:stateUpdated', { source: 'sessions/save' });
+        // Incluye originSocketId (quién guardó) para que el cliente emisor pueda
+        // ignorar el eco de su propio save (anti-retroalimentación: el master no debe
+        // recargar su propio estado, eso pisaba cambios locales recientes).
+        hermesBridge.broadcastToAll('sync:stateUpdated', {
+            source: 'sessions/save',
+            originSocketId: req.body.originSocketId || null
+        });
         
         res.json({ success: true });
     } catch (e) {
@@ -743,6 +749,58 @@ app.post('/api/projects/set-folder', async (req, res) => {
     }
 });
 
+// ─── 🗺️ RUTEO: config de carpetas de proyectos (raíz configurable) ───
+app.get('/api/config/routes', async (req, res) => {
+    try {
+        const sessions = await loadSessions();
+        res.json({
+            appRoot: __dirname,
+            projectsRoot: PROJECTS_ROOT,
+            routingFile: ROUTING_FILE,
+            projects: await getProjectsRoutingInfo(sessions)
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Guardar la raíz de proyectos configurada en routing.json
+app.post('/api/config/routes', async (req, res) => {
+    try {
+        const { projectsRoot } = req.body || {};
+        if (!projectsRoot || typeof projectsRoot !== 'string') {
+            return res.status(400).json({ error: 'projectsRoot es requerido' });
+        }
+        const root = path.resolve(projectsRoot.trim());
+        try {
+            await fs.mkdir(root, { recursive: true });
+        } catch (mkErr) {
+            return res.status(500).json({ error: `No se pudo crear la carpeta: ${mkErr.message}` });
+        }
+        writeFileSync(ROUTING_FILE, JSON.stringify({ projectsRoot: root, updatedAt: new Date().toISOString() }, null, 2), 'utf-8');
+        console.log(`[ROUTES] 💾 Raíz de proyectos configurada: ${root}`);
+        res.json({ success: true, projectsRoot: root });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Forzar migración de carpetas de otra máquina a la raíz local.
+// NOTA: NO usar loadSessions() acá — loadSessions ya migra internamente,
+// así que leer el estado crudo de la DB para que migrateProjectFolders
+// detecte los folders viejos y reporte los fixes reales.
+app.post('/api/config/routes/migrate', async (req, res) => {
+    try {
+        const collection = getCollection('sessions');
+        const data = await collection.findOne({ _id: 'global_state' });
+        const rawState = data ? data.state : { projects: [] };
+        const { changed, fixes } = await migrateProjectFolders(rawState);
+        res.json({ changed, fixes });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- LangGraph Chat Endpoint ---
 
 app.post('/api/agent/chat', async (req, res) => {
@@ -791,7 +849,7 @@ Si intentas realizar cambios sin usar las etiquetas obligatorias, el sistema REC
             projectId: projectIdToUse,
             model: model || 'llama3',
             systemPrompt: basePrompt,
-            apiKey: apiKey,
+            apiKey: apiKey || process.env.DEEPSEEK_API_KEY || undefined,
             baseUrl: baseUrl,
             useThinking: useThinking === true
         };
@@ -955,7 +1013,7 @@ app.get('/api/utils/pick-folder', async (req, res) => {
                 }
             }
 "@;
-        [HermesFolderPicker]::Pick("Selecciona la carpeta raiz de tu proyecto", "D:\\\\Programacion\\\\jpagents\\\\proyects");
+        [HermesFolderPicker]::Pick("Selecciona la carpeta raiz de tu proyecto", "${PROJECTS_ROOT.replace(/\\/g, '\\\\')}");
     `.trim();
 
     // -STA es CRÍTICO: Windows.Forms requiere Single-Threaded Apartment
@@ -1053,8 +1111,8 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
     const { projectName } = req.body;
     if (!projectName) return res.status(400).json({ error: 'Missing projectName' });
 
-    const baseDir = "D:\\Programacion\\jpagents\\proyects";
-    let folderName = projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+    const baseDir = PROJECTS_ROOT;
+    let folderName = sanitizeFolderName(projectName);
 
     let folderPath = path.join(baseDir, folderName);
     let counter = 1;
@@ -1067,7 +1125,7 @@ app.post('/api/utils/create-project-folder', async (req, res) => {
             try {
                 await fs.access(folderPath);
                 // If it exists, try next name
-                folderName = `${projectName.replace(/[^a-z0-9_-]/gi, '_').toLowerCase()}_${counter++}`;
+                folderName = `${sanitizeFolderName(projectName)}_${counter++}`;
                 folderPath = path.join(baseDir, folderName);
             } catch (err) {
                 // Folder does not exist, we can use it
@@ -1118,7 +1176,7 @@ app.post('/api/utils/git-clone', async (req, res) => {
         return res.status(400).json({ error: 'URL de repositorio inválida. Usá formato: https://github.com/usuario/repo o git@github.com:usuario/repo.git' });
     }
 
-    const baseDir = "D:\\Programacion\\jpagents\\proyects";
+    const baseDir = PROJECTS_ROOT;
 
     try {
         await fs.mkdir(baseDir, { recursive: true });
@@ -1243,12 +1301,15 @@ async function restartHermesGateway() {
 
         // Iniciar nuevo Gateway como proceso hijo
         console.log('[GATEWAY-RESTART] Iniciando nuevo Gateway...');
-        const hermesExe = path.join(hermesHome, 'hermes-agent', 'venv', 'Scripts', 'hermes');
+        // BUGFIX: el path hardcodeado (~/.hermes/hermes-agent/...) fallaba si Hermes
+        // está instalado en otro lugar. findHermesPath() resuelve:
+        //   HERMES_PATH env → rutas hardcodeadas → LOCALAPPDATA → PATH (where hermes)
+        const hermesExe = await findHermesPath(process.cwd());
         const gatewayProc = spawn(hermesExe, ['gateway', 'run', '--accept-hooks'], {
             cwd: process.cwd(),
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: false,
-            shell: true,
+            shell: false,
             env: {
                 ...process.env,
                 HERMES_HOME: hermesHome,
@@ -1931,7 +1992,7 @@ app.post('/api/utils/improve-prompt', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey || ''}`
+                    'Authorization': `Bearer ${apiKey || process.env.DEEPSEEK_API_KEY || ''}`
                 },
                 body: JSON.stringify({
                     model: model || 'gpt-4o-mini',
@@ -4591,7 +4652,7 @@ async function executeAdminCommands(responseText, source = 'admin', chatId = nul
                 foundProject.id,
                 foundAgent.id,
                 foundAgent.model || foundProject.model || 'deepseek-v4-pro',
-                foundProject.folder || 'D:/Programacion/jpagents',
+                foundProject.folder || defaultProjectFolder(foundProject.id, foundProject.name),
                 source,
                 chatId
             );
@@ -5716,7 +5777,7 @@ async function startServer() {
                                             if (project && chat) {
                                                 await hermesBridge.startInstance(
                                                     projectId, chatId,
-                                                    project.folder || 'D:/Programacion/jpagents',
+                                                    project.folder || defaultProjectFolder(project.id, project.name),
                                                     chat.model || project.model || 'deepseek-v4-pro',
                                                     chat.name
                                                 );

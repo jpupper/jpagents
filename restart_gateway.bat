@@ -1,6 +1,6 @@
 @echo off
 title Restart Gateway
-cd /d D:\Programacion\jpagents
+cd /d "%~dp0"
 
 echo ============================================
 echo  Restarting Hermes Gateway...

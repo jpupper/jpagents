@@ -56,6 +56,8 @@ export function renderProjectList() {
             const project = state.projects.find(p => p.id === name.dataset.id);
             if (project) {
                 project.name = name.textContent.trim() || 'Proyecto sin nombre';
+                // 🕐 Marcar edición local para que loadData() no la pise con datos viejos del server
+                project.updatedAt = Date.now();
             }
             window.saveData();
             if (state.activeProjectId === name.dataset.id) {

@@ -1,4 +1,4 @@
-import { state, syncWs, amIMaster, mySocketId, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
+import { state, syncWs, amIMaster, mySocketId, DEFAULT_NAMING_PROMPT, DEFAULT_USER_SYSTEM_PROMPT, DEFAULT_ORCHESTRATOR_PROMPT, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, setPendingDeleteAll, setPendingDeleteAllTimeout, generateId, ADJECTIVES, COLORS, ANIMALS, generateRandomProjectName } from './modules/state.js';
 import { initMatrix } from './matrix.js';
 import { chatList, chatMessages, chatInput, sendBtn, modelSelect, folderPathInput, scanFolderBtn, scanFolderSidebarBtn, fileList, newChatBtn, tabsNav, chatTabContent, editorTabContent, editorCode, editorGutter, currentFilename, diffStats, pendingActions, acceptBtn, rejectBtn, saveFileBtn, modeSwitchToggle, dashboardTabContent, dashboardProjectName, dashboardProjectPath, statChats, statFiles, adminMonitorBtn, adminTabContent, monitorTbody, adminChatMessages, adminGlobalInput, adminSendBtn, stopAdminBtn, attachFileBtn, fileInput, imagePreviewContainer, micBtn, gitPushBtn, gitResetOriginBtn, gitRefreshBtn, gitCommitMsgInput, terminalTabContent, terminalOutput, terminalInput, clearTerminalBtn, terminalRunBtn, terminalStopBtn, matrixTabContent, skillsManagerBtn, skillsTab, skillsTabContent, skillsListEl, skillEditorContainer, skillEmptyState, skillNameInput, skillContentTextarea, saveSkillBtn, deleteSkillBtn, newSkillBtn, agentSkillSelect, skillsSearchInput, projectSkillSelect, projectSkillsTags, telegramMessages, frontendConsoleOutput, agentBadge, telegramBadge, searchInput, searchDropdown, openFolderExplorerBtn, projectPrompt } from './modules/dom-refs.js';
 if (editorCode) editorCode.contentEditable = true;
@@ -236,6 +236,44 @@ async function triggerSystemRestart() {
 
 // ─── Action Button Config Render & Save (Tab-per-button) ───
 let activeActionBtnTab = 0;
+
+async function loadRoutesConfig() {
+    const rootInput = document.getElementById('routes-projects-root');
+    const appRootInput = document.getElementById('routes-app-root');
+    const listEl = document.getElementById('routes-projects-list');
+    try {
+        const res = await fetch(`${API_BASE}/config/routes`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        if (appRootInput) appRootInput.value = data.appRoot || '';
+        if (rootInput) {
+            rootInput.value = data.projectsRoot || '';
+            rootInput.dataset.currentRoot = data.projectsRoot || '';
+        }
+
+        if (listEl) {
+            const projects = data.projects || [];
+            if (projects.length === 0) {
+                listEl.innerHTML = '<p class="empty-state">No hay proyectos todavía.</p>';
+            } else {
+                listEl.innerHTML = projects.map(p => {
+                    const status = p.exists
+                        ? `<span class="routes-status ok">✓ Existe</span>`
+                        : `<span class="routes-status warn">↻ Se migrará a: ${escapeHtml(p.resolved || '')}</span>`;
+                    return `<div class="routes-project-row">
+                        <div class="routes-project-name">${escapeHtml(p.name)}</div>
+                        <div class="routes-project-path">${escapeHtml(p.folder || '(sin carpeta)')}</div>
+                        ${status}
+                    </div>`;
+                }).join('');
+            }
+        }
+    } catch (e) {
+        console.warn('[ROUTES] Error cargando config:', e.message);
+        if (listEl) listEl.innerHTML = `<p class="empty-state">Error cargando: ${escapeHtml(e.message)}</p>`;
+    }
+}
 
 function renderActionButtonConfigs() {
     const container = document.getElementById('action-button-config-list');
@@ -1222,7 +1260,15 @@ async function init() {
             if (window.refreshHermesInstances) window.refreshHermesInstances();
         }
     };
-    window.__onSyncStateUpdated = async () => {
+    window.__onSyncStateUpdated = async (eventData) => {
+        // 🐛 BUGFIX ANTIRETROALIMENTACIÓN: Si este evento es el ECO de nuestro PROPIO save
+        // (el server difunde sync:stateUpdated a todos, incluido el que guardó),
+        // ignorarlo. Nuestro estado local YA es el correcto; recargarlo podría pisarlo
+        // con una versión vieja del server (save async aún en vuelo).
+        if (eventData && eventData.originSocketId && mySocketId && eventData.originSocketId === mySocketId) {
+            console.log('[SYNC-FLOW] ⏭️ sync:stateUpdated ignorado — es el eco de nuestro propio save (originSocketId coincide)');
+            return;
+        }
         // 🐛 BUGFIX: Preservar el texto actual del textarea antes de loadData()+syncUI()
         // para que restoreChatDraft() no lo sobrescriba con un draft viejo del servidor.
         const preservedDraft = chatInput.value;
@@ -1245,42 +1291,55 @@ async function init() {
     setupWebSocket();
     
     // Auto-sync al recuperar foco de pestaña
-    document.addEventListener('visibilitychange', async () => {
+    // 🐛 BUGFIX REAL: volver de otra pestaña/ventana NO debe recargar el estado desde
+    // el server (eso pisaba cambios locales recientes con versiones viejas). El estado
+    // local ya es la fuente de verdad de esta pestaña; el server solo persiste lo que
+    // el cliente le manda. Al volver, solo reclamar MASTER si hace falta y refrescar
+    // indicadores livianos (que no tocan state).
+    document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             // 🐛 BUGFIX: Guardar draft cuando el usuario se va a otra ventana/pestaña
             // y persistirlo YA al servidor para que no se pierda al volver.
             saveChatDraft();
-            saveData(); // fire-and-forget: si no llega, el preservedDraft fix abajo lo cubre
+            saveData(); // fire-and-forget: persiste el estado actual completo
         } else {
-            console.log('[SYNC] 👁️ Pestaña visible — sincronizando estado completo...');
-            // 🐛 BUGFIX: Preservar el texto actual del textarea antes de que loadData()
-            // reemplace state.projects. loadData() trae objetos frescos del servidor sin
-            // el draftInput (que nunca se persistió). syncUI() → restoreChatDraft() lo
-            // borraría. Lo guardamos ahora y lo restauramos después.
-            const preservedDraft = chatInput.value;
-            // 🐛 BUGFIX: No recargar si hay un agente activo (misma razón que BroadcastChannel)
-            if (isTabBusy()) {
-                console.log('[SYNC] 👁️ visibilitychange ignorado — agente activo');
-            } else {
-                await loadData(false);
-                syncUI();
-                checkSystemHealth();
-                updateAgentBadge();
-                refreshConsoleUI();
-                if (window.refreshHermesInstances) {
-                    window.refreshHermesInstances();
-                }
+            console.log('[SYNC] 👁️ Pestaña visible — sin recarga de estado (solo rol MASTER + health).');
+            // Si esta pestaña vuelve a estar en uso, reclamar el rol de MASTER
+            // (para que sus próximos saves se difundan a las demás pestañas).
+            claimMaster();
+            // Refrescos livianos que NO reemplazan state.projects:
+            checkSystemHealth();
+            updateAgentBadge();
+            refreshConsoleUI();
+            if (window.refreshHermesInstances) {
+                window.refreshHermesInstances();
             }
-            // 🐛 BUGFIX: Si loadData/syncUI cambió el texto a algo distinto
-            // de lo que el usuario tenía (draft viejo del servidor, o vacío),
-            // restaurar el preservedDraft y guardarlo en el nuevo objeto chat.
-            if (preservedDraft && chatInput.value !== preservedDraft) {
-                chatInput.value = preservedDraft;
-                chatInput.dispatchEvent(new Event('input'));
-                saveChatDraft(); // persistir el draft en el nuevo objeto chat
-            }
+            if (window.syncModeToggleUI) window.syncModeToggleUI();
         }
     });
+
+    // 🐛 BUGFIX: Flush al cerrar/recargar la pestaña — persistir cualquier cambio
+    // pendiente (draft, rename, etc) para que no se pierda al cerrar.
+    // Se usa fetch con keepalive:true porque un fetch normal se aborta al
+    // descargar la página (pagehide/beforeunload).
+    async function flushStateOnUnload() {
+        try { saveChatDraft(); } catch (_) {}
+        try {
+            const payload = {
+                projects: (state.projects || []).filter(p => p._loaded !== false),
+                activeProjectId: state.activeProjectId,
+                originSocketId: mySocketId
+            };
+            await fetch(`${API_BASE}/sessions/save`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                keepalive: true
+            });
+        } catch (_) {}
+    }
+    window.addEventListener('pagehide', () => { flushStateOnUnload(); });
+    window.addEventListener('beforeunload', () => { flushStateOnUnload(); });
 
     // ─── BroadcastChannel: sincronización inmediata entre pestañas ───
     // Más rápido que el roundtrip WS (server → broadcast → client)
@@ -1335,23 +1394,20 @@ async function init() {
     setupOpenFolderExplorer();
 
     // Periodic sync para instrucciones externas (cada 2 min — no para polling de estado)
-    const syncInterval = setInterval(performPeriodicSync, 120000);
+    setInterval(performPeriodicSync, 120000);
     
     // Gateway status check cada 30s — detecta cambios cuando el gateway se inicia/detiene externamente
-    const gwInterval = setInterval(async () => {
+    setInterval(async () => {
         try {
             const res = await fetch(`${API_BASE}/gateway/status`);
             await res.json();
         } catch (_) {}
     }, 30000);
     
-    // Limpiar los intervalos cuando la pestaña se oculta para evitar fugas
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            clearInterval(syncInterval);
-            clearInterval(gwInterval);
-        }
-    });
+    // 🐛 BUGFIX: Antes se limpiaban syncInterval/gwInterval al ocultar la pestaña
+    // pero nunca se reiniciaban al volver, así que el sync periódico moría después
+    // del primer cambio de pestaña. Ahora los intervalos quedan corriendo
+    // (el navegador los throttlea automáticamente cuando la pestaña está oculta).
 
     // Ollama health check: ya no es polling, se hace al conectar WS y al reconectar
     checkSystemHealth();
@@ -3169,22 +3225,22 @@ window.handleDeleteAllClick = (event) => {
     
     if (pendingDeleteAll) {
         window.deleteAllProjects();
-        pendingDeleteAll = false;
+        setPendingDeleteAll(false);
         if (btn) btn.innerHTML = '🗑️ Todo';
         if (pendingDeleteAllTimeout) clearTimeout(pendingDeleteAllTimeout);
     } else {
-        pendingDeleteAll = true;
+        setPendingDeleteAll(true);
         if (btn) {
             btn.innerHTML = '<span style="color:#ff4d4d; font-weight:bold;">SI?</span>';
             btn.classList.add('pending-delete');
         }
-        pendingDeleteAllTimeout = setTimeout(() => {
-            pendingDeleteAll = false;
+        setPendingDeleteAllTimeout(setTimeout(() => {
+            setPendingDeleteAll(false);
             if (btn) {
                 btn.innerHTML = '🗑️ Todo';
                 btn.classList.remove('pending-delete');
             }
-        }, 5000);
+        }, 5000));
     }
 };
 
@@ -6591,8 +6647,81 @@ ${rest}`;
             if (target === 'project-history') {
                 window.renderHistoryList();
             }
+            if (target === 'routes') {
+                loadRoutesConfig();
+            }
         };
     });
+
+    // ─── 🗺️ Pestaña Rutas: handlers ───
+    const routesPickBtn = document.getElementById('routes-pick-folder-btn');
+    if (routesPickBtn) {
+        routesPickBtn.onclick = async () => {
+            try {
+                const ctrl = new AbortController();
+                const timeoutId = setTimeout(() => ctrl.abort(), 125000);
+                const res = await fetch(`${API_BASE}/utils/pick-folder`, { signal: ctrl.signal });
+                clearTimeout(timeoutId);
+                if (res && res.ok) {
+                    const data = await res.json();
+                    if (data.path) {
+                        const input = document.getElementById('routes-projects-root');
+                        if (input) input.value = data.path;
+                    } else if (data.error) {
+                        console.warn('[ROUTES] Picker cancelado/error:', data.error);
+                    }
+                }
+            } catch (e) {
+                console.warn('[ROUTES] Error abriendo picker:', e.message);
+            }
+        };
+    }
+
+    const routesDefaultBtn = document.getElementById('routes-default-btn');
+    if (routesDefaultBtn) {
+        routesDefaultBtn.onclick = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/config/routes`);
+                const data = await res.json();
+                const input = document.getElementById('routes-projects-root');
+                if (input && data.projectsRoot) {
+                    // Guarda el default en el server (borra routing.json custom)
+                    await fetch(`${API_BASE}/config/routes`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectsRoot: data.appRoot + '/proyects' })
+                    });
+                    loadRoutesConfig();
+                }
+            } catch (e) {
+                console.warn('[ROUTES] Error restaurando default:', e.message);
+            }
+        };
+    }
+
+    const routesMigrateBtn = document.getElementById('routes-migrate-btn');
+    if (routesMigrateBtn) {
+        routesMigrateBtn.onclick = async () => {
+            const resultEl = document.getElementById('routes-migrate-result');
+            if (resultEl) resultEl.textContent = 'Migrando...';
+            try {
+                const res = await fetch(`${API_BASE}/config/routes/migrate`, { method: 'POST' });
+                const data = await res.json();
+                if (resultEl) {
+                    if (data.changed) {
+                        resultEl.textContent = `✅ ${data.fixes.length} carpeta(s) migrada(s). Recargando estado...`;
+                    } else {
+                        resultEl.textContent = '✅ Sin rutas que migrar — todo apunta a carpetas existentes.';
+                    }
+                }
+                // Refrescar la lista y el estado local
+                await loadRoutesConfig();
+                await loadData();
+            } catch (e) {
+                if (resultEl) resultEl.textContent = `❌ Error: ${e.message}`;
+            }
+        };
+    }
 
     modalSubTabs.forEach(tab => {
         tab.onclick = () => {
@@ -6675,7 +6804,28 @@ ${rest}`;
         }
     };
 
-    saveGlobalBtn.onclick = () => {
+    saveGlobalBtn.onclick = async () => {
+        // ─── 🗺️ Rutas: guardar projectsRoot si cambió ───
+        let routesChanged = false;
+        const routesInput = document.getElementById('routes-projects-root');
+        if (routesInput && routesInput.value && routesInput.value.trim()) {
+            try {
+                const prevRoot = routesInput.dataset.currentRoot;
+                const newRoot = routesInput.value.trim();
+                const res = await fetch(`${API_BASE}/config/routes`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ projectsRoot: newRoot })
+                });
+                const resData = await res.json();
+                if (resData.success && prevRoot && prevRoot !== resData.projectsRoot) {
+                    routesChanged = true;
+                }
+                routesInput.dataset.currentRoot = resData.projectsRoot || newRoot;
+            } catch (e) {
+                console.warn('[ROUTES] No se pudo guardar projectsRoot:', e.message);
+            }
+        }
         if (userPromptTextarea) state.userSystemPrompt = userPromptTextarea.value;
         const namingPromptTextarea = document.getElementById('naming-prompt');
         if (namingPromptTextarea) state.namingPrompt = namingPromptTextarea.value;
@@ -6741,7 +6891,11 @@ ${rest}`;
 
         saveData();
         globalSettingsModal.classList.add('hidden');
-        alert("Configuración guardada correctamente.");
+        if (routesChanged) {
+            alert("Configuración guardada. La carpeta raíz de proyectos cambió — reiniciá el server (botón Reload Server) para que se aplique.");
+        } else {
+            alert("Configuración guardada correctamente.");
+        }
     };
 
     // System Restart Button

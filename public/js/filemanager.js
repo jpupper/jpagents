@@ -284,6 +284,8 @@ window.setProjectFolder = async function (projectId, folderPath) {
         return { success: false, error: 'Project not found' };
     }
     project.folder = folderPath;
+    // 🕐 Marcar edición local para que loadData() no la pise con datos viejos del server
+    project.updatedAt = Date.now();
     const folderPathInput = el('folder-path');
     if (folderPathInput) folderPathInput.value = folderPath;
     await window.scanFolder(folderPath, projectId);

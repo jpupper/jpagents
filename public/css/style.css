@@ -7309,6 +7309,83 @@ pre code.hljs {
     color: var(--text-secondary, #aaa);
 }
 
+/* ─── 🗺️ Pestaña Rutas ─── */
+.routes-path-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.routes-path-row .config-input {
+    flex: 1;
+    min-width: 220px;
+}
+
+.routes-result {
+    margin-left: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #aaa);
+}
+
+.routes-projects-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 4px 2px;
+}
+
+.routes-project-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--surface-alt, #2a2a3e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 8px;
+    font-size: 0.78rem;
+}
+
+.routes-project-name {
+    font-weight: 600;
+    min-width: 130px;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.routes-project-path {
+    flex: 1;
+    color: var(--text-secondary, #aaa);
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.routes-status {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+
+.routes-status.ok {
+    background: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.4);
+}
+
+.routes-status.warn {
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.4);
+}
+
 /* Graph tab in tabs bar */
 .graph-tab .dot {
     display: none;
@@ -7408,4 +7485,81 @@ pre code.hljs {
     gap: 4px;
     font-size: 0.75rem;
     color: var(--text-secondary, #aaa);
+}
+
+/* ─── 🗺️ Pestaña Rutas ─── */
+.routes-path-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.routes-path-row .config-input {
+    flex: 1;
+    min-width: 220px;
+}
+
+.routes-result {
+    margin-left: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #aaa);
+}
+
+.routes-projects-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 4px 2px;
+}
+
+.routes-project-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--surface-alt, #2a2a3e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 8px;
+    font-size: 0.78rem;
+}
+
+.routes-project-name {
+    font-weight: 600;
+    min-width: 130px;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.routes-project-path {
+    flex: 1;
+    color: var(--text-secondary, #aaa);
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.routes-status {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+
+.routes-status.ok {
+    background: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.4);
+}
+
+.routes-status.warn {
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.4);
 }

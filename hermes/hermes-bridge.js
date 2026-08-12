@@ -412,7 +412,13 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
         try {
             await fs.access(workdir);
         } catch {
-            throw new Error(`El directorio no existe: ${workdir}`);
+            // 🗺️ RUTEO: si el workdir no existe (vino de otra máquina), crearlo
+            console.warn(`[HERMES-BRIDGE] 🗺️ Directorio no existe, creándolo: ${workdir}`);
+            try {
+                await fs.mkdir(workdir, { recursive: true });
+            } catch (mkdirErr) {
+                throw new Error(`El directorio no existe y no se pudo crear: ${workdir} (${mkdirErr.message})`);
+            }
         }
 
         // Verificar que hermes binario existe
@@ -462,7 +468,14 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
         try {
             await fs.access(workdir);
         } catch {
-            console.warn(`[HERMES-RECOVER] ⚠️ Directorio no existe: ${workdir}. Creando instancia igual por si se restaura.`);
+            // 🗺️ RUTEO: intentar crear el directorio si vino de otra máquina
+            console.warn(`[HERMES-RECOVER] ⚠️ Directorio no existe: ${workdir}. Intentando crearlo...`);
+            try {
+                await fs.mkdir(workdir, { recursive: true });
+                console.log(`[HERMES-RECOVER] ✅ Directorio creado: ${workdir}`);
+            } catch (mkdirErr) {
+                console.warn(`[HERMES-RECOVER] No se pudo crear el directorio (se crea instancia igual): ${mkdirErr.message}`);
+            }
         }
 
         const instance = {
@@ -608,13 +621,27 @@ Ej: getMemoryGraph(query='server.js') te muestra qué imports tiene server.js y 
                 const stderr = result.stderr || '';
                 // Detectar errores conocidos y dar mensajes claros al usuario
                 let errorText = '';
+                // 🐛 BUGFIX (Agosto 2026): "No inference provider configured" / "Provider
+                // authentication failed" es un error de CONFIGURACIÓN de Hermes (sin key de
+                // proveedor), no un problema de saldo. Antes caía en el mensaje de "Saldo
+                // insuficiente" y confundía al usuario. Detectarlo aparte con mensaje claro.
+                const noProviderMatch = stderr.match(/(?:No\s+inference\s+provider\s+configured|Provider\s+authentication\s+failed|auth_unavailable|no\s+provider\s+configured)/i);
+                if (noProviderMatch) {
+                    errorText = '❌ **Hermes no tiene un proveedor de IA configurado.**\n\n' +
+                        'El Gateway de Hermes no encontró ninguna API key de modelo ' +
+                        '(DEEPSEEK_API_KEY, OPENROUTER_API_KEY, etc.) en su configuración. ' +
+                        'Configurá el proveedor y la key en Hermes (hermes model) o en ~/.hermes/.env, ' +
+                        'y reiniciá el Gateway desde JP Agents (Config → Gateway).';
+                    console.log('[HERMES-BRIDGE] 🔍 Error de proveedor detectado:', noProviderMatch[0], '| stderr:', stderr.slice(0, 200));
+                }
+
                 // 🐛 BUGFIX (Julio 2026): La detección de "insufficient" era demasiado agresiva
                 // y daba falsos positivos con cualquier error que contuviera esa palabra.
                 // Ahora es más específica: busca el mensaje EXACTO de DeepSeek sobre saldo.
                 // También agregamos cache/logging para debuggear cuando el usuario dice
                 // "la API SÍ tiene plata" — guardamos el error real del gateway.
                 const balMatch = stderr.match(/(?:Insufficient\s+Balance|insufficient_quota|saldo\s+insuficiente|rate\s+limit|API\s+key\s+has\s+no\s+credit)/i);
-                if (balMatch) {
+                if (balMatch && !noProviderMatch) {
                     errorText = '❌ **Saldo insuficiente en la API de DeepSeek.**\n\n' +
                         'Tu API key no tiene crédito para procesar esta solicitud. ' +
                         'Recargá tu cuenta en https://platform.deepseek.com y volvé a intentar.\n\n' +

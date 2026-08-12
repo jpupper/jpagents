@@ -27,9 +27,9 @@ import { spawnHermes } from './hermes-executor.js';
 import { hasResumenFormat, extractResumenData, ensureResumen } from '../server/utils/response-utils.js';
 
 // ─── Config ───
-const HERMES_PATH = 'D:/Programacion/hermes/hermes-agent/.venv/Scripts/hermes.exe';
+const HERMES_PATH = process.env.HERMES_PATH || 'hermes';
 const JPAGENTS_WS = 'ws://localhost:4699/ws/admin';
-const JPAGENTS_DIR = 'D:/Programacion/jpagents';
+const JPAGENTS_DIR = process.env.JPAGENTS_DIR || path.resolve('.');
 const JPAGENTS_API = 'http://localhost:4699/api';
 const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 const HISTORY_FILE = path.join(HERMES_HOME, 'god-bot-history.json');
@@ -523,7 +523,7 @@ async function handleAgentCommand(type, args, chatId, messageId) {
                 const project = Array.isArray(projects)
                     ? projects.find(p => p.id === projectId || p.folder === projectId)
                     : null;
-                const workdir = project?.folder || `D:/Programacion/${projectId}`;
+                const workdir = project?.folder || path.join(process.env.JPAGENTS_PROJECTS_ROOT || path.join(JPAGENTS_DIR, 'proyects'), projectId);
 
                 const result = await fetchApi('/hermes/start', {
                     method: 'POST',

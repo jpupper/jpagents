@@ -41,7 +41,7 @@ function connectGlobalWS() {
                         console.log(`[WS-SYNC] Cambio de rol. ¿Soy MASTER?: ${amIMaster}`);
                     }
                 } else if (data.event === 'sync:stateUpdated') {
-                    console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster);
+                    console.log('[SYNC-FLOW] 📡 sync:stateUpdated received. amIMaster =', amIMaster, 'origin =', data.originSocketId);
                     // ─── BUGFIX: Si hay un delete en curso, no recargar estado ───
                     if (state._isDeletingProjectIds && state._isDeletingProjectIds.size > 0) {
                         console.log('[DELETE] ⏭️ sync:stateUpdated ignorado durante operación de borrado');
@@ -49,7 +49,7 @@ function connectGlobalWS() {
                         console.log('📡 [WS-SYNC] El estado cambió, pero esta pestaña está ocupada. Omitiendo recarga.');
                     } else {
                         console.log('📡 [WS-SYNC] Sincronizando estado en segundo plano (vía WebSocket)...');
-                        if (window.__onSyncStateUpdated) window.__onSyncStateUpdated();
+                        if (window.__onSyncStateUpdated) window.__onSyncStateUpdated(data);
                     }
                     // Siempre refrescar badge, consola e instancias Hermes
                     updateAgentBadge();

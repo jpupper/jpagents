@@ -1,6 +1,6 @@
 @echo off
 title JP Agents — Install
-cd /d D:\Programacion\jpagents
+cd /d "%~dp0"
 
 :: ══════════════════════════════════════════════════════════════
 ::   JP AGENTS — INSTALL v2

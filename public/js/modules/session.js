@@ -2,7 +2,7 @@
  * session.js — Persistencia de datos, sincronización, health checks.
  * Extraído de main.js: sanitizeProject, saveData, loadData, sync, etc.
  */
-import { state, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, amIMaster, isSaving, savePending, syncWs } from './state.js';
+import { state, pendingDeletes, pendingDeleteAll, pendingDeleteAllTimeout, generateId, amIMaster, mySocketId, isSaving, savePending, syncWs, setIsSaving, setSavePending } from './state.js';
 import { sessions as api, API_BASE } from './api.js';
 import { chatInput } from './dom-refs.js';
 import { claimMaster } from './events.js';
@@ -37,7 +37,10 @@ export function sanitizeProject(p) {
         skills: Array.isArray(p.skills) ? p.skills : [],
         tasks: Array.isArray(p.tasks) ? p.tasks : [],
         isCorrupted: p.isCorrupted || false,
-        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
+        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true,
+        // 🕐 Timestamp local de última edición (rename, carpeta, etc).
+        // Permite que loadData() NO pise cambios locales más nuevos con datos viejos del server.
+        updatedAt: p.updatedAt || 0
     };
 }
 
@@ -126,7 +129,8 @@ export function sanitizeProjectLight(p) {
         skills: Array.isArray(p.skills) ? p.skills : [],
         tasks: Array.isArray(p.tasks) ? p.tasks : [],
         isCorrupted: p.isCorrupted || false,
-        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true
+        isInitialName: p.isInitialName !== undefined ? p.isInitialName : true,
+        updatedAt: p.updatedAt || 0
     };
 }
 
@@ -141,12 +145,12 @@ export async function saveData(skipSync = false) {
     }
 
     if (isSaving) {
-        savePending = true;
+        setSavePending(true);
         return;
     }
 
-    isSaving = true;
-    savePending = false;
+    setIsSaving(true);
+    setSavePending(false);
 
     try {
         // ─── 🚨 TRIM: Prevenir "request entity too large" (413) ───
@@ -200,6 +204,7 @@ export async function saveData(skipSync = false) {
 
         const payload = {
             projects: trimmedProjects,
+            originSocketId: mySocketId, // Para que el server difunda a los demás y el propio emisor lo ignore
             userSystemPrompt: state.userSystemPrompt,
             namingPrompt: state.namingPrompt,
             secondAgentConfig: state.secondAgentConfig,
@@ -247,8 +252,9 @@ export async function saveData(skipSync = false) {
     } catch (e) {
         console.error("[STATE] Excepción al guardar datos:", e);
     } finally {
-        isSaving = false;
+        setIsSaving(false);
         if (savePending) {
+            setSavePending(false);
             saveData();
         }
     }
@@ -261,6 +267,13 @@ window.saveData = saveData;
 
 export async function loadData(shouldScan = true) {
     console.log('[SYNC-FLOW] 🔄 loadData() called. shouldScan =', shouldScan, 'caller =', new Error().stack.split('\n')[2]);
+    // 🐛 BUGFIX: Preservar la selección local (proyecto + tab abiertos) antes de que
+    // loadData() la pise con el valor guardado en el server. El server puede tener
+    // un activeProjectId/activeTabId viejo (save pendiente, fallido, o de otra
+    // pestaña), lo que hacía que al volver de otra pestaña se perdiera el proyecto
+    // y el chat que el usuario tenía abiertos.
+    const prevActiveProjectId = state.activeProjectId;
+    const prevActiveTabIds = new Map((state.projects || []).map(p => [p.id, p.activeTabId]));
     try {
         const res = await window.fetchWithLog(`${API_BASE}/sessions`);
         const data = await res.json();
@@ -277,9 +290,12 @@ export async function loadData(shouldScan = true) {
             return true;
         };
 
-        // ─── Preservar terminalLogs y full projects ───
+        // ─── Preservar terminalLogs, full projects Y TODOS los proyectos locales ───
+        // (incluyendo light/no-cargados: un rename local de un proyecto light también
+        // debe sobrevivir a loadData si su updatedAt es más nuevo que el del server).
         const _oldTerminalLogs = new Map();
         const _oldFullProjects = new Map();
+        const _oldAllProjects = new Map();
         for (const old of state.projects) {
             if (Array.isArray(old.terminalLogs) && old.terminalLogs.length > 0) {
                 _oldTerminalLogs.set(old.id, old.terminalLogs);
@@ -287,6 +303,7 @@ export async function loadData(shouldScan = true) {
             if (old._loaded) {
                 _oldFullProjects.set(old.id, old);
             }
+            _oldAllProjects.set(old.id, old);
         }
 
         let incomingProjects;
@@ -357,17 +374,55 @@ export async function loadData(shouldScan = true) {
         }
 
         // ─── MERGE: Preservar proyectos full ya cargados ───
+        // 🕐 NO-DESTRUCTIVO: name/folder/isCorrupted solo se pisan con los datos del
+        // server si el server tiene una versión MÁS NUEVA (updatedAt). Si el usuario
+        // renombró o cambió la carpeta localmente y el server aún no recibió el save,
+        // preservar el valor local — esto evita que volver de una pestaña (o un
+        // sync:stateUpdated del propio save) revierta el nombre con una versión vieja.
         const mergedProjects = incomingProjects.map(incoming => {
             const existingFull = _oldFullProjects.get(incoming.id);
             if (existingFull) {
-                existingFull.name = incoming.name;
-                existingFull.folder = incoming.folder;
-                existingFull.isCorrupted = incoming.isCorrupted;
-                existingFull.activeTabId = incoming.activeTabId;
+                const serverUpdatedAt = incoming.updatedAt || 0;
+                const localUpdatedAt = existingFull.updatedAt || 0;
+                const serverIsNewer = serverUpdatedAt > localUpdatedAt;
+                // Aplicar datos del server solo si son más nuevos, o si el local no tiene nombre todavía
+                const localHasNoName = !existingFull.name || existingFull.name === 'Proyecto sin nombre';
+                if (serverIsNewer || (localHasNoName && incoming.name)) {
+                    existingFull.name = incoming.name;
+                    existingFull.folder = incoming.folder;
+                    existingFull.isCorrupted = incoming.isCorrupted;
+                    existingFull.updatedAt = serverUpdatedAt;
+                } else {
+                    console.log(`[SYNC] 🕐 Preservando datos locales de "${existingFull.name}" (local ${localUpdatedAt} >= server ${serverUpdatedAt})`);
+                }
+                // 🐛 BUGFIX: Preservar el tab abierto local si sigue existiendo
+                // (no pisarlo con un activeTabId viejo del server)
+                const localTab = prevActiveTabIds.get(incoming.id);
+                const localTabChat = localTab && Array.isArray(existingFull.chats)
+                    ? existingFull.chats.find(c => c.id === localTab)
+                    : null;
+                const incomingTabChat = localTab && Array.isArray(incoming.chats)
+                    ? incoming.chats.find(c => c.id === localTab)
+                    : null;
+                // Preservar solo si el tab local sigue existiendo y no está cerrado
+                const hasValidLocalTab = localTabChat && (!incomingTabChat || !incomingTabChat.isClosed);
+                if (!hasValidLocalTab) {
+                    existingFull.activeTabId = incoming.activeTabId;
+                }
                 if (_oldTerminalLogs.has(incoming.id)) {
                     existingFull.terminalLogs = _oldTerminalLogs.get(incoming.id);
                 }
                 return existingFull;
+            }
+            // 🕐 Proyecto LIGHT (no cargado): si hay una versión local con updatedAt más
+            // nuevo (ej. rename reciente que aún no se guardó), preservar name/folder
+            // local sobre los datos del server.
+            const existingLight = _oldAllProjects.get(incoming.id);
+            if (existingLight && (existingLight.updatedAt || 0) > (incoming.updatedAt || 0)) {
+                if (existingLight.name) incoming.name = existingLight.name;
+                if (existingLight.folder) incoming.folder = existingLight.folder;
+                incoming.updatedAt = existingLight.updatedAt;
+                console.log(`[SYNC] 🕐 Preservando rename local de proyecto light "${incoming.name}"`);
             }
             if (_oldTerminalLogs.has(incoming.id)) {
                 incoming.terminalLogs = _oldTerminalLogs.get(incoming.id);
@@ -386,7 +441,15 @@ export async function loadData(shouldScan = true) {
         }
 
         // ─── Active project ───
-        if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
+        // 🐛 BUGFIX: Si el usuario tenía un proyecto/tab abierto y sigue existiendo,
+        // preservarlo (el server puede devolver un activeProjectId viejo).
+        if (prevActiveProjectId === 'admin') {
+            state.activeProjectId = 'admin';
+            console.log("📍 Preserved admin tab");
+        } else if (prevActiveProjectId && state.projects.some(p => p.id === prevActiveProjectId)) {
+            state.activeProjectId = prevActiveProjectId;
+            console.log("📍 Preserved active project:", prevActiveProjectId);
+        } else if (state.activeProjectId && state.projects.some(p => p.id === state.activeProjectId)) {
             console.log("📍 Restored active project:", state.activeProjectId);
         } else if (state.activeProjectId === 'admin') {
             console.log("📍 Restored admin tab");

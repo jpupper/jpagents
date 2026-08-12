@@ -40,6 +40,9 @@ temp_images/
 
 .env
 
+# Ruteo config por máquina (se genera desde el menú Config Global → Rutas)
+routing.json
+
 # Server-side data (moved from root)
 db/checkpoints.db
 db/checkpoints.db-shm

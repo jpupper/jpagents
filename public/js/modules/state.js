@@ -160,6 +160,8 @@ window.__jpState = state;
 export let pendingDeletes = new Set();
 export let pendingDeleteAll = false;
 export let pendingDeleteAllTimeout = null;
+export function setPendingDeleteAll(val) { pendingDeleteAll = val; }
+export function setPendingDeleteAllTimeout(val) { pendingDeleteAllTimeout = val; }
 
 // ─── ID generator ───
 export const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -187,6 +189,11 @@ export let syncWs = null;
 export function setSyncWs(ws) { syncWs = ws; }
 export function setAmIMaster(val) { amIMaster = val; }
 export function setMySocketId(id) { mySocketId = id; }
+// 🐛 BUGFIX ES-MODULES: las bindings importadas son INMUTABLES, por eso
+// session.js NO puede hacer `isSaving = true` directamente (TypeError).
+// Se reasignan solo a través de estos setters.
+export function setIsSaving(val) { isSaving = val; }
+export function setSavePending(val) { savePending = val; }
 export let draggedProjectId = null;
 export let draggedTabId = null;
 export let draggedTabType = null;

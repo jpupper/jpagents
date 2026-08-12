@@ -1,5 +1,8 @@
 import { getCollection } from '../../db/db.js';
 import hermesBridge from '../../hermes/hermes-bridge.js';
+import path from 'path';
+import { existsSync, mkdirSync } from 'fs';
+import { PROJECTS_ROOT, defaultProjectFolder, sanitizeFolderName } from '../config.js';
 
 // ─── Asegurar índices en colecciones al importar ───
 // El índice en chatId es crítico para performance de loadChatMessages() y cleanupOldChats()
@@ -24,11 +27,137 @@ setTimeout(async () => {
  * @param {boolean} [skipMessages=false] - Si true, salta la carga de mensajes individuales
  *        (útil para loadSessionsLight que solo necesita metadatos).
  */
+/**
+ * MIGRACIÓN DE RUTAS 🗺️
+ *
+ * Si un proyecto tiene un `folder` guardado que NO existe en esta máquina
+ * (ej: vino de otra PC con otra ruta absoluta), lo remapea a la raíz de
+ * proyectos configurada (PROJECTS_ROOT) usando el nombre de la carpeta
+ * original, y crea la carpeta si no existe.
+ *
+ * Idempotente: solo persiste cuando hubo cambios reales.
+ *
+ * @returns {Promise<{changed: boolean, fixes: Array}>}
+ */
+export async function migrateProjectFolders(state) {
+    const fixes = [];
+    if (!state?.projects || state.projects.length === 0) {
+        return { changed: false, fixes };
+    }
+
+    for (const project of state.projects) {
+        if (!project.folder) continue;
+
+        const folder = project.folder;
+        let exists = true;
+        try {
+            exists = existsSync(folder);
+        } catch {
+            exists = false;
+        }
+
+        // La ruta ya existe en esta máquina → OK, nada que hacer
+        if (exists) continue;
+
+        // La ruta guardada NO existe → remapear a PROJECTS_ROOT
+        // Prioridad de nombre: basename del folder viejo > nombre del proyecto > id
+        const oldBase = (() => {
+            try {
+                const b = path.basename(folder);
+                return b && b !== '.' && b !== path.sep ? b : '';
+            } catch {
+                return '';
+            }
+        })();
+        const folderName = oldBase || project.name || project.id;
+        const newFolder = defaultProjectFolder(project.id, folderName);
+
+        try {
+            mkdirSync(newFolder, { recursive: true });
+        } catch (mkdirErr) {
+            console.warn('[ROUTES] ⚠️ No se pudo crear carpeta migrada:', mkdirErr.message);
+        }
+
+        console.log(`[ROUTES] 🔄 Migrando folder de "${project.name || project.id}":\n  ${folder}\n  → ${newFolder}`);
+        project.folder = newFolder;
+        fixes.push({
+            id: project.id,
+            name: project.name || project.id,
+            from: folder,
+            to: newFolder
+        });
+    }
+
+    if (fixes.length > 0) {
+        try {
+            const collection = getCollection('sessions');
+            // ⚠️ IMPORTANTE: NO persistir el state completo — loadSessions re-adjunta
+            // TODOS los mensajes desde chat_messages, y escribir ese state de vuelta
+            // inflaría global_state (límite BSON 16MB). Solo actualizamos los campos
+            // folder de los proyectos migrados.
+            const setFields = { updatedAt: new Date() };
+            for (const fix of fixes) {
+                const idx = state.projects.findIndex(p => p.id === fix.id);
+                if (idx >= 0) {
+                    setFields[`state.projects.${idx}.folder`] = fix.to;
+                }
+            }
+            await collection.updateOne(
+                { _id: 'global_state' },
+                { $set: setFields }
+            );
+            console.log(`[ROUTES] 💾 ${fixes.length} ruta(s) migrada(s) y persistida(s) en la DB`);
+        } catch (e) {
+            console.error('[ROUTES] ❌ No se pudo persistir la migración:', e.message);
+        }
+    }
+
+    return { changed: fixes.length > 0, fixes };
+}
+
+/**
+ * Devuelve info de ruteo de todos los proyectos (para el menú de Rutas).
+ */
+export async function getProjectsRoutingInfo(state) {
+    if (!state?.projects) return [];
+    return state.projects.map(p => {
+        let exists = false;
+        try {
+            exists = !!(p.folder && existsSync(p.folder));
+        } catch {
+            exists = false;
+        }
+        return {
+            id: p.id,
+            name: p.name || p.id,
+            folder: p.folder || '',
+            exists,
+            resolved: p.folder && exists
+                ? p.folder
+                : defaultProjectFolder(p.id, (() => {
+                    try {
+                        const b = path.basename(p.folder || '');
+                        return b && b !== '.' && b !== path.sep ? b : (p.name || p.id);
+                    } catch {
+                        return p.name || p.id;
+                    }
+                })())
+        };
+    });
+}
+
 export async function loadSessions(skipMessages = false) {
     try {
         const collection = getCollection('sessions');
         const data = await collection.findOne({ _id: 'global_state' });
         const state = data ? data.state : { projects: [] };
+        
+        // ─── 🗺️ MIGRACIÓN DE RUTAS: reparar folders de otra máquina ───
+        try {
+            await migrateProjectFolders(state);
+        } catch (migErr) {
+            console.warn('[ROUTES] ⚠️ Error en migración de rutas (no fatal):', migErr.message);
+        }
         
         // ─── 🐛 BUGFIX V2: Reconstruir mensajes desde colección separada ───
         // Los mensajes se guardan individualmente en chat_messages para evitar
@@ -445,9 +574,23 @@ export async function saveSessions(state) {
         const existing = await collection.findOne({ _id: 'global_state' });
         if (existing?.state?.projects && state?.projects) {
             const merged = new Map();
-            // Proyectos del save actual son la fuente de verdad
+            // 🕐 MERGE NO-DESTRUCTIVO: por cada proyecto, conservar la versión MÁS NUEVA
+            // (mayor updatedAt). Evita que un save con datos stale (pestaña con estado
+            // viejo) pise un rename/carpeta más reciente guardado por otra pestaña.
             for (const p of state.projects) {
-                merged.set(p.id || p.name, p);
+                const key = p.id || p.name;
+                const existingP = (existing.state.projects || []).find(e => (e.id || e.name) === key);
+                if (existingP && !deletedIds.has(key) && !deletedIds.has(p.id)) {
+                    const incomingUpdatedAt = p.updatedAt || 0;
+                    const existingUpdatedAt = existingP.updatedAt || 0;
+                    if (existingUpdatedAt > incomingUpdatedAt) {
+                        // La DB tiene una versión más nueva — conservarla
+                        console.log(`[DB-MERGE] 🕐 Conservando versión DB más nueva de "${existingP.name}" (DB ${existingUpdatedAt} > save ${incomingUpdatedAt})`);
+                        merged.set(key, existingP);
+                        continue;
+                    }
+                }
+                merged.set(key, p);
             }
             // Agregar proyectos existentes de DB que NO estén en el save ni en deletedIds
             for (const p of existing.state.projects) {
